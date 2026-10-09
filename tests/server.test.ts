@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -25,6 +25,27 @@ async function listPublishedTools(): Promise<Tool[]> {
 }
 
 describe("createServer", () => {
+  it("blocks mutation tools over the MCP protocol in agency mode", async () => {
+    vi.stubEnv("DEPLOYMENT_MODE", "agency");
+    const server = createServer();
+    const client = new Client({ name: "policy-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const { tools } = await client.listTools();
+      expect(tools.length).toBeGreaterThan(0);
+      expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
+      expect(tools.some((tool) => tool.name === "ads_create_campaign")).toBe(false);
+      expect(tools.some((tool) => tool.name === "ads_analyze_video")).toBe(false);
+      const blocked = await client.callTool({ name: "ads_create_campaign", arguments: {} });
+      expect(blocked.isError).toBe(true);
+      expect(JSON.stringify(blocked.content)).toMatch(/disabled/);
+    } finally {
+      await client.close();
+      await server.close();
+      vi.unstubAllEnvs();
+    }
+  });
   it("creates a server instance", () => {
     const server = createServer();
     expect(server).toBeDefined();

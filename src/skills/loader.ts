@@ -32,11 +32,12 @@ function skillsRoot(): string {
 
 /** Frontmatter is optional; only name and description are read, and only as plain scalars. */
 function parseFrontmatter(text: string): { name?: string; description?: string } {
+  text = text.replace(/\r\n/g, "\n");
   if (!text.startsWith("---")) return {};
   const end = text.indexOf("\n---", 3);
   if (end < 0) return {};
   const out: { name?: string; description?: string } = {};
-  for (const line of text.slice(4, end).split("\n")) {
+  for (const line of text.slice(4, end).split(/\r?\n/)) {
     const match = /^(name|description):\s*(.*)$/.exec(line);
     if (!match) continue;
     const value = match[2].trim().replace(/^["']|["']$/g, "");

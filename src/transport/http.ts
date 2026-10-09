@@ -326,12 +326,16 @@ function createCombinedAuthMiddleware(
   };
 }
 
-function buildMetaTokenMiddleware(
+export function buildMetaTokenMiddleware(
   serverUrl: URL,
   multiTenantEnabled: boolean,
 ): express.RequestHandler {
   return async (req, res, next) => {
     const headerToken = req.headers["x-meta-token"];
+    if (process.env.DEPLOYMENT_MODE === "agency" && headerToken !== undefined) {
+      res.status(403).json({ error: "Header token overrides are disabled in agency mode" });
+      return;
+    }
     if (typeof headerToken === "string" && headerToken) {
       requestContext.run({ accessToken: headerToken }, () => next());
       return;
@@ -377,6 +381,10 @@ function buildMetaTokenMiddleware(
     }
 
     const managerToken = tokenManager.getActiveToken();
+    if (process.env.DEPLOYMENT_MODE === "agency") {
+      res.status(401).json({ error: "A connected agency user is required" });
+      return;
+    }
     if (managerToken) {
       requestContext.run({ accessToken: managerToken }, () => next());
       return;
@@ -451,8 +459,9 @@ export async function startHttpTransport(
 
   if (isProduction) {
     app.use((req, res, next) => {
+      if (req.path === "/health") { next(); return; }
       if (req.header("x-forwarded-proto") !== "https") {
-        res.redirect(301, `https://${req.header("host")}${req.originalUrl}`);
+        res.redirect(301, `${getServerUrl().origin}${req.originalUrl}`);
         return;
       }
       next();

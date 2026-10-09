@@ -36,7 +36,7 @@ function patternLists(): PatternList[] {
   const lists: PatternList[] = [];
   let section = "(root)";
 
-  const lines = config.split("\n");
+  const lines = config.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 

@@ -7,6 +7,7 @@ RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src/ src/
 RUN npm run build
+RUN npm prune --omit=dev --ignore-scripts
 
 FROM node:22-alpine3.24 AS runtime
 WORKDIR /app

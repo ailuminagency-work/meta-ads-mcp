@@ -46,6 +46,12 @@ export function createServer(): McpServer {
   );
 
   registerAllTools(server);
+  if (process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true") {
+    const tools = (server as unknown as { _registeredTools: Record<string, { annotations?: { readOnlyHint?: boolean }; disable(): void }> })._registeredTools;
+    for (const [name, tool] of Object.entries(tools)) {
+      if (tool.annotations?.readOnlyHint !== true || name === "ads_analyze_video" || name.startsWith("ads_library_")) tool.disable();
+    }
+  }
   registerSkillPrompts(server);
   registerSkillResources(server);
 
