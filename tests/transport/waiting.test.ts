@@ -34,7 +34,7 @@ describe("credential waiting deployment", () => {
   });
   const valid: NodeJS.ProcessEnv = {
     NODE_ENV: "production", META_APP_ID: "123", META_APP_SECRET: "test-app-secret",
-    TOKEN_ENCRYPTION_KEY: "0123456789abcdef".repeat(4),
+    TOKEN_ENCRYPTION_KEY: Buffer.alloc(32).toString("hex"),
     SESSION_COOKIE_SECRET: "test-session-".repeat(4), OAUTH_SECRET: "test-signing-".repeat(4),
     AUTH_ALLOWED_FB_USER_IDS: "123", FIRESTORE_PROJECT_ID: "test-project",
     GOOGLE_APPLICATION_CREDENTIALS: "/run/secrets/google.json", SERVER_URL: "https://agency.example.com",
