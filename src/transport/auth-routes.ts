@@ -331,7 +331,9 @@ export function mountAuthRoutes(
         config,
         shortLived.accessToken,
       );
-      const profile = await fetchProfile(longLived.accessToken, config.apiVersion);
+      const profile = await fetchProfile(
+        longLived.accessToken, config.apiVersion, !config.loginConfigId,
+      );
 
       if (!isAllowed({ email: profile.email, fbUserId: profile.id })) {
         // Hash PII before logging — keeps the value correlatable across

@@ -87,6 +87,16 @@ export function resolveSecurityConfig(
   const multiTenantEnabled = metaAppConfigured;
 
   if (multiTenantEnabled) {
+    const loginConfigId = readEnvVar(env, "META_LOGIN_CONFIG_ID");
+    if (loginConfigId) {
+      if (!/^[0-9]+$/.test(loginConfigId)) {
+        throw new Error("META_LOGIN_CONFIG_ID must be a numeric configuration ID");
+      }
+      const fbIds = readEnvVar(env, "AUTH_ALLOWED_FB_USER_IDS").split(",").map(id => id.trim());
+      if (!fbIds.length || fbIds.some(id => !/^[0-9]+$/.test(id))) {
+        throw new Error("META_LOGIN_CONFIG_ID requires verified AUTH_ALLOWED_FB_USER_IDS; email allowlists cannot authorize business login");
+      }
+    }
     if (!tokenEncryptionKey) {
       throw new Error(
         "TOKEN_ENCRYPTION_KEY is required when META_APP_ID/SECRET are set",

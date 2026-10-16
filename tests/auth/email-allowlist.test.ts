@@ -47,6 +47,9 @@ describe("email-allowlist", () => {
     process.env.AUTH_ALLOWED_FB_USER_IDS = "1001,1002";
     expect(isAllowed({ fbUserId: "1001" })).toBe(true);
     expect(isAllowed({ fbUserId: "9999" })).toBe(false);
+    expect(isAllowed({ email: null, fbUserId: "1001" })).toBe(true);
+    expect(isAllowed({ email: null, fbUserId: "9999" })).toBe(false);
+    expect(isAllowed({ email: null, fbUserId: null })).toBe(false);
   });
 
   it("rejects everyone when no allowlist source is set in production", () => {

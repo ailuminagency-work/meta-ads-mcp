@@ -20,6 +20,7 @@ export interface MetaOAuthConfig {
   appSecret: string;
   redirectUri: string;
   apiVersion: string;
+  loginConfigId?: string;
 }
 
 export function loadMetaOAuthConfig(serverUrl: URL): MetaOAuthConfig | null {
@@ -36,6 +37,7 @@ export function loadMetaOAuthConfig(serverUrl: URL): MetaOAuthConfig | null {
     appSecret,
     redirectUri,
     apiVersion: resolveMetaApiVersion(),
+    loginConfigId: process.env.META_LOGIN_CONFIG_ID?.trim() || undefined,
   };
 }
 
@@ -47,9 +49,13 @@ export function buildAuthorizeUrl(
   url.searchParams.set("client_id", config.appId);
   url.searchParams.set("redirect_uri", config.redirectUri);
   url.searchParams.set("state", state);
-  url.searchParams.set("scope", DEFAULT_SCOPES.join(","));
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("auth_type", "rerequest");
+  if (config.loginConfigId) {
+    url.searchParams.set("config_id", config.loginConfigId);
+  } else {
+    url.searchParams.set("scope", DEFAULT_SCOPES.join(","));
+    url.searchParams.set("auth_type", "rerequest");
+  }
   return url.toString();
 }
 
@@ -131,11 +137,14 @@ export interface MetaProfile {
 export async function fetchProfile(
   accessToken: string,
   apiVersion: string = resolveMetaApiVersion(),
+  includeEmail = true,
 ): Promise<MetaProfile> {
   const url = new URL(`/${apiVersion}/me`, META_GRAPH);
   url.searchParams.set(
     "fields",
-    "id,name,email,picture.width(200).height(200)",
+    includeEmail
+      ? "id,name,email,picture.width(200).height(200)"
+      : "id,name,picture.width(200).height(200)",
   );
   url.searchParams.set("access_token", accessToken);
 
@@ -150,6 +159,10 @@ export async function fetchProfile(
     throw new Error(`Meta /me fetch failed: ${message}`);
   }
 
+  if (typeof body.id !== "string" || !/^[0-9]+$/.test(body.id)) {
+    throw new Error("Meta profile is missing a valid user ID");
+  }
+
   let pictureUrl: string | null = null;
   const pic = body.picture;
   if (pic && typeof pic === "object" && "data" in pic) {
@@ -160,9 +173,9 @@ export async function fetchProfile(
   }
 
   return {
-    id: String(body.id),
+    id: body.id,
     name: typeof body.name === "string" ? body.name : null,
-    email: typeof body.email === "string" ? body.email : null,
+    email: includeEmail && typeof body.email === "string" ? body.email : null,
     pictureUrl,
   };
 }

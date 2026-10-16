@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildAuthorizeUrl,
   fetchPrimaryBusiness,
+  fetchProfile,
   loadMetaOAuthConfig,
 } from "../../src/auth/meta-oauth.js";
 import { mockFetchResponse } from "../setup.js";
@@ -44,6 +45,39 @@ describe("Meta OAuth Graph API version", () => {
     expect(dialogUrl.pathname).toBe("/v25.0/dialog/oauth");
     const graphUrl = new URL(vi.mocked(globalThis.fetch).mock.calls[0][0] as string);
     expect(graphUrl.pathname).toBe("/v25.0/me/businesses");
+  });
+
+  it("uses business configuration permissions without legacy scopes", () => {
+    vi.stubEnv("META_LOGIN_CONFIG_ID", "4452284561700112");
+    const config = loadMetaOAuthConfig(serverUrl)!;
+    const url = new URL(buildAuthorizeUrl(config, "state-1"));
+    expect(url.searchParams.get("config_id")).toBe("4452284561700112");
+    expect(url.searchParams.has("scope")).toBe(false);
+    expect(url.searchParams.has("auth_type")).toBe(false);
+    expect(url.searchParams.get("state")).toBe("state-1");
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("redirect_uri")).toBe(config.redirectUri);
+  });
+
+  it("preserves legacy email scope without a business configuration", () => {
+    vi.stubEnv("META_LOGIN_CONFIG_ID", undefined);
+    const url = new URL(buildAuthorizeUrl(loadMetaOAuthConfig(serverUrl)!, "state"));
+    expect(url.searchParams.get("scope")?.split(",")).toContain("email");
+    expect(url.searchParams.get("auth_type")).toBe("rerequest");
+  });
+
+  it("omits email retrieval for business login and ignores unsolicited email", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(mockFetchResponse({id: "123", email: "operator@example.com"}));
+    const profile = await fetchProfile("token-x", "v26.0", false);
+    const url = new URL(vi.mocked(globalThis.fetch).mock.calls[0][0] as string);
+    expect(url.searchParams.get("fields")).not.toContain("email");
+    expect(profile.email).toBeNull();
+    expect(profile.id).toBe("123");
+  });
+
+  it.each([undefined, null, "", "undefined", 123])("rejects invalid profile ID %s", async (id) => {
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(mockFetchResponse({id}));
+    await expect(fetchProfile("token-x", "v26.0", false)).rejects.toThrow("valid user ID");
   });
 });
 

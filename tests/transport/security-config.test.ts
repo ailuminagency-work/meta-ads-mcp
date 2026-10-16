@@ -4,6 +4,7 @@ import { resolveSecurityConfig } from "../../src/transport/security-config.js";
 const KEYS = [
   "NODE_ENV",
   "META_APP_ID",
+  "META_LOGIN_CONFIG_ID",
   "META_APP_SECRET",
   "TOKEN_ENCRYPTION_KEY",
   "SESSION_COOKIE_SECRET",
@@ -25,6 +26,13 @@ const SECRET32 = "session-secret-fixture-1234567890";
 const OAUTH32 = "oauth-secret-fixture-123456789012";
 
 describe("resolveSecurityConfig", () => {
+  it("requires an exact numeric Facebook allowlist for business login", () => {
+    const env = {META_APP_ID: "123", META_APP_SECRET: "fixture", META_LOGIN_CONFIG_ID: "456", TOKEN_ENCRYPTION_KEY: HEX64, SESSION_COOKIE_SECRET: SECRET32, AUTH_ALLOWED_EMAILS: "operator@example.com"};
+    expect(() => resolveSecurityConfig(env)).toThrow(/verified AUTH_ALLOWED_FB_USER_IDS/);
+    expect(() => resolveSecurityConfig({...env, AUTH_ALLOWED_FB_USER_IDS: "*"})).toThrow(/verified AUTH_ALLOWED_FB_USER_IDS/);
+    expect(resolveSecurityConfig({...env, AUTH_ALLOWED_FB_USER_IDS: "789"}).multiTenantEnabled).toBe(true);
+    expect(() => resolveSecurityConfig({...env, META_LOGIN_CONFIG_ID: "bad", AUTH_ALLOWED_FB_USER_IDS: "789"})).toThrow(/numeric configuration ID/);
+  });
   beforeEach(() => {
     for (const k of KEYS) delete process.env[k];
   });
