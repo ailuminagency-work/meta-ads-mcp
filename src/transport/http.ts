@@ -133,6 +133,7 @@ interface ConsentContext {
 }
 
 export function renderConsentPage(ctx: ConsentContext): string {
+  const readOnlyAgency = process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true";
   const clientId = escapeHtml(ctx.query.client_id || "Unknown");
   const hiddenFields = Object.entries(ctx.query)
     .map(
@@ -207,10 +208,16 @@ ${PAGE_STYLES}
     <div class="section">
       <div class="section-title">Permisos solicitados</div>
       <ul class="permissions">
+        ${readOnlyAgency ? `
+        <li>Read authorized Meta ad accounts and campaign information</li>
+        <li>Read reports and insights</li>
+        <li>Ad creation and changes are disabled on this service</li>
+        ` : `
         <li>• Leer y gestionar cuentas publicitarias de Meta</li>
         <li>• Crear, actualizar y pausar campañas</li>
         <li>• Acceder a reportes e insights</li>
         <li>• Gestionar WhatsApp Business (números, plantillas, flows)</li>
+        `}
       </ul>
     </div>
 
