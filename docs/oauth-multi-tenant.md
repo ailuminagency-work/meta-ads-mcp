@@ -1,5 +1,14 @@
 # OAuth multi-tenant flow
 
+This document describes the retained baseline MCP login/token-routing flow. The
+strict Lumin Platform candidate adds a separate server-owned tenant/client asset
+registry, product-specific connections, protected incremental consent and exact
+human action approvals. A valid baseline login does not itself authorize strict
+client assets, product writes or client-owned billing. See authentication.md,
+client-onboarding.md and acceptance-checklist.md for the candidate boundaries and
+remaining rollout gates. No current deployment or external-client acceptance is
+established by this walkthrough.
+
 End-to-end walkthrough of how an AI client (Claude, Cursor, Continue, …) signs
 in **a new advertising-agency client** to a single deployment of Meta Ads MCP,
 and how every subsequent tool call is routed to that client's own Meta token.

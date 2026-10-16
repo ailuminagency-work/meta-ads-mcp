@@ -145,3 +145,7 @@ We will not pursue legal action against good-faith security researchers who foll
 ## Acknowledgments
 
 We will list contributors here as soon as we have validated reports to credit. Want to be the first?
+
+## Lumin Platform candidate
+
+See [candidate assessment](docs/security.md) for the feature-gated tenant, credential, approval and event boundaries and the remaining rollout blockers. This branch does not authorize deployment or external client access.

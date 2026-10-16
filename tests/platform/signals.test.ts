@@ -1,0 +1,15 @@
+import {describe,it,expect} from "vitest";
+import {prepareFirstPartySignal,firstPartySignalDigest,type SignalEvidence} from "../../src/platform/signals.js";
+const now=Date.now(),scope={tenantId:"tenant",clientId:"client",datasetId:"dataset"};
+const input={event_name:"Lead",event_id:"lead-1",event_time:Math.floor(now/1000),action_source:"website",event_source_url:"https://example.invalid/thanks",source_reference:"crm:1",consent_reference:"consent:1",user_data:{em:"Customer@Example.invalid",ph:"+12065550123"}};
+const evidence:SignalEvidence={...scope,payloadDigest:firstPartySignalDigest(input),sourceReference:input.source_reference,consentReference:input.consent_reference,eventId:input.event_id,eventTime:input.event_time,eventName:input.event_name,authorized:true,expiresAt:now+100000};
+const resolver={resolve:async()=>evidence};
+describe("first-party signal preparation without provider dispatch",()=>{
+  it("hashes normalized customer matching data and preserves dedup ID",async()=>{const out=await prepareFirstPartySignal(input,scope,resolver,now);expect(JSON.stringify(out)).not.toContain("Customer@");expect(JSON.stringify(out)).not.toContain("12065550123");expect(out.event.event_id).toBe("lead-1");expect(out.deduplicationKey).toHaveLength(64);expect((out.event.user_data as {em:string[]}).em[0]).toHaveLength(64);});
+  it("binds dedup to dataset and client",async()=>{const a=await prepareFirstPartySignal(input,scope,resolver,now);const b=await prepareFirstPartySignal(input,{...scope,datasetId:"other"},{resolve:async()=>({...evidence,datasetId:"other"})},now);expect(a.deduplicationKey).not.toBe(b.deduplicationKey);});
+  it.each([{clientId:"foreign"},{authorized:false},{eventId:"forged"},{eventName:"Purchase"},{expiresAt:now-1}])("rejects invalid evidence %j",async override=>{await expect(prepareFirstPartySignal(input,scope,{resolve:async()=>({...evidence,...override})},now)).rejects.toThrow("VERIFIED_FIRST_PARTY");});
+  it("rejects altered customer or purchase data with reused evidence",async()=>{await expect(prepareFirstPartySignal({...input,user_data:{em:"other@example.invalid"}},scope,resolver,now)).rejects.toThrow("VERIFIED_FIRST_PARTY");});
+  it("rejects fabricated signal without evidence",async()=>{await expect(prepareFirstPartySignal(input,scope,{resolve:async()=>null},now)).rejects.toThrow("VERIFIED_FIRST_PARTY");});
+  it("rejects extra PII and arbitrary custom data",async()=>{await expect(prepareFirstPartySignal({...input,user_data:{...input.user_data,password:"private"}},scope,resolver,now)).rejects.toThrow("INVALID");});
+  it("rejects future events and URLs with query PII",async()=>{await expect(prepareFirstPartySignal({...input,event_time:Math.floor(now/1000)+3600},scope,resolver,now)).rejects.toThrow("TIME_POLICY");await expect(prepareFirstPartySignal({...input,event_source_url:"https://example.invalid/?email=private"},scope,resolver,now)).rejects.toThrow("VERIFIED_FIRST_PARTY");});
+});

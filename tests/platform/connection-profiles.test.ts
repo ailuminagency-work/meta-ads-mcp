@@ -1,0 +1,16 @@
+import {describe,it,expect} from "vitest";
+import {createConnectionChallenge,consumeConnectionChallenge,validateConnectionProfile,type ConnectionProfile,type ConnectionChallenge,type ConnectionChallengeStore} from "../../src/platform/connection-profiles.js";
+import {canonicalJson} from "../../src/platform/policy.js";
+const profile:ConnectionProfile={id:"pages",provider:"META_FACEBOOK_PAGES",appId:"app",strategy:"facebook_business",scopes:["pages_read_engagement"],tokenTypes:["page"],redirectUri:"https://example.invalid/connect/pages/callback",authorizeUrl:"https://www.facebook.com/v26.0/dialog/oauth",verified:true};
+const principal={tenantId:"tenant",operatorId:"operator"};
+class FakeAtomicStore implements ConnectionChallengeStore{
+  records=new Map<string,ConnectionChallenge>();
+  async create(value:ConnectionChallenge){this.records.set(value.id,structuredClone(value));}
+  async consume(id:string,nonceHash:string,expected:Omit<ConnectionChallenge,"id"|"nonceHash"|"expiresAt"|"consumedAt">,now:number){const record=this.records.get(id);if(!record||record.consumedAt!==null||record.expiresAt<=now||record.nonceHash!==nonceHash)return null;const {id:_id,nonceHash:_nonce,expiresAt:_expiry,consumedAt:_consumed,...binding}=record;if(canonicalJson(binding)!==canonicalJson(expected))return null;record.consumedAt=now;return structuredClone(record);}
+}
+describe("provider-specific connection challenge boundary",()=>{
+  it("consumes callback state once and binds browser nonce",async()=>{const store=new FakeAtomicStore(),challenge=await createConnectionChallenge(store,profile,principal,"client",1000);await consumeConnectionChallenge(store,profile,principal,"client",challenge.state,challenge.browserNonce,2000);await expect(consumeConnectionChallenge(store,profile,principal,"client",challenge.state,challenge.browserNonce,2000)).rejects.toThrow("REPLAYED");});
+  it.each(["client","operator","profile","nonce"])('rejects substituted %s',async kind=>{const store=new FakeAtomicStore(),challenge=await createConnectionChallenge(store,profile,principal,"client",1000);await expect(consumeConnectionChallenge(store,kind==="profile"?{...profile,scopes:["pages_manage_posts"]}:profile,kind==="operator"?{...principal,operatorId:"foreign"}:principal,kind==="client"?"foreign":"client",challenge.state,kind==="nonce"?"a".repeat(64):challenge.browserNonce,2000)).rejects.toThrow("MISMATCHED");});
+  it("rejects expired challenges",async()=>{const store=new FakeAtomicStore(),challenge=await createConnectionChallenge(store,profile,principal,"client",1000);await expect(consumeConnectionChallenge(store,profile,principal,"client",challenge.state,challenge.browserNonce,700000)).rejects.toThrow("EXPIRED");});
+  it("prevents provider credential fallback and insecure callback",()=>{expect(()=>validateConnectionProfile({...profile,provider:"META_THREADS"})).toThrow("SEPARATE_THREADS");expect(()=>validateConnectionProfile({...profile,provider:"META_INSTAGRAM_LOGIN"})).toThrow("SEPARATE_INSTAGRAM");expect(()=>validateConnectionProfile({...profile,redirectUri:"http://localhost/callback"})).toThrow("HTTPS");expect(()=>validateConnectionProfile({...profile,verified:false})).toThrow("VERIFIED");});
+});

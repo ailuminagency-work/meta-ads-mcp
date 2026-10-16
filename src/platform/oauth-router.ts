@@ -1,0 +1,51 @@
+import express from "express";
+import cookieParser from "cookie-parser";
+import { z } from "zod";
+import { PlatformOAuthService } from "./oauth.js";
+
+export interface PlatformOAuthRouterDependencies {
+  service: PlatformOAuthService;
+  publicOrigin: string;
+  getSessionOperator(req: express.Request): Promise<string | null>;
+}
+const cookieOptions = { httpOnly: true, secure: true, sameSite: "lax" as const, path: "/" };
+const cookieName = (state: string): string => `__Host-lumin-connect-${state}`;
+const cookieSchema = z.object({ clientId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), nonce: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+
+export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies): express.Router {
+  const origin = new URL(deps.publicOrigin);
+  if (origin.protocol !== "https:" || origin.origin !== deps.publicOrigin) throw new Error("OAuth publicOrigin must be an HTTPS origin");
+  const router = express.Router();
+  router.use(cookieParser(), express.json({ limit: "16kb" }),express.urlencoded({extended:false,limit:"4kb"}));
+  router.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); res.setHeader("Referrer-Policy", "no-referrer"); res.setHeader("X-Content-Type-Options", "nosniff"); next(); });
+  router.post("/:profileId/start", async (req, res) => {
+    try {
+      const operator = await deps.getSessionOperator(req);
+      if (!operator) { res.sendStatus(401); return; }
+      if (req.get("origin") !== deps.publicOrigin) { res.sendStatus(403); return; }
+      const body = z.object({ client_id: cookieSchema.shape.clientId }).strict().safeParse(req.body);
+      if (!body.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) { res.sendStatus(400); return; }
+      const started = await deps.service.start(operator, body.data.client_id, req.params.profileId);
+      res.cookie(cookieName(started.state), Buffer.from(JSON.stringify({ clientId: body.data.client_id, nonce: started.browserNonce })).toString("base64url"), { ...cookieOptions, maxAge: 600000 });
+      res.redirect(303, started.authorizeUrl);
+    } catch { res.status(503).json({ status: "HOLD", reason: "OAUTH_START_UNAVAILABLE" }); }
+  });
+  router.get("/:profileId/callback", async (req, res) => {
+    try {
+      const operator = await deps.getSessionOperator(req);
+      if (!operator) { res.sendStatus(401); return; }
+      const query = z.object({ state: z.string().regex(/^[a-f0-9]{64}$/), code: z.string().min(1).max(4096) }).strict().safeParse(req.query);
+      if (!query.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) { res.sendStatus(400); return; }
+      const state = query.data.state;
+      res.clearCookie(cookieName(state), cookieOptions);
+      const rawCookie: unknown = req.cookies?.[cookieName(state)];
+      if (typeof rawCookie !== "string" || rawCookie.length > 1024) { res.sendStatus(403); return; }
+      const cookie = cookieSchema.safeParse(JSON.parse(Buffer.from(rawCookie, "base64url").toString("utf8")));
+      if (!cookie.success) { res.sendStatus(403); return; }
+      const result = await deps.service.callback({ operatorId: operator, clientId: cookie.data.clientId, profileId: req.params.profileId, state, browserNonce: cookie.data.nonce, code: query.data.code });
+      res.json({ status: "CONNECTED", ...result });
+    } catch { res.status(503).json({ status: "HOLD", reason: "OAUTH_CALLBACK_UNAVAILABLE" }); }
+  });
+  router.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(400).json({ status: "HOLD", reason: "INVALID_OAUTH_REQUEST" }); });
+  return router;
+}

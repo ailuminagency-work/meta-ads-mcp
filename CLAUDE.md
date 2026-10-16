@@ -13,7 +13,7 @@ A Model Context Protocol server that brokers Meta Ads API access for advertising
 
 ## Conventions specific to this repo (v3.0.0+)
 
-- **Tool naming**: `ads_*` prefix (no `meta_`). `ad_set` with underscore (not `adset`). Aligned with Meta's official MCP server (`mcp.facebook.com/ads`). See [docs/migration-v3.md](docs/migration-v3.md) for the full rationale.
+- **Tool naming**: Existing Ads tools retain `ads_*` names. The authorized Lumin Platform feature uses product-specific `meta_*`, `pages_*`, `instagram_*`, `messenger_*`, `threads_*`, `signals_*`, `catalog_*` and `business_*` namespaces without replacing existing names. `ad_set` with underscore (not `adset`). Aligned with Meta's official MCP server (`mcp.facebook.com/ads`). See [docs/migration-v3.md](docs/migration-v3.md) for the full rationale.
 - **Tool registration**: always `server.registerTool(name, { description, inputSchema, annotations }, handler)`. The legacy `server.tool(...)` API is removed.
 - **Annotations**: every tool spreads one of the constants from [src/tools/_register.ts](src/tools/_register.ts) (`READ` / `CREATE` / `UPDATE` / `DELETE` / `TOGGLE` / `UPLOAD` / `TOKEN`) into its `annotations` field. Write tools prepend `WRITE_WARNING` to the description.
 - **Adding tools**: see [docs/adding-a-tool.md](docs/adding-a-tool.md) for the full template + checklist.

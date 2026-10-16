@@ -898,3 +898,7 @@ Issues, PRs and security reports are welcome — see [CONTRIBUTING.md](CONTRIBUT
 ## License
 
 [MIT](LICENSE) © 2025 ByAds — Santiago Bastidas
+
+## Lumin Meta Platform candidate
+
+The isolated expansion is feature-flagged and remains on HOLD for rollout. See [architecture](docs/architecture.md), [product contracts](docs/meta-capability-matrix.md), [authentication](docs/authentication.md), [policy](docs/policy-engine.md) and [operations](docs/operations.md). Existing production behavior remains the default; no deployment or app publication is included.

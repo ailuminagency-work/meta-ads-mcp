@@ -1,3 +1,4 @@
+import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { getAccessToken, hashToken } from "../auth/token-store.js";
 import { logger } from "../utils/logger.js";
 import { RateLimiter, type RequestContext } from "./rate-limiter.js";
@@ -11,6 +12,11 @@ import {
 import type { MetaApiResponse } from "./types/common.js";
 import { collectAllPages } from "./paginator.js";
 import { assertMetaApiVersion, resolveMetaApiVersion } from "./api-version.js";
+import { platformEnabled } from "../platform/runtime.js";
+import { assertLegacyReadEgress, projectLegacyReadResponse } from "../platform/legacy-egress.js";
+import { PlatformDenied } from "../platform/models.js";
+import { BodyTooLargeError, readBodyWithLimit } from "../utils/bounded-body.js";
+import { assertExecutionPermit, withConnectionCredential } from "../platform/execution.js";
 
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
@@ -105,7 +111,9 @@ export class MetaApiClient {
     formData: FormData,
   ): Promise<T> {
     const url = this.buildUrl(path);
-    const token = getAccessToken();
+    const token = platformEnabled()
+      ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),async selected=>selected)
+      : getAccessToken();
     formData.set("access_token", token);
     return this.execute<T>("POST", url, path, { body: formData }, true);
   }
@@ -180,7 +188,10 @@ export class MetaApiClient {
     skipTokenParam = false,
     scope?: RequestScope,
   ): Promise<T> {
-    const token = getAccessToken();
+    await assertLegacyReadEgress(method,path,url);
+    const token = platformEnabled()
+      ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),async selected=>selected)
+      : getAccessToken();
     const tokenHash = hashToken(token);
     const accountId = scope?.accountId ?? extractAccountId(path);
     const context: RequestContext = { tokenHash, accountId };
@@ -204,7 +215,7 @@ export class MetaApiClient {
     // Reactive self-throttle based on last-known usage headers.
     await this.rateLimiter.waitIfNeeded(context);
 
-    const reqUrl = skipTokenParam ? url : this.appendToken(url, token);
+    const reqUrl = platformEnabled() || skipTokenParam ? url : this.appendToken(url, token);
 
     // POST to /act_<id>/<collection> creates new resources without native
     // idempotency on Meta's side — retrying a timeout/5xx/network error can
@@ -227,19 +238,33 @@ export class MetaApiClient {
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
+        await assertLegacyReadEgress(method,path,url);
         const controller = new AbortController();
         const timeoutId = setTimeout(
           () => controller.abort(),
           this.timeout,
         );
 
-        const response = await fetch(reqUrl, {
+        const performFetch = async (selectedToken:string):Promise<Response> => {
+          if(platformEnabled()) {
+
+            if(selectedToken!==token)throw new PlatformDenied("STRICT_CONNECTION_CREDENTIAL_CHANGED");
+            await assertLegacyReadEgress(method,path,url);
+          }
+          return fetch(reqUrl, {
           method,
           ...options,
+          ...(platformEnabled() ? {redirect:"error" as const,headers:{...Object.fromEntries(new Headers(options?.headers).entries()),Authorization:`Bearer ${selectedToken}`}} : {}),
           signal: controller.signal,
-        });
+          });
+        };
+        let response:Response;
+        try { response=platformEnabled()
+          ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),performFetch)
+          : await performFetch(token);
+        } catch(error){clearTimeout(timeoutId);throw error;}
 
-        clearTimeout(timeoutId);
+        if(!platformEnabled()) clearTimeout(timeoutId);
 
         // Update rate-limiter + pacer from response headers — regardless of
         // whether the response was OK. Throttle signals travel on error
@@ -249,9 +274,18 @@ export class MetaApiClient {
         this.maybeLogUsage();
         this.maybeLogVersionWarning(response.headers);
 
-        const body = (await response.json()) as unknown;
+        let body:unknown;
+        try { body=platformEnabled()?JSON.parse(await readBodyWithLimit(response,2_000_000)):await response.json(); }
+        finally { clearTimeout(timeoutId); }
 
         if (isMetaApiError(body)) {
+          if(platformEnabled()) {
+            if(!body.error || !Number.isSafeInteger(body.error.code))throw new PlatformDenied("LEGACY_PROVIDER_ERROR_SCHEMA_INVALID");
+            body.error.message="Strict provider request failed; inspect safe code and request identifiers.";
+            delete body.error.error_user_title;delete body.error.error_user_msg;
+            if(typeof body.error.fbtrace_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.error.fbtrace_id) || /^EAA[A-Za-z0-9]{20,}$/.test(body.error.fbtrace_id))delete body.error.fbtrace_id;
+            if(typeof body.error.error_subcode !== "number" || !Number.isFinite(body.error.error_subcode))delete body.error.error_subcode;
+          }
           const classification = classifyMetaError(body.error);
           this.logMetaError(body.error, classification, context, path);
 
@@ -281,7 +315,7 @@ export class MetaApiClient {
 
         if (!response.ok) {
           lastError = new Error(
-            `HTTP ${response.status}: ${JSON.stringify(body)}`,
+            platformEnabled()?`Strict provider HTTP ${response.status}`:`HTTP ${response.status}: ${JSON.stringify(body)}`,
           );
           if (response.status >= 500 && canRetryTransport && attempt < this.maxRetries) {
             await this.backoff(attempt);
@@ -290,8 +324,10 @@ export class MetaApiClient {
           throw lastError;
         }
 
-        return body as T;
+        return projectLegacyReadResponse(path,url,body) as T;
       } catch (error) {
+        if(error instanceof PlatformDenied)throw error;
+        if(platformEnabled()&&(error instanceof BodyTooLargeError||error instanceof SyntaxError))throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_INVALID_OR_TOO_LARGE");
         if (error instanceof Error && error.name === "AbortError") {
           lastError = new Error(`Request timeout after ${this.timeout}ms`);
           if (canRetryTransport && attempt < this.maxRetries) {
@@ -302,11 +338,11 @@ export class MetaApiClient {
         }
 
         // Already-classified errors bubble up unchanged.
-        if (error instanceof Error && "code" in error) {
+        if (error instanceof Error && "code" in error && (!platformEnabled() || error instanceof McpError)) {
           throw error;
         }
 
-        lastError = error instanceof Error ? error : new Error(String(error));
+        lastError = platformEnabled() ? new Error("STRICT_PROVIDER_TRANSPORT_FAILED") : error instanceof Error ? error : new Error(String(error));
         if (canRetryTransport && attempt < this.maxRetries) {
           await this.backoff(attempt);
           continue;
@@ -405,7 +441,9 @@ export class MetaApiClient {
     this.lastVersionWarningAt = now;
     logger.warn(
       { event: "meta_api_version_auto_upgraded", apiVersion: this.apiVersion },
-      `Meta auto-upgraded a call because ${this.apiVersion} is deprecated: bump DEFAULT_META_API_VERSION in src/meta/api-version.ts. Meta said: ${warning}`,
+      platformEnabled()
+        ? "Meta reported an API version warning; review the configured supported version."
+        : `Meta auto-upgraded a call because ${this.apiVersion} is deprecated: bump DEFAULT_META_API_VERSION in src/meta/api-version.ts. Meta said: ${warning}`,
     );
   }
 
@@ -415,7 +453,8 @@ export class MetaApiClient {
     this.lastUsageLogAt = now;
     const snapshot = this.rateLimiter.snapshot();
     if (snapshot.length === 0) return;
-    const tier = snapshot.find((b) => b.adsApiAccessTier)?.adsApiAccessTier;
+    const rawTier = snapshot.find((b) => b.adsApiAccessTier)?.adsApiAccessTier;
+    const tier = platformEnabled() && !["development_access","standard_access","advanced_access"].includes(rawTier ?? "") ? undefined : rawTier;
     logger.info(
       {
         event: "meta_rate_usage",

@@ -1,3 +1,10 @@
+import { createApprovalRouter } from "../platform/approval-router.js";
+import { platformConnectionRouters } from "../platform/connection-runtime.js";
+import { initializeMessagingPolicyRuntime } from "../platform/messaging-runtime.js";
+import { initializeEnvironmentWebhooks } from "../platform/events/environment.js";
+import { initializeFirstPartySignalRuntime } from "../platform/signals-runtime.js";
+import { getPlatformRepository, platformEnabled } from "../platform/runtime.js";
+import { platformWebhookRouter } from "../platform/events/runtime.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isIP } from "node:net";
 import express from "express";
@@ -452,6 +459,11 @@ export async function startHttpTransport(
   );
   logger.info({ corsAllowedOrigins }, "CORS allowlist configured");
   app.use(cookieParser());
+  initializeMessagingPolicyRuntime();
+  initializeEnvironmentWebhooks();
+  initializeFirstPartySignalRuntime();
+  const webhooks = platformWebhookRouter();
+  if (webhooks) app.use("/webhooks/meta",webhooks);
   app.use(express.json({ limit: "10mb" }));
 
   app.use((_req, res, next) => {
@@ -476,6 +488,9 @@ export async function startHttpTransport(
   }
 
   const serverUrl = getServerUrl();
+  const platformConnections=platformConnectionRouters(serverUrl.origin);
+  if(platformConnections){app.use("/platform/oauth",platformConnections.oauth);app.use("/platform/connections",platformConnections.connections);}
+  if (platformEnabled()) app.use("/platform/approvals",createApprovalRouter({repo:getPlatformRepository(),origin:serverUrl.origin,csrfSecret:process.env.SESSION_COOKIE_SECRET ?? "",resolveSession:async req=>{const session=await getSession(req);return session?getPlatformRepository().resolvePrincipal(session.fbUserId):null;}}));
 
   if (config.multiTenantEnabled) {
     if (!isFirestoreEnabled()) {

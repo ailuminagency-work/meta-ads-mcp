@@ -1,3 +1,8 @@
+import { platformEnabled } from "./platform/runtime.js";
+import { installLegacyGuard } from "./platform/legacy-guard.js";
+import { LEGACY_MANIFEST } from "./platform/legacy-manifest.js";
+import { registerPlatformTools } from "./platform/tools.js";
+import { PLATFORM_SERVER_INSTRUCTIONS } from "./platform/instructions.js";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAllTools } from "./tools/index.js";
@@ -42,13 +47,18 @@ export function createServer(): McpServer {
       name: "meta-ads-mcp",
       version: serverVersion(),
     },
-    { instructions: SERVER_INSTRUCTIONS },
+    { instructions: platformEnabled()?PLATFORM_SERVER_INSTRUCTIONS:SERVER_INSTRUCTIONS },
   );
 
+  platformEnabled();
+  const finishLegacyRegistration = installLegacyGuard(server);
   registerAllTools(server);
+  finishLegacyRegistration();
+  if (platformEnabled()) registerPlatformTools(server,new Set(LEGACY_MANIFEST.map(t=>t.name)));
   if (process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true") {
     const tools = (server as unknown as { _registeredTools: Record<string, { annotations?: { readOnlyHint?: boolean }; disable(): void }> })._registeredTools;
     for (const [name, tool] of Object.entries(tools)) {
+      if(name==="meta_prepare_action")continue;
       if (tool.annotations?.readOnlyHint !== true || name === "ads_analyze_video" || name.startsWith("ads_library_")) tool.disable();
     }
   }
