@@ -1,10 +1,11 @@
+import type { Firestore } from "@google-cloud/firestore";
 import { createHmac } from "node:crypto";
 import express from "express";
 import type { Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMetaWebhookRouter, validSignature } from "../../src/platform/events/router.js";
 import { normalizeWebhook } from "../../src/platform/events/normalize.js";
-import { InMemoryAtomicDatabase, TransactionalEventStore } from "../../src/platform/events/store.js";
+import { InMemoryAtomicDatabase, TransactionalEventStore, firestoreEventDatabase } from "../../src/platform/events/store.js";
 import { EventWorker } from "../../src/platform/events/worker.js";
 import { EncryptedPayloadVault } from "../../src/platform/events/payload-vault.js";
 import type { EventProduct, WebhookSubscription } from "../../src/platform/events/types.js";
@@ -20,7 +21,7 @@ async function normalized() { return (await normalizeWebhook(raw, subscription, 
 
 describe("durable event semantics", () => {
   it("rechecks delivery authorization and never calls adapter after revocation", async () => {
-    const store = new TransactionalEventStore(new InMemoryAtomicDatabase()), event = await normalized();
+    const store = new TransactionalEventStore(new InMemoryAtomicDatabase(),()=>1000), event = await normalized();
     await store.enqueue([event]);
     let calls = 0;
     const worker = new EventWorker(store, { id: "crm", deliver: async () => { calls++; } }, async () => false, () => 1000);
@@ -28,7 +29,7 @@ describe("durable event semantics", () => {
     expect(calls).toBe(0);
   });
   it("deduplicates concurrent deliveries and grants exactly one live lease", async () => {
-    const store = new TransactionalEventStore(new InMemoryAtomicDatabase()), event = await normalized();
+    const store = new TransactionalEventStore(new InMemoryAtomicDatabase(),()=>1000), event = await normalized();
     const inserted = await Promise.all([store.enqueue([event]), store.enqueue([event])]);
     expect(inserted.reduce((sum, item) => sum + item.inserted, 0)).toBe(1);
     expect(await store.due(scope, 1000, 10)).toEqual([event.id]);
@@ -40,7 +41,7 @@ describe("durable event semantics", () => {
     expect(JSON.stringify(event)).not.toContain("never persisted");
   });
   it("fences stale leases and expires replay", async () => {
-    const store = new TransactionalEventStore(new InMemoryAtomicDatabase()), event = await normalized();
+    const store = new TransactionalEventStore(new InMemoryAtomicDatabase(),()=>1000), event = await normalized();
     await store.enqueue([event]);
     const first = (await store.claim(scope, event.id, 1000, 1000))!;
     const second = (await store.claim(scope, event.id, 2001, 1000))!;
@@ -49,7 +50,7 @@ describe("durable event semantics", () => {
     expect(await store.replay(scope, event.id, event.expiresAt)).toBe(false);
   });
   it("retries bounded failures, dead-letters, replays and checkpoints only success", async () => {
-    const store = new TransactionalEventStore(new InMemoryAtomicDatabase()), event = await normalized();
+    const store = new TransactionalEventStore(new InMemoryAtomicDatabase(),()=>1000), event = await normalized();
     await store.enqueue([event]);
     let now = 1000, fail = true;
     const worker = new EventWorker(store, { id: "crm", deliver: async (_event, context) => { expect(context.idempotencyKey).toBe(`crm:${event.id}`); if (fail) throw new Error("private downstream detail"); } }, async () => true, () => now);
@@ -95,7 +96,7 @@ describe("signature, schema and trusted mapping", () => {
 
 it("acknowledges only durable storage and verifies GET challenges", async () => {
   let fail = false;
-  const store = new TransactionalEventStore(new InMemoryAtomicDatabase());
+  const store = new TransactionalEventStore(new InMemoryAtomicDatabase(),()=>1000);
   const app = express();
   app.use("/webhooks/meta", createMetaWebhookRouter({ subscriptions: { get: async () => subscription }, secrets: { get: async ref => ref === "secret-ref" ? "synthetic-webhook-fixture" : "fixture-verify" }, mapAsset, store: { ...store, enqueue: async events => { if (fail) throw new Error("storage unavailable"); return store.enqueue(events); }, due: store.due.bind(store), claim: store.claim.bind(store), finish: store.finish.bind(store), replay: store.replay.bind(store), checkpoint: store.checkpoint.bind(store) } }));
   server = app.listen(0, "127.0.0.1");
@@ -116,4 +117,13 @@ it("optional payload vault stores authenticated ciphertext only", async () => {
   const pointer = await vault.put(Buffer.from("private-body"), "a".repeat(64), 1000);
   expect(pointer.expiresAt).toBe(1000);
   expect(JSON.stringify(stored)).not.toContain("private-body");
+});
+
+it("expires durable event checkpoints without silently extending or deleting their retention",async()=>{
+  let clock=1000;const store=new TransactionalEventStore(new InMemoryAtomicDatabase(),()=>clock),event=await normalized();await store.enqueue([event]);const claim=await store.claim(scope,event.id,1000,60000);expect(await store.finish(scope,event.id,claim!.leaseToken,1001,"delivered",1001,"ttl-fixture")).toBe(true);expect(await store.checkpoint(scope,"ttl-fixture")).toBe(event.id);clock=1001+90*86400000;await expect(store.checkpoint(scope,"ttl-fixture")).rejects.toThrow("expired_reconciliation_hold");
+});
+
+it("Firestore applies checkpoint90-day TTL separately from shorter event metadata retention",async()=>{
+  const rows=new Map<string,unknown>(),collection={doc:(id:string)=>({id})},db={collection:()=>collection,runTransaction:async(run:(tx:unknown)=>Promise<unknown>)=>{const writes:Array<()=>void>=[];const result=await run({get:async(ref:{id:string})=>({exists:rows.has(ref.id),data:()=>structuredClone(rows.get(ref.id))}),set:(ref:{id:string},value:unknown)=>writes.push(()=>rows.set(ref.id,structuredClone(value)))});writes.forEach(write=>write());return result;}} as unknown as Firestore;
+  const store=new TransactionalEventStore(firestoreEventDatabase(db),()=>1000),event=await normalized();await store.enqueue([event]);const claim=await store.claim(scope,event.id,1000,60000);await store.finish(scope,event.id,claim!.leaseToken,1001,"delivered",1001,"ttl-fixture");const checkpoint=[...rows.entries()].find(([key])=>key.startsWith("checkpoint_"))![1] as {expireTime:Date};const record=[...rows.entries()].find(([key])=>key.startsWith("event_"))![1] as {expireTime:Date};expect(checkpoint.expireTime).toEqual(new Date(1001+90*86400000));expect(record.expireTime).toEqual(new Date(event.expiresAt));
 });

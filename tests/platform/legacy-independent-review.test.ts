@@ -14,6 +14,7 @@ async function fixture(eligibility=true,eligibilityExpiresIn=3600000){
   const repo=new InMemoryPlatformRepository(),now=Date.now();
   await repo.put("tenants","tenant","tenant",{id:"tenant",status:"ACTIVE",policyRevision:1,registryRevision:1,migrationState:"READY"});
   await repo.put("members","tenant","operator",{operatorId:"operator",tenantId:"tenant",roles:["reader"],allowedClientIds:["client"],revision:1,disabledAt:null});
+await repo.put("operatorIndex","_index","operator",{operatorId:"operator",tenantId:"tenant"});
   await repo.put("clients","tenant","client",{id:"client",tenantId:"tenant",status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
   const asset={id:"101",key:"account",type:"AD_ACCOUNT" as const,tenantId:"tenant",clientId:"client",provider:"META_MARKETING" as const,appId:"app",parents:[],verifiedAt:now,revokedAt:null,revision:1};await repo.put("assets","tenant",asset.key,asset);
   const connection:Connection={id:"narrow",tenantId:"tenant",operatorId:"operator",provider:"META_MARKETING",appId:"app",authStrategy:"facebook_business",credentialId:"credential",tokenType:"user",scopes:["ads_read"],assetKeys:[asset.key],verifiedAt:now,expiresAt:now+3600000,revokedAt:null,revision:1,eligibility:eligibility?[{requirement:"marketing_read_access:v26.0",verified:true,source,checkedAt:now,expiresAt:now+eligibilityExpiresIn}]:[]};
@@ -57,7 +58,7 @@ describe("independent delayed read boundary",()=>{
     const {repo,read}=await fixture();const get=repo.get.bind(repo);let credentialsRead=0;
     repo.get=async(...args)=>{if(args[0]==="credentials"&&++credentialsRead===2)await repo.put("credentials","tenant","credential",encryptCredential({id:"credential",tenantId:"tenant",operatorId:"operator",provider:"META_MARKETING",appId:"app",keyVersion:"primary"},"synthetic-replaced"));return get(...args);};
     const fetcher=vi.fn();vi.stubGlobal("fetch",fetcher);
-    await expect(read()).rejects.toThrow("STRICT_CONNECTION_CREDENTIAL_CHANGED");expect(fetcher).not.toHaveBeenCalled();
+    await expect(read()).rejects.toThrow("AUTHORIZATION_CHANGED");expect(fetcher).not.toHaveBeenCalled();
   });
 });
 

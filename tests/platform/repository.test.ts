@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import {createHash} from "node:crypto";
+import { beforeEach,afterEach,describe, expect, it, vi } from "vitest";
 import type { Firestore } from "@google-cloud/firestore";
-import { FirestorePlatformRepository, type Preparation } from "../../src/platform/repository.js";
+import { FirestorePlatformRepository, InMemoryPlatformRepository, type Preparation } from "../../src/platform/repository.js";
 import { canonicalJson } from "../../src/platform/policy.js";
+import {OwnershipEvidenceService} from "../../src/platform/ownership-service.js";
+import {privacySubjectHash,PRIVACY_PROVENANCE_COLLECTION} from "../../src/platform/meta-privacy-provenance.js";
 
+beforeEach(()=>vi.stubEnv("META_APP_ID","300"));
+afterEach(()=>vi.unstubAllEnvs());
 function fakeFirestore(beforeGet?: () => void) {
   const data = new Map<string, unknown>();
   const calls: string[] = [];
@@ -22,12 +27,50 @@ function fakeFirestore(beforeGet?: () => void) {
 }
 function preparation():Preparation {return {operation:{id:"op",tenantId:"tenant",clientId:"client",actorId:"actor",tool:"write",planHash:"hash",state:"PREPARED",approvalId:null,createdAt:1,updatedAt:1},audit:{id:"op:prepared",tenantId:"tenant",clientId:"client",actorId:"actor",tool:"write",operationId:"op",event:"PREPARED",timestamp:1,assetKeys:[],planHash:"hash",approvalId:null},expectedRevisionHash:"revision",now:Date.now(),expectedRecords:[]};}
 describe("Firestore repository contract with fake database",()=>{
+  it("persists human ownership attestation TTL without leaking storage metadata into its authorization record",async()=>{
+    const fake=fakeFirestore(),repo=new FirestorePlatformRepository(fake.db),now=Date.now();
+    await repo.put("operatorIndex","_index","100",{operatorId:"100",tenantId:"tenant"});
+    await repo.put("tenants","tenant","tenant",{id:"tenant",status:"ACTIVE",migrationState:"READY",registryRevision:1,policyRevision:1});
+    await repo.put("members","tenant","100",{tenantId:"tenant",operatorId:"100",roles:["admin"],allowedClientIds:["client"],disabledAt:null,revision:1});
+    await repo.put("clients","tenant","client",{tenantId:"tenant",id:"client",status:"ACTIVE",revision:1,verifiedBusinessIds:["900"]});
+    await repo.put("assets","tenant","account",{key:"account",id:"101",type:"AD_ACCOUNT",provider:"META_MARKETING",appId:"300",tenantId:"tenant",clientId:"client",parents:[],verifiedAt:now,revokedAt:null,revision:1});
+    const result=await new OwnershipEvidenceService(repo).attest({operatorId:"100",tenantId:"tenant"},"client",{accountKey:"account",businessId:"900",documentReferenceHash:"a".repeat(64),expiresAt:now+86400000});
+    const persisted=[...fake.data.values()].find(v=>(v as {source?:string}).source==="CLIENT_OWNER_ATTESTATION") as Record<string,unknown>;
+    expect(persisted.expireTime).toBeInstanceOf(Date);
+    const loaded=await repo.get("ownerBillingAttestations","tenant",result.attestationId);expect(loaded).not.toHaveProperty("expireTime");expect(()=>canonicalJson(loaded)).not.toThrow();
+    expect((await repo.get("assets","tenant","account"))?.ownerBillingAttestationId).toBe(result.attestationId);
+    const provenance=[...fake.data.entries()].filter(([path])=>path.startsWith(`${PRIVACY_PROVENANCE_COLLECTION}/`)).map(([,record])=>record as Record<string,unknown>);
+    expect(provenance.find(r=>r.targetCollection==="ownerBillingAttestations")).toMatchObject({subjectHash:privacySubjectHash("300","100")});
+    expect(provenance.every(r=>r.operatorId===undefined&&r.appUserId===undefined)).toBe(true);
+    fake.data.set(`platform_meta_privacy_subject_locks/${privacySubjectHash("300","100")}`,{state:"ERASURE_PENDING"});
+    await expect(new OwnershipEvidenceService(repo).attest({operatorId:"100",tenantId:"tenant"},"client",{accountKey:"account",businessId:"900",documentReferenceHash:"a".repeat(64),expiresAt:now+86400000})).rejects.toThrow();
+    expect(await repo.list("ownerBillingAttestations","tenant")).toHaveLength(1);
+    const prepared=preparation();prepared.expectedRecords=[{collection:"ownerBillingAttestations",id:result.attestationId,canonical:canonicalJson(loaded)}];
+    await expect(repo.prepareOperation(prepared)).resolves.toBeUndefined();
+  });
+  it("rejects operation privacy metadata that differs from the selected authenticated connection",async()=>{
+    const fake=fakeFirestore(),repo=new FirestorePlatformRepository(fake.db),p=preparation(),connection={id:"selected",tenantId:"tenant",operatorId:"actor",provider:"META_THREADS" as const,appId:"400",subjectId:"901",metaAppUserId:"901",tokenType:"threads" as const,credentialId:"credential",authStrategy:"synthetic",assetKeys:[],scopes:["threads_basic"],expiresAt:Date.now()+60000,revokedAt:null,verifiedAt:Date.now(),revision:1};
+    await repo.put("connections","tenant",connection.id,connection);p.expectedRecords=[{collection:"connections",id:connection.id,canonical:canonicalJson(connection)}];p.operation.appId="400";p.operation.metaAppUserId="999";
+    await expect(repo.prepareOperation(p)).rejects.toThrow("OPERATION_PRIVACY_IDENTITY_BINDING_REQUIRED");expect(await repo.list("operations","tenant")).toHaveLength(0);
+  });
+  it("blocks Firestore enrollment atomically when a global app-user revocation lock exists",async()=>{
+    const fake=fakeFirestore(),repo=new FirestorePlatformRepository(fake.db),now=Date.now();
+    const tenant={id:"tenant",status:"ACTIVE" as const,migrationState:"READY" as const,registryRevision:1,policyRevision:1},member={tenantId:"tenant",operatorId:"actor",roles:["connection_admin"],allowedClientIds:["client"],disabledAt:null,revision:1},client={tenantId:"tenant",id:"client",status:"ACTIVE" as const,revision:1,verifiedBusinessIds:[]};
+    const asset={key:"page",id:"123",type:"PAGE" as const,provider:"META_FACEBOOK_PAGES" as const,appId:"456",tenantId:"tenant",clientId:"client",parents:[],verifiedAt:now,revokedAt:null,revision:1};
+    for(const [collection,id,value] of [["tenants","tenant",tenant],["members","actor",member],["clients","client",client],["assets","page",asset]] as const)await repo.put(collection,"tenant",id,value as never);
+    const connection={id:"connection",tenantId:"tenant",operatorId:"actor",provider:"META_FACEBOOK_PAGES" as const,appId:"456",subjectId:"123",credentialId:"credential",authStrategy:"fixture",tokenType:"page" as const,scopes:["pages_read_engagement"],assetKeys:["page"],expiresAt:now+3600000,revokedAt:null,verifiedAt:now,revision:1};
+    const lock=createHash("sha256").update(JSON.stringify(["meta-app-user","456","actor"])).digest("hex");fake.data.set("platform_lifecycle_locks/"+lock,{state:"UNKNOWN",expiresAt:now-1});
+    const before=fake.data.size;
+    await expect(repo.commitControlPlane({tenantId:"tenant",expected:[{collection:"tenants",id:"tenant",canonical:canonicalJson(tenant)},{collection:"members",id:"actor",canonical:canonicalJson(member)},{collection:"clients",id:"client",canonical:canonicalJson(client)},{collection:"assets",id:"page",canonical:canonicalJson(asset)}],writes:[{collection:"connections",id:"connection",value:connection,createOnly:true}],audit:{id:"enrollment",tenantId:"tenant",clientId:"client",actorId:"actor",event:"CONNECTION_ENROLLED",timestamp:now,subjectId:"connection",planHash:"hash"}})).rejects.toThrow("APP_USER_LIFECYCLE_ENROLLMENT_LOCKED");
+    expect(fake.data.size).toBe(before);expect(fake.calls.filter(c=>c==="create"||c==="set")).toEqual([]);
+  });
   it("roundtrips approval TTL metadata without leaking Date values into canonical CAS", async () => {
     const fake = fakeFirestore(), repo = new FirestorePlatformRepository(fake.db), now = Date.now();
     const tenant = { id: "tenant", status: "ACTIVE" as const, policyRevision: 1, registryRevision: 1, migrationState: "READY" as const };
     const member = { operatorId: "actor", tenantId: "tenant", roles: ["writer"], allowedClientIds: ["client"], revision: 1, disabledAt: null };
     const client = { id: "client", tenantId: "tenant", status: "ACTIVE" as const, revision: 1, verifiedBusinessIds: [] };
     await repo.put("tenants", "tenant", "tenant", tenant); await repo.put("members", "tenant", "actor", member); await repo.put("clients", "tenant", "client", client);
+    await repo.put('operatorIndex','_index','actor',{operatorId:'actor',tenantId:'tenant'});
     const expected = [{ collection: "tenants" as const, id: "tenant", canonical: canonicalJson(tenant) }, { collection: "members" as const, id: "actor", canonical: canonicalJson(member) }, { collection: "clients" as const, id: "client", canonical: canonicalJson(client) }];
     const request = { id: "request", tenantId: "tenant", clientId: "client", actorId: "actor", tool: "pages_create_feed", provider: "META_FACEBOOK_PAGES" as const, planHash: "hash", revisionHash: "revision", expiresAt: now + 60000, approvedAt: null, approvalId: null, encryptedPlan: { ciphertext: "fixture", iv: "fixture", tag: "fixture" } };
     await repo.commitControlPlane({ tenantId: "tenant", expected, writes: [{ collection: "approvalRequests", id: request.id, value: request, createOnly: true }], audit: { id: "audit-created", tenantId: "tenant", clientId: "client", actorId: "actor", event: "APPROVAL_REQUESTED", timestamp: now, subjectId: request.id, planHash: "hash" } });
@@ -44,6 +87,9 @@ describe("Firestore repository contract with fake database",()=>{
     vi.spyOn(Date, "now").mockImplementation(() => now);
     try {
       const fake = fakeFirestore(() => { now = 2000; }), repo = new FirestorePlatformRepository(fake.db);
+      // These absent context markers isolate delayed expiry; current global identity
+      // ownership remains explicit so the earlier index guard cannot mask it.
+      for(const operatorId of ['actor','missing'])await repo.put('operatorIndex','_index',operatorId,{operatorId,tenantId:'tenant'});
       const request = { id: "request", tenantId: "tenant", clientId: "client", actorId: "actor", tool: "pages_create_feed", provider: "META_FACEBOOK_PAGES" as const, planHash: "hash", revisionHash: "revision", expiresAt: 1500, approvedAt: 1000, approvalId: "approval", encryptedPlan: { ciphertext: "fixture", iv: "fixture", tag: "fixture" } };
       await expect(repo.commitControlPlane({ tenantId: "tenant", expected: ["tenants", "members", "clients"].map(collection => ({ collection: collection as "tenants" | "members" | "clients", id: "missing", canonical: "null" })), writes: [{ collection: "approvalRequests", id: request.id, value: request, createOnly: true }], audit: { id: "audit", tenantId: "tenant", clientId: "client", actorId: "actor", event: "APPROVAL_ISSUED", timestamp: 1000, subjectId: request.id, planHash: "hash" } })).rejects.toThrow("EXPIRED_AT_COMMIT");
       expect(fake.calls).not.toContain("create"); expect(fake.calls).not.toContain("set");
@@ -89,3 +135,28 @@ describe("Firestore atomic created-asset completion",()=>{
     expect(fake.calls.filter(c=>c==="create")).toHaveLength(creates);expect((await repo.get("operations","tenant","op"))?.state).toBe("PREPARED");expect(await repo.get("grants","tenant","child-grant")).toBeNull();
   });
 });
+
+describe("atomic ordered carousel child claims",()=>{
+ for(const backend of ["memory","firestore"] as const)for(const mode of ["success","changed-child","duplicate","wrong-kind","missing"] as const)it(backend+":"+mode,async()=>{
+ const repo=backend==="memory"?new InMemoryPlatformRepository():new FirestorePlatformRepository(fakeFirestore().db),p=preparation();p.operation.tool="instagram_create_carousel_container";p.audit.tool=p.operation.tool;
+ const children=["11","12"].map(id=>({key:id,id,type:"MEDIA" as const,provider:"META_INSTAGRAM_FACEBOOK_LOGIN" as const,appId:"300",tenantId:"tenant",clientId:"client",parents:[],verifiedAt:p.now,revokedAt:null,revision:1,productKind:"instagram_carousel_item" as const}));
+ for(const child of children)await repo.put("assets","tenant",child.key,child);
+ const connection={id:"selected",tenantId:"tenant",operatorId:"actor",provider:"META_INSTAGRAM_FACEBOOK_LOGIN" as const,appId:"300",subjectId:"901",metaAppUserId:"901",tokenType:"user" as const,credentialId:"credential",authStrategy:"synthetic",assetKeys:[],scopes:[],expiresAt:p.now+60000,revokedAt:null,verifiedAt:p.now,revision:1};await repo.put("connections","tenant",connection.id,connection);p.operation.appId="300";p.operation.metaAppUserId="901";
+ p.expectedRecords=children.map(child=>({collection:"assets" as const,id:child.key,canonical:canonicalJson(child)}));
+ p.expectedRecords.push({collection:"connections",id:connection.id,canonical:canonicalJson(connection)});
+ p.publicationClaims=children.map(before=>({before,after:{...before,revision:2,publicationClaim:{operationId:p.operation.id,claimedAt:p.now}}}));
+ if(mode==="changed-child")await repo.put("assets","tenant","12",{...children[1],revision:2});
+ if(mode==="duplicate")p.publicationClaims[1]=p.publicationClaims[0];
+ if(mode==="wrong-kind")p.publicationClaims[1].before={...p.publicationClaims[1].before,productKind:"instagram_container"};
+ if(mode==="missing")delete p.publicationClaims;
+ if(mode==="success"){await repo.prepareOperation(p);for(const child of children)expect((await repo.get("assets","tenant",child.key))?.publicationClaim?.operationId).toBe("op");await expect(repo.prepareOperation(p)).rejects.toThrow();}
+ else{await expect(repo.prepareOperation(p)).rejects.toThrow();expect((await repo.get("assets","tenant","11"))?.publicationClaim).toBeUndefined();expect(await repo.list("operations","tenant")).toHaveLength(0);}
+ });
+});
+describe("permanent AD deletion claim preparation",()=>{it.each(["memory","firestore"] as const)("atomically consumes approval and reserves exact claim in %s",async kind=>{const repo=kind==="memory"?new InMemoryPlatformRepository():new FirestorePlatformRepository(fakeFirestore().db),p=preparation(),now=Date.now(),member={operatorId:"actor",tenantId:"tenant",roles:["admin"],allowedClientIds:["client"],disabledAt:null,revision:1},asset={key:"ad",id:"401",type:"AD" as const,provider:"META_MARKETING" as const,appId:"300",tenantId:"tenant",clientId:"client",parents:[],verifiedAt:now,revokedAt:null,revision:1};await repo.put("members","tenant","actor",member);await repo.put("assets","tenant","ad",asset);await repo.put("approvals","tenant","approval",{id:"approval",tenantId:"tenant",clientId:"client",actorId:"actor",approverId:"actor",approverRevision:1,planHash:"hash",revisionHash:"revision",expiresAt:now+60000,consumedAt:null});p.operation.tool=p.audit.tool="marketing_delete_paused_ad";const connection={id:"connection",tenantId:"tenant",operatorId:"actor",provider:"META_MARKETING" as const,appId:"300",metaAppUserId:"100",subjectId:"100",credentialId:"credential",tokenType:"user" as const,authStrategy:"synthetic",scopes:["ads_management"],assetKeys:["ad"],verifiedAt:now,expiresAt:now+60000,revokedAt:null,revision:1};await repo.put("connections","tenant","connection",connection);p.operation.appId="300";p.operation.metaAppUserId="100";p.operation.approvalId=p.audit.approvalId=p.approvalId="approval";p.now=now;p.expectedRecords=[{collection:"connections",id:"connection",canonical:canonicalJson(connection)},{collection:"members",id:"actor",canonical:canonicalJson(member)},{collection:"assets",id:"ad",canonical:canonicalJson(asset)}];p.deletionClaim={before:asset,after:{...asset,revision:2,deletionClaim:{operationId:p.operation.id,claimedAt:now}}};await repo.prepareOperation(p);expect((await repo.get("assets","tenant","ad"))?.deletionClaim?.operationId).toBe("op");expect((await repo.get("approvals","tenant","approval"))?.consumedAt).toBe(now);await expect(repo.prepareOperation({...p,operation:{...p.operation,id:"second"},audit:{...p.audit,id:"second:prepared",operationId:"second"}})).rejects.toThrow();});});
+import {enrollClient,clientEnrollmentHash} from '../../src/platform/client-enrollment.js';
+it.each(['success','rebound-index'])('actual Firestore client enrollment checks the global operator-index atomically: %s',async mode=>{const fake=fakeFirestore(),repo=new FirestorePlatformRepository(fake.db),principal={tenantId:'tenant',operatorId:'100'};await repo.put('operatorIndex','_index','100',principal);await repo.put('tenants','tenant','tenant',{id:'tenant',status:'ACTIVE',migrationState:'READY',registryRevision:1,policyRevision:1});await repo.put('members','tenant','100',{...principal,roles:['admin'],allowedClientIds:['old-client'],revision:1,disabledAt:null});const hash=clientEnrollmentHash(await repo.get('members','tenant','100')),original=repo.commitControlPlane.bind(repo);if(mode==='rebound-index')repo.commitControlPlane=async input=>{await repo.put('operatorIndex','_index','100',{operatorId:'100',tenantId:'foreign'});return original(input);};const invoke=()=>enrollClient(repo,principal,{clientId:'new-client',documentReferenceHash:'a'.repeat(64),roots:[{provider:'META_MARKETING',appId:'300',type:'AD_ACCOUNT',id:'123',parents:[]}]},hash);if(mode==='success'){expect(await invoke()).toMatchObject({grants_created:0,provider_calls:0});expect(await repo.get('clients','tenant','new-client')).not.toBeNull();expect((await repo.list('grants','tenant'))).toEqual([]);}else{await expect(invoke()).rejects.toThrow('CLIENT_ENROLLMENT_OPERATOR_INDEX_CHANGED');expect(await repo.get('clients','tenant','new-client')).toBeNull();expect((await repo.get('members','tenant','100'))?.allowedClientIds).toEqual(['old-client']);}});
+
+describe("explicit operation connection amid owner-evidence connections",()=>{it.each(["memory","firestore"] as const)("binds operation privacy to only selected connection in %s",async kind=>{for(const mode of ["selected","missing","foreign"]){const repo=kind==="memory"?new InMemoryPlatformRepository():new FirestorePlatformRepository(fakeFirestore().db),p=preparation(),now=Date.now(),selected={id:"target",tenantId:"tenant",operatorId:"actor",provider:"META_MARKETING" as const,appId:"300",metaAppUserId:"100",subjectId:"100",credentialId:"target-credential",tokenType:"user" as const,authStrategy:"synthetic",scopes:["ads_management"],assetKeys:[],verifiedAt:now,expiresAt:now+60000,revokedAt:null,revision:1},source={...selected,id:"business-proof",provider:"META_BUSINESS" as const,appId:"900",metaAppUserId:"200",subjectId:"200",credentialId:"business-credential"};for(const c of [selected,source]){await repo.put("connections","tenant",c.id,c);p.expectedRecords.push({collection:"connections",id:c.id,canonical:canonicalJson(c)});}p.operation.appId="300";p.operation.metaAppUserId="100";if(mode!=="missing")p.selectedConnectionId=mode==="selected"?selected.id:source.id;if(mode==="selected"){await repo.prepareOperation(p);expect((await repo.get("operations","tenant","op"))?.metaAppUserId).toBe("100");}else{await expect(repo.prepareOperation(p)).rejects.toThrow("OPERATION_PRIVACY_IDENTITY_BINDING_REQUIRED");expect(await repo.list("operations","tenant")).toHaveLength(0);}}});});
+
+it.each(['memory','firestore'] as const)('rejects corrupted approval deadlines without consuming the approval or creating audit in %s',async kind=>{for(const expiresAt of [NaN,Infinity,-1,0]){const repo=kind==='memory'?new InMemoryPlatformRepository():new FirestorePlatformRepository(fakeFirestore().db),p=preparation();p.approvalId=p.operation.approvalId=p.audit.approvalId='approval';await repo.put('members','tenant','human',{operatorId:'human',tenantId:'tenant',roles:['approver'],allowedClientIds:['client'],revision:1,disabledAt:null});await repo.put('approvals','tenant','approval',{id:'approval',tenantId:'tenant',clientId:'client',actorId:'actor',approverId:'human',approverRevision:1,planHash:'hash',revisionHash:'revision',expiresAt,consumedAt:null,operationId:null});await expect(repo.prepareOperation(p)).rejects.toThrow('APPROVAL_INVALID_OR_REPLAYED');expect(await repo.list('operations','tenant')).toHaveLength(0);expect(await repo.list('audit','tenant')).toHaveLength(0);expect((await repo.get('approvals','tenant','approval'))?.consumedAt).toBeNull();}});

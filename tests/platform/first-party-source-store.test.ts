@@ -46,7 +46,7 @@ describe("trusted encrypted first-party source store",()=>{
     await expect(store.resolve(scope,raw.source_reference,raw.consent_reference)).rejects.toThrow("BINDING_INVALID_HOLD");
   });
   it("rolls back record and audit on storage failure without printing payload",async()=>{
-    const {storage}=fixture(),{raw,evidence}=payload();const store=new TrustedFirstPartySourceStore({get:async()=>{throw new Error(raw.user_data.em);},transaction:async run=>storage.transaction(async tx=>{await run(tx);throw new Error(raw.user_data.em);})},{approvedIngestionAdapterId:adapter,now:()=>now});
+    const {storage}=fixture(),{raw,evidence}=payload();const store=new TrustedFirstPartySourceStore({getRevocation:id=>storage.getRevocation(id),get:async()=>{throw new Error(raw.user_data.em);},transaction:async run=>storage.transaction(async tx=>{await run(tx);throw new Error(raw.user_data.em);})},{approvedIngestionAdapterId:adapter,now:()=>now});
     await expect(store.ingestVerified(adapter,scope,raw,evidence)).rejects.toThrow(/^TRUSTED_SOURCE_STORAGE_UNAVAILABLE_HOLD$/);expect(storage.records.size).toBe(0);expect(storage.audits).toHaveLength(0);
     await expect(store.resolve(scope,raw.source_reference,raw.consent_reference)).rejects.toThrow(/^TRUSTED_SOURCE_STORAGE_OR_INTEGRITY_HOLD$/);
   });
@@ -58,12 +58,12 @@ function firestoreFake(){
 it("Firestore uses hashed document IDs, encrypted rows, Date TTL and atomic metadata audit",async()=>{
   const fake=firestoreFake(),store=new TrustedFirstPartySourceStore(new FirestoreFirstPartySourceStorage(fake.db),{approvedIngestionAdapterId:adapter,now:()=>now}),{raw,evidence}=payload();await store.ingestVerified(adapter,scope,raw,evidence);
   expect(fake.data.size).toBe(2);for(const [key,row]of fake.data){expect(key.split("/")[1]).toMatch(/^[a-f0-9]{64}$/);expect(row.expireTime).toBeInstanceOf(Date);expect(JSON.stringify(row)).not.toContain(raw.user_data.em);}
-  expect(await store.resolve(scope,raw.source_reference,raw.consent_reference)).toEqual({raw,evidence});await store.revokeVerified(adapter,scope,raw.source_reference,raw.consent_reference);expect(fake.data.size).toBe(3);expect(await store.resolve(scope,raw.source_reference,raw.consent_reference)).toBeNull();
+  expect(await store.resolve(scope,raw.source_reference,raw.consent_reference)).toEqual({raw,evidence});await store.revokeVerified(adapter,scope,raw.source_reference,raw.consent_reference);expect(fake.data.size).toBe(4);expect(await store.resolve(scope,raw.source_reference,raw.consent_reference)).toBeNull();
 });
 
 it("rechecks expiry after delayed transaction reads before storing anything",async()=>{
   const {storage}=fixture(),{raw,evidence}=payload();evidence.expiresAt=now+10;
-  const store=new TrustedFirstPartySourceStore({get:id=>storage.get(id),transaction:run=>storage.transaction(tx=>run({...tx,get:async id=>{const row=await tx.get(id);now+=11;return row;}}))},{approvedIngestionAdapterId:adapter,now:()=>now});
+  const store=new TrustedFirstPartySourceStore({getRevocation:id=>storage.getRevocation(id),get:id=>storage.get(id),transaction:run=>storage.transaction(tx=>run({...tx,get:async id=>{const row=await tx.get(id);now+=11;return row;}}))},{approvedIngestionAdapterId:adapter,now:()=>now});
   await expect(store.ingestVerified(adapter,scope,raw,evidence)).rejects.toThrow("EXPIRED_AT_COMMIT");expect(storage.records.size).toBe(0);expect(storage.audits).toHaveLength(0);
 });
 it("rejects ciphertext transplanted across exact scoped bindings",async()=>{
@@ -71,4 +71,19 @@ it("rejects ciphertext transplanted across exact scoped bindings",async()=>{
   const otherScope={...scope,clientId:"other"},other=payload();other.evidence.clientId="other";const secondId=await store.ingestVerified(adapter,otherScope,other.raw,other.evidence);
   storage.records.get(secondId)!.encrypted=storage.records.get(firstId)!.encrypted;
   await expect(store.resolve(otherScope,other.raw.source_reference,other.raw.consent_reference)).rejects.toThrow("INTEGRITY_HOLD");
+});
+
+it("records absent-source revocation tombstone and rejects a delayed valid ingestion",async()=>{
+  const {store,storage}=fixture(),{raw,evidence}=payload();
+  expect(await store.revokeVerified(adapter,scope,raw.source_reference,raw.consent_reference)).toBe(true);expect(storage.records.size).toBe(0);expect(storage.revocations.size).toBe(1);expect(storage.audits.map(a=>a.event)).toEqual(["REVOKED"]);expect(storage.audits[0]).not.toHaveProperty("payloadDigest");
+  await expect(store.ingestVerified(adapter,scope,raw,evidence)).rejects.toThrow("CONFLICT_OR_REVOKED");expect(await store.resolve(scope,raw.source_reference,raw.consent_reference)).toBeNull();expect(storage.records.size).toBe(0);
+});
+it("concurrent revocation and ingestion cannot leave authorized evidence",async()=>{
+  const {store,storage}=fixture(),{raw,evidence}=payload();const outcomes=await Promise.allSettled([store.revokeVerified(adapter,scope,raw.source_reference,raw.consent_reference),store.ingestVerified(adapter,scope,raw,evidence)]);
+  expect(outcomes[0].status).toBe("fulfilled");expect(storage.revocations.size).toBe(1);expect(await store.resolve(scope,raw.source_reference,raw.consent_reference)).toBeNull();
+});
+it("Firestore absent-source revocation atomically creates a 90-day tombstone and metadata audit",async()=>{
+  const fake=firestoreFake(),store=new TrustedFirstPartySourceStore(new FirestoreFirstPartySourceStorage(fake.db),{approvedIngestionAdapterId:adapter,now:()=>now}),{raw,evidence}=payload();
+  expect(await store.revokeVerified(adapter,scope,raw.source_reference,raw.consent_reference)).toBe(true);expect(fake.data.size).toBe(2);for(const[key,row]of fake.data){expect(key).not.toContain(raw.source_reference);expect(row.expireTime).toEqual(new Date(now+90*86400000));expect(JSON.stringify(row)).not.toContain("private-");}
+  await expect(store.ingestVerified(adapter,scope,raw,evidence)).rejects.toThrow("CONFLICT_OR_REVOKED");expect(fake.data.size).toBe(2);expect(await store.revokeVerified(adapter,scope,raw.source_reference,raw.consent_reference)).toBe(false);
 });

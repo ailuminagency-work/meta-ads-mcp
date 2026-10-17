@@ -1,3 +1,9 @@
+import {WHATSAPP_ANALYTICS_CONTRACTS} from "../../src/platform/whatsapp-analytics-contracts.js";
+import {MetaGraphClient} from "../../src/platform/clients.js";
+import {WHATSAPP_PHONE_CONTRACTS} from "../../src/platform/whatsapp-phone-contracts.js";
+import {WHATSAPP_TEMPLATE_CONTRACTS} from "../../src/platform/whatsapp-template-contracts.js";
+import {WHATSAPP_FLOW_CONTRACTS} from "../../src/platform/whatsapp-flow-contracts.js";
+import {WHATSAPP_SUBSCRIPTION_CONTRACTS} from "../../src/platform/whatsapp-subscription-contracts.js";
 import { describe, expect, it } from "vitest";
 import { PRODUCT_CONTRACTS, validateProductContracts, type ProductContract } from "../../src/platform/products/contracts.js";
 import { resolveAuthorizedAssets } from "../../src/platform/assets.js";
@@ -8,24 +14,54 @@ const executable = PRODUCT_CONTRACTS.find(contract => contract.tool === "messeng
 function modified(change: Partial<ProductContract>): ProductContract { return { ...executable, ...change }; }
 
 describe("product contract trust boundaries", () => {
+  it("registers each reviewed dedicated WhatsApp contract exactly once and rejects generic bypass",async()=>{
+    for(const definitions of [WHATSAPP_PHONE_CONTRACTS,WHATSAPP_TEMPLATE_CONTRACTS,WHATSAPP_FLOW_CONTRACTS,WHATSAPP_SUBSCRIPTION_CONTRACTS,WHATSAPP_ANALYTICS_CONTRACTS])for(const definition of definitions){
+      const matches=PRODUCT_CONTRACTS.filter(c=>c.tool===definition.tool);expect(matches).toHaveLength(1);expect(matches[0]!.verified).toBe(true);
+      await expect(new MetaGraphClient("META_WHATSAPP",async()=>{throw new Error("network must never execute");}).request(matches[0]!,"1",{})).rejects.toThrow("DEDICATED_WHATSAPP_");
+    }
+  });
+  it("bounds catalog reads to admin-scoped metadata without feed credentials or schedules", () => {
+    for (const tool of ["catalog_list_products", "catalog_list_product_sets", "catalog_list_product_feeds"]) {
+      const contract = PRODUCT_CONTRACTS.find(c => c.tool === tool)!;
+      expect(contract.verified).toBe(true);
+      expect(contract.requiredScopes).toEqual(["catalog_management", "business_management", "pages_read_engagement", "pages_show_list"]);
+      expect(contract.requiredTasks).toEqual(["MANAGE"]);
+      expect(contract.tokenTypes).toEqual(["user"]);
+      expect(contract.allowedInputKeys).toEqual([]);
+      expect(contract.responseFields?.some(field => /schedule|url|password|filter/.test(field))).toBe(false);
+      expect(contract.fixedQuery?.fields).not.toMatch(/schedule|url|password|filter/);
+    }
+  });
+  it("bounds client-owned Business reads to reviewed metadata and user-token requirements", () => {
+    for (const tool of ["business_get", "business_list_users", "business_list_system_users"]) {
+      const contract = PRODUCT_CONTRACTS.find(c => c.tool === tool)!;
+      expect(contract.verified).toBe(true);
+      expect(contract.requiredScopes).toEqual(["business_management", "pages_read_engagement", "pages_show_list"]);
+      expect(contract.tokenTypes).toEqual(["user"]);
+      expect(contract.allowedInputKeys).toEqual([]);
+      expect(contract.fixedQuery?.fields).not.toContain("email");
+      expect(contract.responseFields?.some(field => /email|token|finance/.test(field))).toBe(false);
+      expect(contract.manualRequirements.join(" ")).toContain("not an agency-wide business");
+    }
+    expect(PRODUCT_CONTRACTS.find(c => c.tool === "business_list_client_pages")!.verified).toBe(true);
+  });
   it("keeps verified Pixel signal dispatch reference-only and Dataset mapping unresolved",()=>{
     const pixel=PRODUCT_CONTRACTS.find(c=>c.tool==="signals_send_pixel_events")!,dataset=PRODUCT_CONTRACTS.find(c=>c.tool==="signals_send_events")!;
-    expect(pixel.verified).toBe(true);expect(pixel.assetType).toBe("PIXEL");expect(pixel.allowedInputKeys).toEqual(["source_reference","consent_reference"]);expect(pixel.responseFields).toEqual(["events_received"]);expect(pixel.tokenTypes).toEqual(["system_user"]);expect(pixel.requiredScopes).toEqual(["ads_management","pages_read_engagement","ads_read"]);expect(dataset.verified).toBe(false);expect(dataset.assetType).toBe("DATASET");
+    expect(pixel.verified).toBe(true);expect(pixel.assetType).toBe("PIXEL");expect(pixel.allowedInputKeys).toEqual(["source_reference","consent_reference"]);expect(pixel.responseFields).toEqual(["events_received"]);expect(pixel.tokenTypes).toEqual(["system_user"]);expect(pixel.requiredScopes).toEqual(["ads_management","pages_read_engagement","ads_read","pages_show_list"]);expect(dataset.verified).toBe(false);expect(dataset.assetType).toBe("DATASET");
   });
   it("limits lead reads to registered metadata without contact field expansion",()=>{
     const lead=PRODUCT_CONTRACTS.find(c=>c.tool==="leads_get_lead")!;expect(lead.verified).toBe(true);expect(lead.assetType).toBe("LEAD");expect(lead.fixedQuery).toEqual({fields:"id,created_time"});expect(lead.responseFields).toEqual(["id","created_time"]);expect(lead.allowedInputKeys).toEqual([]);expect(lead.requiredScopes).toContain("leads_retrieval");expect(lead.manualRequirements.join(" ")).toContain("LEAD_FORM, PAGE and AD_ACCOUNT");
   });
   it("verifies WhatsApp reads with scoped tokens and exact safe metadata fields", () => {
-    const reads = PRODUCT_CONTRACTS.filter(c => c.product === "whatsapp" && c.verified && c.method === "GET");
-    expect(reads.map(c => c.tool).sort()).toEqual(["whatsapp_platform_get_phone", "whatsapp_platform_list_phones", "whatsapp_platform_list_templates"]);
+    const reads = PRODUCT_CONTRACTS.filter(c => WHATSAPP_PHONE_CONTRACTS.some(definition=>definition.tool===c.tool) && c.method==="GET");
+    expect(reads.map(c => c.tool).sort()).toEqual(["whatsapp_platform_get_phone", "whatsapp_platform_get_profile", "whatsapp_platform_list_phones"]);
     for (const c of reads) {
-      expect(c.requiredScopes).toEqual(["whatsapp_business_management"]);
-      expect(c.tokenTypes).toEqual(["system_user", "business_integration_system_user"]);
+      expect(c.requiredScopes).toEqual(c.tool === "whatsapp_platform_get_profile" ? ["whatsapp_business_management", "whatsapp_business_messaging"] : ["whatsapp_business_management"]);
+      expect(c.tokenTypes).toEqual(["business_integration_system_user"]);
       expect(c.operationClasses).toEqual(["READ"]);
       expect(c.allowedInputKeys).toEqual([]);
-      expect(c.manualRequirements.join(" ")).toContain("both the client-owned WhatsApp account");
+      expect(c.manualRequirements.join(" ")).toContain("WhatsApp Account and Messaging Account dual assignment");
     }
-    expect(reads.find(c=>c.tool === "whatsapp_platform_list_templates")?.fixedQuery).toEqual({fields:"name,category,status"});
     expect(reads.filter(c=>c.assetType !== "WHATSAPP_PHONE").every(c=>c.assetType === "MESSAGING_ACCOUNT")).toBe(true);
   });
   it.each(["valid", "missing-waac", "missing-messaging", "cross-client-waac", "stale-messaging", "foreign-app-messaging"])("checks WhatsApp phone with %s dual-account evidence", async mode => {
@@ -101,3 +137,5 @@ describe("product contract trust boundaries", () => {
     expect(PRODUCT_CONTRACTS.filter(contract => contract.provider === "META_THREADS").every(contract => contract.tokenTypes.every(type => type === "threads"))).toBe(true);
   });
 });
+
+it.each(["pages_create_videos","pages_get_video_status"])("actual central video contract is verified: %s",tool=>{const matches=PRODUCT_CONTRACTS.filter(c=>c.tool===tool);expect(matches).toHaveLength(1);expect(matches[0].verified).toBe(true);});

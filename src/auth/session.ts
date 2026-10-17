@@ -1,3 +1,4 @@
+import {isMetaPrincipalPrivacyLocked} from "../platform/meta-privacy-access.js";
 import crypto from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import type { Request, Response } from "express";
@@ -113,6 +114,7 @@ export async function getSession(
       audience: SESSION_AUDIENCE,
     });
     if (typeof payload.fb !== "string") return null;
+    if(await isMetaPrincipalPrivacyLocked(payload.fb))return null;
     if (typeof payload.jti !== "string") return null;
     if (!(await sessionJtiStore.has(payload.jti))) return null;
     return {

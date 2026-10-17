@@ -1,0 +1,36 @@
+import { z } from "zod";
+import { readBodyWithLimit } from "../utils/bounded-body.js";
+import { PlatformDenied, type Connection, type Provider } from "./models.js";
+import type { LifecycleInspection, VerifiedLifecycleAdapter } from "./lifecycle.js";
+import { canonicalJson } from "./policy.js";
+
+export const LIFECYCLE_PROVIDER_SOURCES=Object.freeze(["https://developers.facebook.com/documentation/facebook-login/guides/permissions/request-revoke","https://developers.facebook.com/documentation/facebook-login/guides/access-tokens/get-long-lived","https://developers.facebook.com/documentation/threads/get-started/long-lived-tokens","https://developers.facebook.com/documentation/threads/troubleshooting/debug-access-token"]);
+const id=z.string().regex(/^[0-9]{1,100}$/),seconds=z.number().int().positive().max(3153600000),token=z.string().min(1).max(16384).regex(/^[^\s\x00-\x1f\x7f]+$/);
+const refreshed=z.object({access_token:token,token_type:z.literal("bearer"),expires_in:seconds});
+export class MetaLifecycleAdapter implements VerifiedLifecycleAdapter {
+  readonly verified=true as const;readonly supportsProviderRevocation:boolean;
+  constructor(readonly provider:"META_MARKETING"|"META_BUSINESS"|"META_THREADS",private readonly secrets:{get(provider:Provider,appId:string):Promise<string>},private readonly fetcher:typeof fetch=fetch,private readonly clock:()=>number=Date.now){this.supportsProviderRevocation=provider!=="META_THREADS";}
+  private connection(c:Connection):void{if(c.provider!==this.provider||!id.safeParse(c.appId).success||c.revokedAt!==null||(this.provider==="META_THREADS"?c.tokenType!=="threads":c.tokenType!=="user"))throw new PlatformDenied("EXACT_PROVIDER_LIFECYCLE_CONNECTION_REQUIRED");}
+  private async request(url:URL,method:"GET"|"DELETE"="GET",bearer?:string):Promise<unknown>{try{const response=await this.fetcher(url,{method,redirect:"error",signal:AbortSignal.timeout(15000),...(bearer?{headers:{Authorization:`Bearer ${bearer}`}}:{})});if(!response.ok){await response.body?.cancel();throw new Error();}return JSON.parse(await readBodyWithLimit(response,65536)) as unknown;}catch{throw new PlatformDenied("LIFECYCLE_PROVIDER_RESPONSE_UNVERIFIED");}}
+  private async debug(rawToken:string,c:Connection):Promise<Record<string,unknown>>{this.connection(c);token.parse(rawToken);const secret=await this.secrets.get(this.provider,c.appId);if(!secret||/[|\s\x00-\x1f\x7f]/.test(secret))throw new PlatformDenied("LIFECYCLE_APP_SECRET_REQUIRED");const url=new URL(this.provider==="META_THREADS"?"https://graph.threads.com/v1.0/debug_token":"https://graph.facebook.com/v26.0/debug_token");url.search=new URLSearchParams({input_token:rawToken,access_token:this.provider==="META_THREADS"?`TH|${c.appId}|${secret}`:`${c.appId}|${secret}`}).toString();return z.object({data:z.record(z.string(),z.unknown())}).parse(await this.request(url)).data;}
+  async inspect(rawToken:string,c:Connection):Promise<LifecycleInspection>{
+    const data=await this.debug(rawToken,c);if(data.is_valid!==true)throw new PlatformDenied("LIFECYCLE_TOKEN_INVALID_REAUTHORIZE");
+    const parsed=z.object({type:z.literal("USER"),user_id:id,scopes:z.array(z.string().regex(/^[a-z][a-z0-9_]{0,100}$/)).min(1).max(100),expires_at:seconds,issued_at:seconds,data_access_expires_at:z.number().int().nonnegative().max(3153600000).optional(),app_id:z.union([id,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]).optional()}).parse(data);
+    if(this.provider!=="META_THREADS"&&String(parsed.app_id)!==c.appId)throw new PlatformDenied("LIFECYCLE_APP_BINDING_REQUIRED");
+    if(new Set(parsed.scopes).size!==parsed.scopes.length||canonicalJson([...parsed.scopes].sort())!==canonicalJson([...c.scopes].sort()))throw new PlatformDenied("LIFECYCLE_SCOPE_CHANGE_REAUTHORIZE");
+    const host=this.provider==="META_THREADS"?"https://graph.threads.com/v1.0":"https://graph.facebook.com/v26.0",me=new URL(host+"/me");me.searchParams.set("fields","id");const actual=z.object({id}).parse(await this.request(me,"GET",rawToken));if(actual.id!==parsed.user_id)throw new PlatformDenied("LIFECYCLE_SUBJECT_BINDING_REQUIRED");
+    if(this.provider!=="META_THREADS"){const permissions=z.object({data:z.array(z.object({permission:z.string(),status:z.enum(["granted","declined","expired"])})).max(100),paging:z.object({next:z.unknown().optional()}).optional()}).parse(await this.request(new URL(host+"/me/permissions"),"GET",rawToken));if(permissions.paging?.next||canonicalJson(permissions.data.filter(p=>p.status==="granted").map(p=>p.permission).sort())!==canonicalJson([...c.scopes].sort()))throw new PlatformDenied("LIFECYCLE_PERMISSION_BINDING_REQUIRED");}
+    const expiresAt=Math.min(parsed.expires_at*1000,...(parsed.data_access_expires_at?[parsed.data_access_expires_at*1000]:[]));if(expiresAt<=this.clock())throw new PlatformDenied("LIFECYCLE_TOKEN_EXPIRED_REAUTHORIZE");
+    return {provider:this.provider,appId:c.appId,subjectId:actual.id,tokenType:c.tokenType,scopes:parsed.scopes,expiresAt,issuedAt:parsed.issued_at*1000,tokenExpiresAt:parsed.expires_at*1000,valid:true};
+  }
+  async refresh(rawToken:string,c:Connection,claim:()=>Promise<void>):Promise<{token:string;inspection:LifecycleInspection}>{
+    const before=await this.inspect(rawToken,c),now=this.clock();let url:URL;
+    if(this.provider==="META_THREADS"){if(now-before.issuedAt<86400000||before.tokenExpiresAt-before.issuedAt<=3600000)throw new PlatformDenied("THREADS_LONG_LIVED_24H_REQUIRED");url=new URL("https://graph.threads.com/refresh_access_token");url.search=new URLSearchParams({grant_type:"th_refresh_token",access_token:rawToken}).toString();}
+    else{if(before.tokenExpiresAt-before.issuedAt>7200000)throw new PlatformDenied("FACEBOOK_LONG_LIVED_TOKEN_REAUTH_REQUIRED");const secret=await this.secrets.get(this.provider,c.appId);url=new URL("https://graph.facebook.com/v26.0/oauth/access_token");url.search=new URLSearchParams({grant_type:"fb_exchange_token",client_id:c.appId,client_secret:secret,fb_exchange_token:rawToken}).toString();}
+    await claim();const response=refreshed.parse(await this.request(url)),inspection=await this.inspect(response.access_token,c);if(inspection.subjectId!==before.subjectId||inspection.expiresAt>now+response.expires_in*1000+60000)throw new PlatformDenied("LIFECYCLE_REFRESH_INSPECTION_MISMATCH");return {token:response.access_token,inspection};
+  }
+  async revoke(rawToken:string,c:Connection,claim:()=>Promise<void>):Promise<{invalidated:true}>{
+    if(!this.supportsProviderRevocation)throw new PlatformDenied("THREADS_PROVIDER_REVOCATION_UI_REQUIRED");const before=await this.inspect(rawToken,c);await claim();const result=await this.request(new URL(`https://graph.facebook.com/v26.0/${before.subjectId}/permissions`),"DELETE",rawToken);if(result!==true && !(result&&typeof result==="object"&&!Array.isArray(result)&&Object.keys(result).join()==="success"&&(result as {success?:unknown}).success===true))throw new PlatformDenied("LIFECYCLE_REVOCATION_RECEIPT_UNVERIFIED");if((await this.debug(rawToken,c)).is_valid!==false)throw new PlatformDenied("LIFECYCLE_REVOCATION_INVALIDATION_UNVERIFIED");return {invalidated:true};
+  }
+  async inspectInvalidation(rawToken:string,c:Connection):Promise<{invalidated:boolean}>{return {invalidated:(await this.debug(rawToken,c)).is_valid===false};}
+}

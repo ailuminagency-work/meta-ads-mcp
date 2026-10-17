@@ -23,6 +23,6 @@ export async function resolveOperationContext(clientId: string, tool: string, pr
   const member = await repo.get("members", principal.tenantId, operator);
   const client = await repo.get("clients", principal.tenantId, clientId);
   const tenant = await repo.get("tenants", principal.tenantId, principal.tenantId);
-  if (!member || member.disabledAt !== null || member.tenantId !== principal.tenantId || !member.allowedClientIds.includes(clientId) || !client || client.tenantId !== principal.tenantId || client.status !== "ACTIVE" || !tenant || tenant.status !== "ACTIVE" || tenant.migrationState !== "READY") throw new PlatformDenied("CLIENT_ACCESS_REQUIRED");
+  if (!member || !member.roles.some(role=>["reader","writer","admin","approver","connection_admin"].includes(role)) || member.disabledAt !== null || member.tenantId !== principal.tenantId || !member.allowedClientIds.includes(clientId) || !client || client.tenantId !== principal.tenantId || client.status !== "ACTIVE" || !tenant || tenant.status !== "ACTIVE" || tenant.migrationState !== "READY") throw new PlatformDenied("CLIENT_ACCESS_REQUIRED");
   return { principal, clientId, tool, provider, requestId: randomUUID() };
 }

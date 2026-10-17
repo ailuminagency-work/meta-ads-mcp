@@ -1,0 +1,19 @@
+import {PlatformDenied} from "./models.js";
+import type {ProductContract} from "./products/contracts.js";
+export const INSTAGRAM_BUSINESS_DISCOVERY_SOURCE="https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-user/business_discovery";
+export const INSTAGRAM_BUSINESS_DISCOVERY_QUERY=Object.freeze({template:"business_discovery.username({username}){followers_count,media_count}",purpose:"PUBLIC_PROFESSIONAL_METADATA_NO_GRANT"});
+export const INSTAGRAM_BUSINESS_DISCOVERY_CONTRACT:ProductContract={id:"instagram.business.discovery",tool:"instagram_business_discovery",provider:"META_INSTAGRAM_FACEBOOK_LOGIN",product:"instagram",title:"Look up public professional Instagram account counts",method:"GET",path:"/{asset_id}",assetType:"INSTAGRAM_ACCOUNT",operationClasses:["READ"],requiredScopes:["instagram_basic","instagram_manage_insights","pages_read_engagement","ads_management","ads_read"],tokenTypes:["user"],allowedInputKeys:["username"],serverOnlyInputKeys:["username"],responseFields:["id","business_discovery.id","business_discovery.followers_count","business_discovery.media_count"],documentation:[INSTAGRAM_BUSINESS_DISCOVERY_SOURCE,"https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-user"],verified:true,manualRequirements:[
+ "Exact authorized client professional Instagram query account, Facebook User token, external-user App Review/access tier and current permission pack must be independently verified. Both ads permissions conservatively cover Business Manager role context.",
+ "This endpoint intentionally reads public metadata about another Business or Creator account by username. Age-gated accounts are unavailable. Only public follower/media counts and IDs are returned; no profile biography, contacts, media edges/URLs, arbitrary fields, or personal-account fallback.",
+ "A strict local username subset of1..30 ASCII letters/numbers/dots/underscores is inserted into a server-owned field-expansion template. This local bound is not a claim of a universally documented Meta maximum. Outer response id must match the exact authorized query account.",
+ "Looked-up account IDs are public lookup metadata only. They do not establish client ownership, user authority, child assets, grants or approval for publishing/ads. Counts alone are not business-outcome or attribution proof."
+]};
+export function validateInstagramBusinessDiscoveryInput(input:Record<string,unknown>):void{
+ if(Object.keys(input).length!==1||typeof input.username!=="string"||!/^[A-Za-z0-9._]{1,30}$/.test(input.username))throw new PlatformDenied("INSTAGRAM_BUSINESS_USERNAME_REQUIRED");
+}
+export function instagramBusinessDiscoveryFields(input:Record<string,unknown>):string{validateInstagramBusinessDiscoveryInput(input);return INSTAGRAM_BUSINESS_DISCOVERY_QUERY.template.replace("{username}",String(input.username));}
+export function normalizeInstagramBusinessDiscovery(value:unknown,targetId:string,input:Record<string,unknown>):unknown{
+ validateInstagramBusinessDiscoveryInput(input);const row=value as {id?:unknown;business_discovery?:{id?:unknown;followers_count?:unknown;media_count?:unknown}},business=row?.business_discovery;
+ if(!row||row.id!==targetId||!business||typeof business.id!=="string"||!/^\d{1,32}$/.test(business.id)||typeof business.followers_count!=="number"||!Number.isSafeInteger(business.followers_count)||business.followers_count<0||typeof business.media_count!=="number"||!Number.isSafeInteger(business.media_count)||business.media_count<0)throw new PlatformDenied("INSTAGRAM_BUSINESS_LOOKUP_RESPONSE_INVALID");
+ return {query_account_id:targetId,queried_username:input.username,public_account:{id:business.id,followers_count:business.followers_count,media_count:business.media_count},authority:"PUBLIC_LOOKUP_NO_GRANT",outcome_proof:false};
+}

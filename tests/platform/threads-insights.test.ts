@@ -1,0 +1,9 @@
+import {describe,it,expect} from "vitest";
+import {normalizeThreadsInsights} from "../../src/platform/threads-insights.js";
+const profile={data:[{id:"101/insights/views/day",name:"views",period:"day",values:[{value:12,end_time:"2026-10-15T08:00:00+0000"}]}]},post={data:[{id:"201/insights/likes/lifetime",name:"likes",period:"lifetime",values:[{value:2}]}]};
+describe("Threads insights verified response semantics",()=>{
+ it("distinguishes profile default-window views from post lifetime metrics",()=>{expect(normalizeThreadsInsights("threads_list_insights","101",profile)).toMatchObject({measurement:"PROFILE_VIEWS_DEFAULT_YESTERDAY_THROUGH_TODAY",outcome_proof:false});expect(normalizeThreadsInsights("threads_get_post_insights","201",post)).toMatchObject({measurement:"POST_LIFETIME_METRICS",outcome_proof:false});});
+ it("does not manufacture zero from an empty result",()=>{expect(normalizeThreadsInsights("threads_get_post_insights","201",{data:[]})).toMatchObject({data:[],no_data:true});});
+ it.each(["wrong-node","wrong-name","wrong-period","duplicate","negative","private-field"])("rejects untrusted metric response %s",mode=>{const input=structuredClone(post);if(mode==="wrong-node")input.data[0].id="999/insights/likes/lifetime";if(mode==="wrong-name")input.data[0].name="followers_count";if(mode==="wrong-period")input.data[0].period="day";if(mode==="duplicate")input.data.push({...input.data[0]});if(mode==="negative")input.data[0].values[0].value=-1;if(mode==="private-field")Object.assign(input.data[0],{privateBody:"must not leak"});expect(()=>normalizeThreadsInsights("threads_get_post_insights","201",input)).toThrow("THREADS_INSIGHTS_");});
+ it("requires valid date series for profile views",()=>{expect(()=>normalizeThreadsInsights("threads_list_insights","101",{data:[{...profile.data[0],values:[{value:1}]}]})).toThrow("THREADS_INSIGHTS_IDENTITY_INVALID");});
+});

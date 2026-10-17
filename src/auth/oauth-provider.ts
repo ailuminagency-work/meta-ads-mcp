@@ -1,3 +1,4 @@
+import {isMetaPrincipalPrivacyLocked} from "../platform/meta-privacy-access.js";
 import crypto from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import type { Response } from "express";
@@ -208,6 +209,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     // revoked, and not yet rotated. Old tokens issued before this code
     // existed don't carry a jti and would be rejected here, which is the
     // intended behaviour after rolling out the change.
+    if(typeof payload.fb_user_id==="string"&&await isMetaPrincipalPrivacyLocked(payload.fb_user_id))throw new InvalidGrantError("User authorization has been revoked");
     const jti = typeof payload.jti === "string" ? payload.jti : null;
     if (!jti) {
       throw new InvalidGrantError("Refresh token missing jti");
@@ -247,6 +249,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       throw new InvalidTokenError("Invalid access token");
     });
 
+    if(typeof payload.fb_user_id==="string"&&await isMetaPrincipalPrivacyLocked(payload.fb_user_id))throw new InvalidTokenError("User authorization has been revoked");
     if (payload.type !== "access") {
       throw new InvalidTokenError("Token is not an access token");
     }
@@ -306,6 +309,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       type: "access",
     };
     if (input.resource) claims.resource = input.resource.href;
+    if(input.fbUserId&&await isMetaPrincipalPrivacyLocked(input.fbUserId))throw new InvalidGrantError("User authorization has been revoked");
     if (input.fbUserId) claims.fb_user_id = input.fbUserId;
 
     const accessToken = await new SignJWT(claims)

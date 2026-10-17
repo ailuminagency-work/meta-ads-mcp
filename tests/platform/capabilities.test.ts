@@ -1,3 +1,4 @@
+import {establishManualEligibilityFixture} from "./manual-eligibility-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { capabilityStatus, MANUAL_ACTIONS } from "../../src/platform/capabilities.js";
 import { PRODUCT_CONTRACTS, type ProductContract } from "../../src/platform/products/contracts.js";
@@ -14,18 +15,19 @@ async function fixture(c: ProductContract = contract) {
   await repo.put("tenants", "tenant", "tenant", { id: "tenant", status: "ACTIVE", migrationState: "READY", registryRevision: 1, policyRevision: 1 });
   await repo.put("members", "tenant", "operator", { tenantId: "tenant", operatorId: "operator", roles: ["admin"], allowedClientIds: ["client-a"], disabledAt: null, revision: 1 });
   await repo.put("clients", "tenant", "client-a", { tenantId: "tenant", id: "client-a", status: "ACTIVE", revision: 1, verifiedBusinessIds: [] });
-  const parent: MetaAsset = { key: "parent", type: "BUSINESS", id: "101", tenantId: "tenant", clientId: "client-a", provider: c.provider, appId: "app", parents: [], verifiedAt: now - 1000, revokedAt: null, revision: 1 };
+  const parent: MetaAsset = { key: "parent", type: c.provider==="META_THREADS"?"THREADS_ACCOUNT":"BUSINESS", id: "101", tenantId: "tenant", clientId: "client-a", provider: c.provider, appId: "app", parents: [], verifiedAt: now - 1000, revokedAt: null, revision: 1 };
   const target: MetaAsset = { ...parent, key: "target", type: c.assetType, id: "202", parents: [{ type: parent.type, id: parent.id }] };
-  const connection: Connection = { id: "narrow", tenantId: "tenant", operatorId: "operator", provider: c.provider, appId: "app", credentialId: "credential", authStrategy: "fixture", tokenType: c.tokenTypes[0], scopes: [...c.requiredScopes], assetKeys: [parent.key, target.key], expiresAt: now + 60_000, revokedAt: null, verifiedAt: now - 1000, revision: 1, eligibility: c.manualRequirements.map(requirement => ({ requirement, verified: true, source: c.documentation[0], checkedAt: now - 1000, expiresAt: now + 60_000 })) };
+  const connection: Connection = { id: "narrow", tenantId: "tenant", operatorId: "operator", provider: c.provider, appId: "app", credentialId: "credential", authStrategy: "fixture",...(c.tokenTypes[0]==="instagram"?{metaAppUserId:"901"}:{}), tokenType: c.tokenTypes[0],subjectId:c.tokenTypes[0]==="threads"?parent.id:target.id, scopes: [...c.requiredScopes], assetKeys: [parent.key, target.key], expiresAt: now + 60_000, revokedAt: null, verifiedAt: now - 1000, revision: 1, eligibility: c.manualRequirements.map(requirement => ({ requirement, verified: true, source: c.documentation[0], checkedAt: now - 1000, expiresAt: now + 60_000 })) };
   const credential: Credential = { id: "credential", tenantId: "tenant", operatorId: "operator", provider: c.provider, appId: "app", keyVersion: "primary", envelopeVersion: 1, payload: { ciphertext: "not-decrypted", iv: "not-decrypted", tag: "not-decrypted" } };
   await repo.put("credentials", "tenant", credential.id, credential);
   for (const asset of [parent, target]) await repo.put("assets", "tenant", asset.key, asset);
   await repo.put("connections", "tenant", connection.id, connection);
   const grants: AssetGrant[] = [parent, target].map(asset => ({ id: asset.key, tenantId: "tenant", clientId: "client-a", assetKey: asset.key, connectionId: connection.id, capabilities: [c.id], actions: [...c.operationClasses], tasks: [...c.requiredTasks ?? []], verifiedAt: now - 1000, expiresAt: now + 60_000, revokedAt: null, revision: 1 }));
   for (const grant of grants) await repo.put("grants", "tenant", grant.id, grant);
-  return { repo, parent, target, connection, grants, credential };
+  await establishManualEligibilityFixture(repo,"tenant","client-a",connection.id);
+  return { repo, parent, target, connection:(await repo.get("connections","tenant",connection.id))!, grants, credential };
 }
-beforeEach(() => { vi.stubEnv("LUMIN_PLATFORM_ENABLED", "true"); vi.stubEnv("LUMIN_PLATFORM_WRITES_ENABLED", "false"); vi.stubEnv("AGENCY_WRITES_ENABLED", "false"); });
+beforeEach(() => { vi.spyOn(Date,"now").mockReturnValue(now);vi.stubEnv("TOKEN_ENCRYPTION_KEY","e".repeat(64)); vi.stubEnv("INSTAGRAM_API_VERSION", "v26.0"); vi.stubEnv("LUMIN_PLATFORM_ENABLED", "true"); vi.stubEnv("LUMIN_PLATFORM_WRITES_ENABLED", "false"); vi.stubEnv("AGENCY_WRITES_ENABLED", "false"); });
 afterEach(() => { configurePlatformRepository(undefined); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe("capability dry-run matches authorization boundaries", () => {
@@ -66,7 +68,7 @@ describe("capability dry-run matches authorization boundaries", () => {
     expect(result.status).not.toBe("AVAILABLE"); expect(result.connectedAssetIds).toEqual([]);
   });
   it.each(["missing", "stale", "future", "expired", "unverified", "untrusted-source"])("requires independent eligibility evidence (%s)", async attack => {
-    const { repo, connection } = await fixture(); const evidence = connection.eligibility![0];
+    const { repo, connection } = await fixture(); const evidence = connection.eligibility!.find(e=>e.attestationId)!;
     const eligibility = attack === "missing" ? [] : [{ ...evidence, ...(attack === "stale" ? { checkedAt: now - 61 * 60_000 } : attack === "future" ? { checkedAt: now + 1 } : attack === "expired" ? { expiresAt: now - 1 } : attack === "unverified" ? { verified: false } : { source: "https://developers.facebook.com.attacker.invalid/proof" }) }];
     await repo.put("connections", "tenant", "narrow", { ...connection, eligibility });
     expect((await capabilityStatus(ctx, contract, now)).status).toBe("UNVERIFIED");

@@ -1,0 +1,11 @@
+import {describe,it,expect} from "vitest";
+import {InMemoryPlatformRepository} from "../../src/platform/repository.js";
+import {mediaAuthorization} from "../../src/platform/media-enrollment-service.js";
+import {PRODUCT_CONTRACTS} from "../../src/platform/products/contracts.js";
+describe("independent media enrollment capability contract",()=>{
+ it("accepts real OAuth's dotted product capability rather than requiring an invented tool-name grant",async()=>{const repo=new InMemoryPlatformRepository(),now=Date.now(),contract=PRODUCT_CONTRACTS.find(c=>c.tool==="instagram_login_create_container")!;
+ await repo.put("operatorIndex","_index","100",{operatorId:"100",tenantId:"tenant"});await repo.put("tenants","tenant","tenant",{id:"tenant",status:"ACTIVE",migrationState:"READY",policyRevision:1,registryRevision:1});await repo.put("members","tenant","100",{operatorId:"100",tenantId:"tenant",roles:["admin"],allowedClientIds:["client"],revision:1,disabledAt:null});await repo.put("clients","tenant","client",{id:"client",tenantId:"tenant",status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
+ await repo.put("assets","tenant","account",{key:"account",id:"200",type:"INSTAGRAM_ACCOUNT",tenantId:"tenant",clientId:"client",provider:"META_INSTAGRAM_LOGIN",appId:"300",parents:[],verifiedAt:now,revokedAt:null,revision:1});await repo.put("connections","tenant","connection",{id:"connection",tenantId:"tenant",operatorId:"100",provider:"META_INSTAGRAM_LOGIN",appId:"300",authStrategy:"instagram_login",credentialId:"credential",tokenType:"instagram",metaAppUserId:"901",subjectId:"200",scopes:contract.requiredScopes,assetKeys:["account"],verifiedAt:now,expiresAt:now+3600000,revokedAt:null,revision:1});await repo.put("grants","tenant","grant",{id:"grant",tenantId:"tenant",clientId:"client",connectionId:"connection",assetKey:"account",capabilities:[contract.id],actions:["READ","WRITE_CONTENT"],tasks:[],verifiedAt:now,expiresAt:now+3600000,revokedAt:null,revision:1});
+ const expected=await mediaAuthorization(repo,{id:"fixture",tenantId:"tenant",clientId:"client",operatorId:"100",accountId:"200",connectionId:"connection",appId:"300",provider:"META_INSTAGRAM_LOGIN"},now);expect(expected.some(e=>e.collection==="grants"&&JSON.parse(e.canonical).capabilities.includes(contract.id))).toBe(true);
+ });
+});

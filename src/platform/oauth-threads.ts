@@ -1,3 +1,4 @@
+import {PRODUCT_CONTRACTS} from "./products/contracts.js";
 import { z } from "zod";
 import { readBodyWithLimit } from "../utils/bounded-body.js";
 import { PlatformDenied } from "./models.js";
@@ -19,7 +20,12 @@ const debugSchema = z.object({ data: z.object({ is_valid: z.literal(true), type:
 export function createThreadsOAuthAdapter(options: { fetch?: typeof fetch; now?: () => number } = {}): VerifiedProviderAdapter {
   const validateProfile=(profile:TrustedOAuthProfile):void=>{
     validateConnectionProfile(profile);
-    if(profile.provider!=="META_THREADS"||profile.strategy!=="threads_login"||profile.tokenTypes.length!==1||profile.tokenTypes[0]!=="threads"||profile.requiredTasks.length||profile.scopes.length!==1||profile.scopes[0]!=="threads_basic"||profile.actions.length!==1||profile.actions[0]!=="READ"||!profile.capabilities.length||new Set(profile.capabilities).size!==profile.capabilities.length||profile.capabilities.some(capability=>!["threads.get.profile","threads.list.threads","threads.get.post"].includes(capability))||!id.safeParse(profile.appId).success)throw new PlatformDenied("THREADS_OAUTH_PROFILE_UNVERIFIED_HOLD");
+    if(profile.derivedTokenScopes!==undefined)throw new PlatformDenied("THREADS_DERIVED_SCOPE_PROFILE_DENIED");
+    if(profile.provider!=="META_THREADS"||profile.strategy!=="threads_login"||profile.tokenTypes.length!==1||profile.tokenTypes[0]!=="threads"||profile.requiredTasks.length||!profile.capabilities.length||new Set(profile.capabilities).size!==profile.capabilities.length||!id.safeParse(profile.appId).success)throw new PlatformDenied("THREADS_OAUTH_PROFILE_UNVERIFIED_HOLD");
+    const contracts=profile.capabilities.map(capability=>PRODUCT_CONTRACTS.find(c=>c.id===capability&&c.provider==="META_THREADS"&&c.verified&&c.tokenTypes.length===1&&c.tokenTypes[0]==="threads"));
+    if(contracts.some(c=>!c||c.requiredTasks?.length||c.requiredTaskAssetType||c.operationClasses.some(action=>!["READ","WRITE_CONTENT","DELETE"].includes(action))))throw new PlatformDenied("THREADS_OAUTH_PROFILE_UNVERIFIED_HOLD");
+    const scopes=new Set(["threads_basic",...contracts.flatMap(c=>c!.requiredScopes)]),actions=new Set(["READ",...contracts.flatMap(c=>c!.operationClasses)]);
+    if(new Set(profile.actions).size!==profile.actions.length||profile.scopes.length!==scopes.size||profile.scopes.some(scope=>!scopes.has(scope))||profile.actions.length!==actions.size||profile.actions.some(action=>!actions.has(action)))throw new PlatformDenied("THREADS_OAUTH_PROFILE_UNVERIFIED_HOLD");
   };
   const request = async (url: URL, init?: RequestInit): Promise<unknown> => {
     try {

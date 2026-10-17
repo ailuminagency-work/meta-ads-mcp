@@ -1,0 +1,6 @@
+import {PlatformDenied} from "./models.js";
+export function publishingVideoEnabled(env:Record<string,string|undefined>=process.env):boolean{
+ const flag=env.LUMIN_PUBLISHING_VIDEO_ENABLED;if(flag!==undefined&&!["true","false"].includes(flag))throw new PlatformDenied("INVALID_PUBLISHING_VIDEO_FLAG");return env.LUMIN_PLATFORM_ENABLED==="true"&&flag==="true";
+}
+const draftTools=new Set(["messenger_send_video","whatsapp_platform_send_video","marketing_upload_video","threads_create_image_container","threads_create_image_carousel_item","instagram_create_image_carousel_item","instagram_login_create_image_carousel_item","instagram_create_image_story_container","instagram_login_create_image_story_container","instagram_create_reel_container","instagram_create_story_container","instagram_create_carousel_item","instagram_login_create_reel_container","instagram_login_create_story_container","instagram_login_create_carousel_item","threads_create_video_container","threads_create_carousel_item","instagram_create_carousel_container","instagram_login_create_carousel_container","threads_create_carousel_container"]);
+export function isPublishingVideoDraftTool(tool:string):boolean{return draftTools.has(tool);}

@@ -1,0 +1,23 @@
+import {createHash} from "node:crypto";
+import {PlatformDenied,type Connection,type MetaAsset,type AssetGrant} from "./models.js";
+import type {VerifiedGrantRefreshAdapter} from "./lifecycle.js";
+import {studyRegisteredScope,verifyStudyBusinessAccess} from "./marketing-study-proof.js";
+import {MARKETING_STUDY_CAPABILITY} from "./marketing-study-contract.js";
+import {isPreservedStudyAsset} from "./preserved-study-asset.js";
+import {productRateController} from "./clients.js";
+import {readBodyWithLimit} from "../utils/bounded-body.js";
+import {productVersion} from "./product-version.js";
+/** Supervised lifecycle inspects actual app/USER subject/current scopes first.
+ * This second read-only inspector renews only existing selected root grants. */
+export class MarketingStudyGrantRefreshAdapter implements VerifiedGrantRefreshAdapter{
+ readonly provider="META_MARKETING" as const;readonly verified=true as const;readonly readOnly=true as const;
+ constructor(private readonly fetcher:typeof fetch=fetch){}
+ validate(c:Connection,assets:MetaAsset[],grants:AssetGrant[]):void{
+  const roots=assets.filter(a=>a.type!=="STUDY"),selected=studyRegisteredScope(roots,roots.map(a=>({type:a.type,id:a.id})),Date.now(),"REINSPECT"),allowed=new Set([MARKETING_STUDY_CAPABILITY,"legacy.ads_get_account_info","legacy.ads_get_campaign_details"]);
+  if(c.provider!==this.provider||c.tokenType!=="user"||c.revokedAt!==null||!c.scopes.includes("ads_read")||!c.scopes.includes("ads_management")||!c.scopes.includes("business_management")||assets.length>98||assets.some(a=>a.tenantId!==c.tenantId||a.clientId!==selected.business.clientId||a.appId!==c.appId||a.provider!==c.provider||a.revokedAt!==null||!c.assetKeys.includes(a.key))||assets.filter(a=>a.type==="STUDY").some(a=>!isPreservedStudyAsset(a)||a.studyDefinition!.businessId!==selected.business.id||a.studyDefinition!.accountId!==selected.account.id.replace(/^act_/,"")||a.studyDefinition!.campaignIds.some(id=>!selected.campaigns.some(c=>c.id===id)))||grants.length!==assets.length||new Set(grants.map(g=>g.assetKey)).size!==assets.length||grants.some(g=>g.tenantId!==c.tenantId||g.clientId!==selected.business.clientId||g.connectionId!==c.id||g.revokedAt!==null||!Number.isSafeInteger(g.verifiedAt)||g.verifiedAt<=0||g.verifiedAt>Date.now()||!Number.isSafeInteger(g.expiresAt)||g.expiresAt<=0||assets.some(a=>a.key===g.assetKey&&a.type==="STUDY"&&g.verifiedAt>a.studyDefinition!.createdAt)||!assets.some(a=>a.key===g.assetKey)||g.tasks.length||!g.capabilities.includes(MARKETING_STUDY_CAPABILITY)||g.capabilities.some(cap=>!allowed.has(cap))||g.actions.some(action=>!["READ","WRITE_AD_CONFIGURATION"].includes(action))))throw new PlatformDenied("CLASSIC_STUDY_REFRESH_EXACT_EXISTING_AUTHORITY_REQUIRED");
+ }
+ async inspect(token:string,c:Connection,assets:MetaAsset[],grants:AssetGrant[]){this.validate(c,assets,grants);productVersion(this.provider);const roots=assets.filter(a=>a.type!=="STUDY"),selected=studyRegisteredScope(roots,roots.map(a=>({type:a.type,id:a.id})),Date.now(),"REINSPECT"),bucket=createHash("sha256").update(JSON.stringify([c.provider,c.appId,createHash("sha256").update(token).digest("hex")])).digest("hex");productRateController.bind(bucket,c.appId);
+  const read=async(path:string,fields:string)=>{productRateController.check(bucket);const url=new URL(`https://graph.facebook.com/v26.0/${path}`);url.searchParams.set("fields",fields);if(path==="me/businesses"||path.endsWith("/owned_ad_accounts"))url.searchParams.set("limit","100");try{const response=await this.fetcher(url,{method:"GET",headers:{Authorization:`Bearer ${token}`},redirect:"error",signal:AbortSignal.timeout(15000)});productRateController.observe(bucket,response,null);if(!response.ok)throw Error();const value:unknown=JSON.parse(await readBodyWithLimit(response,131072));if(!value||typeof value!=="object"||Array.isArray(value)||Object.hasOwn(value,"error"))throw Error();return value;}catch{throw new PlatformDenied("CLASSIC_STUDY_REFRESH_READ_PROOF_UNAVAILABLE");}};
+  const businessId=selected.business.id,accountId=selected.account.id.replace(/^act_/,""),ids=selected.campaigns.map(c=>c.id),businesses=await read("me/businesses","id"),ownedAccounts=await read(`${businessId}/owned_ad_accounts`,"id,account_id"),account=await read(`act_${accountId}`,"id,account_id,business{id},user_tasks"),campaigns=[];for(const id of ids)campaigns.push(await read(id,"id,account_id,status"));verifyStudyBusinessAccess(businessId,accountId,{businesses,ownedAccounts,account,campaigns},ids);return assets.map(a=>({assetKey:a.key,tasks:[],...(a.type==="STUDY"?{renew:false as const}:{})}));
+ }
+}

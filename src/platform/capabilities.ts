@@ -1,3 +1,20 @@
+import {CATALOG_CAMPAIGN_TOOL,catalogCampaignEnabled} from "./catalog-campaign-contract.js";
+import {invoiceMetadataEnabled,INVOICE_METADATA_TOOL} from './business-invoice-metadata.js';
+import {CRM_SIGNAL_TOOL} from "./crm-contract.js";
+import {hasCrmCredentialInspector} from "./crm-client.js";
+import {crmSignalsEnabled} from "./crm-runtime.js";
+import {loadClientBusinessEvidence} from "./client-business.js";
+import {attachmentEnabled} from "./attachment-flags.js";
+import {adLibraryEnabled} from "./ad-library-contract.js";
+import {messengerUtilityPolicy} from "./messenger-utility-runtime.js";
+import {productVersion} from "./product-version.js";
+import {loadManualEligibilityEvidence,type ManualEligibilityEvidence} from "./manual-eligibility.js";
+import {publishingVideoEnabled,isPublishingVideoDraftTool} from "./publishing-video-flags.js";
+import {pageVideoEnabled} from "./video-flags.js";
+import {oEmbedEnabled,assertOEmbedMembership} from "./oembed-preview.js";
+import {assertLeadReadRelationships} from "./lead-read.js";
+import {applyProductTaskRequirements} from "./product-task-requirements.js";
+import {assertProductClientOwnership} from "./product-inputs.js";
 import type { PlatformRepository } from "./repository.js";
 import { capabilityReadSnapshot } from "./registry-snapshot.js";
 import { listLegacyCapabilities } from "./legacy-capabilities.js";
@@ -7,12 +24,13 @@ import { PlatformDenied, type Connection, type OperationContext, type OperationP
 import { resolveAuthorizedAssets } from "./assets.js";
 import { selectConnection } from "./connections.js";
 import { evaluatePolicy } from "./policy.js";
-import { isOfficialEligibilitySource } from "./clients.js";
+import { assertContractEligibility } from "./clients.js";
 import { getPlatformRepository, platformWritesEnabled } from "./runtime.js";
 
 export const CAPABILITY_STATUSES = ["AVAILABLE", "PARTIAL", "NOT_CONNECTED", "PERMISSION_REQUIRED", "ADVANCED_ACCESS_REQUIRED", "APP_REVIEW_REQUIRED", "BUSINESS_VERIFICATION_REQUIRED", "TECH_PROVIDER_REQUIRED", "ACCESS_TIER_REQUIRED", "USER_CONSENT_REQUIRED", "ASSET_ACCESS_REQUIRED", "TOKEN_EXPIRED", "DASHBOARD_ONLY", "UNSUPPORTED_BY_META_API", "DISABLED_BY_LUMIN_POLICY", "UNVERIFIED"] as const;
 export type CapabilityStatus = typeof CAPABILITY_STATUSES[number];
 export interface CapabilityReport {
+  frontendPreviewOnly?:boolean;
   id: string; product: string; provider: string; tool: string; status: CapabilityStatus;
   apiAvailability: "VERIFIED" | "UNVERIFIED"; requiredPermissions: string[]; grantedPermissions: string[];
   connectedAssetIds: string[]; accessLevel: "UNVERIFIED"; appReview: "UNVERIFIED"; businessVerification: "UNVERIFIED";
@@ -20,14 +38,7 @@ export interface CapabilityReport {
   tokenTypes: string[]; readAvailable: boolean; writeAvailable: boolean; activationAvailable: boolean;
   reasons: string[]; remediation: string[]; documentation: string[];
 }
-function eligibilityVerified(connection: Connection, contract: ProductContract, now: number, maximumAge: number): boolean {
-  return contract.manualRequirements.every(requirement => connection.eligibility?.some(e =>
-    e.requirement === requirement && e.verified === true && Number.isFinite(e.checkedAt) &&
-    e.checkedAt > 0 && e.checkedAt <= now && now - e.checkedAt <= maximumAge &&
-    Number.isFinite(e.expiresAt) && e.expiresAt > now &&
-    isOfficialEligibilitySource(e.source),
-  ));
-}
+function eligibilityVerified(connection:Connection,contract:ProductContract,now:number,evidence:ManualEligibilityEvidence,clientId:string):boolean{try{assertContractEligibility(contract,connection,now,{evidence,clientId});return true;}catch{return false;}}
 
 export async function capabilityStatus(ctx: OperationContext, contract: ProductContract, now = Date.now(), repo:PlatformRepository = getPlatformRepository()): Promise<CapabilityReport> {
   const context: OperationContext = { ...ctx, provider: contract.provider, tool: contract.tool };
@@ -55,6 +66,22 @@ export async function capabilityStatus(ctx: OperationContext, contract: ProductC
   ]);
   if (!tenant || tenant.id !== context.principal.tenantId || tenant.status !== "ACTIVE" || tenant.migrationState !== "READY") return report("DISABLED_BY_LUMIN_POLICY", ["TENANT_NOT_READY"]);
   if (!member || member.operatorId !== context.principal.operatorId || member.tenantId !== context.principal.tenantId || member.disabledAt !== null || !member.allowedClientIds.includes(context.clientId) || !client || client.id !== context.clientId || client.tenantId !== context.principal.tenantId || client.status !== "ACTIVE") return report("ASSET_ACCESS_REQUIRED", ["CLIENT_MEMBERSHIP_REQUIRED"]);
+  if(contract.authMode==="TOKENLESS_FRONTEND_ONLY"){try{if(!oEmbedEnabled())return report("DISABLED_BY_LUMIN_POLICY",["OEMBED_FRONTEND_DISABLED"]);await assertOEmbedMembership(repo,context.principal,context.clientId);return {...report("AVAILABLE",["Authenticated frontend-only tokenless preview; no Meta credential or App Review required. No HTML/metadata/content URLs enter model outputs, registry or audit; no asset grants or analytics authorization."]),frontendPreviewOnly:true};}catch(error){return report("DISABLED_BY_LUMIN_POLICY",[error instanceof PlatformDenied?error.reason:"OEMBED_FRONTEND_AUTHORIZATION_UNVERIFIED"]);}}
+  try{productVersion(contract.provider);}catch(error){return report("UNVERIFIED",[error instanceof PlatformDenied?error.reason:"PRODUCT_VERSION_CONFIGURATION_INVALID"]);}
+  if(contract.tool==="marketing_list_app_event_types"&&(process.env.LUMIN_APP_EVENT_TYPES_ENABLED!=="true"||process.env.LUMIN_MARKETING_APP_PROMOTION_ENABLED!=="true"))return report("DISABLED_BY_LUMIN_POLICY",["Promoted app event-type metadata reads are disabled."]);
+  if(["marketing_inspect_image","marketing_inspect_creative_image"].includes(contract.tool)&&process.env.LUMIN_IMAGE_INSPECTION_ENABLED!=="true")return report("DISABLED_BY_LUMIN_POLICY",["Private JPEG visual inspection is disabled."]);
+  if(["marketing_inspect_video","marketing_inspect_creative_video"].includes(contract.tool)&&process.env.LUMIN_VIDEO_INSPECTION_ENABLED!=="true")return report("DISABLED_BY_LUMIN_POLICY",["Private video frame inspection is disabled."]);
+  if(contract.tool===CATALOG_CAMPAIGN_TOOL){if(!catalogCampaignEnabled())return report("DISABLED_BY_LUMIN_POLICY",["Catalog campaign diagnostics are disabled."]);return report("PARTIAL",["Requires an explicit registered AdSet and independently authorized same-client catalog connection. Marketing access alone cannot certify the dual-provider relationship or catalog eligibility."]);}
+  if(contract.tool===CRM_SIGNAL_TOOL){if(!crmSignalsEnabled())return report("DISABLED_BY_LUMIN_POLICY",["CRM stage dispatch is disabled for this environment."]);if(!hasCrmCredentialInspector())return report("UNVERIFIED",["CRM_REVIEWED_CREDENTIAL_INSPECTOR_REQUIRED"]);}
+  if(contract.tool==="marketing_search_ad_library"&&!adLibraryEnabled())return report("DISABLED_BY_LUMIN_POLICY",["Official archive research is disabled for this environment."]);
+  if(contract.tool===INVOICE_METADATA_TOOL&&!invoiceMetadataEnabled())return report('DISABLED_BY_LUMIN_POLICY',['Client-scoped invoice metadata is disabled for this environment.']);
+  if(contract.tool==="marketing_get_ad_preview"&&process.env.LUMIN_MARKETING_PREVIEWS_ENABLED!=="true")return report("DISABLED_BY_LUMIN_POLICY",["Private existing-ad previews are disabled for this environment."]);
+  if(contract.tool==="marketing_create_classic_split_study"&&process.env.LUMIN_MARKETING_STUDIES_ENABLED!=="true")return report("DISABLED_BY_LUMIN_POLICY",["Classic study creation is disabled for this environment."]);
+  if(contract.tool==="marketing_create_classic_split_study"&&!member.roles.includes("admin"))return report("DISABLED_BY_LUMIN_POLICY",["CLASSIC_STUDY_OWNER_ADMIN_REQUIRED"]);
+  if(contract.tool==="messenger_send_utility_template"&&!messengerUtilityPolicy())return report("UNVERIFIED",["UTILITY_TRUSTED_TRANSACTION_SOURCE_RUNTIME_REQUIRED"]);
+  if(["messenger_send_audio","messenger_send_file","whatsapp_platform_send_audio","whatsapp_platform_send_document"].includes(contract.tool)&&!attachmentEnabled())return report("DISABLED_BY_LUMIN_POLICY",["Messaging attachments are disabled for this environment."]);
+  if(isPublishingVideoDraftTool(contract.tool)&&!publishingVideoEnabled())return report("DISABLED_BY_LUMIN_POLICY",["Media container publishing is disabled for this environment."]);
+  if(contract.tool==="pages_create_videos"&&!pageVideoEnabled())return report("DISABLED_BY_LUMIN_POLICY",["Video publishing is disabled for this environment."]);
   if (!isRead && !platformWritesEnabled()) return report("DISABLED_BY_LUMIN_POLICY", ["Platform mutations are disabled by deployment policy."]);
   const connections = (await repo.list("connections", context.principal.tenantId)).filter(connection =>
     connection.tenantId === context.principal.tenantId && connection.operatorId === context.principal.operatorId &&
@@ -79,7 +106,10 @@ export async function capabilityStatus(ctx: OperationContext, contract: ProductC
       ...(contract.createOrCopy ? { createOrCopy: true } : {}),
     };
     try {
-      const assets = await resolveAuthorizedAssets(repo, context, plan.assets, now, maximumAge);
+      let assets = await resolveAuthorizedAssets(repo, context, plan.assets, now, maximumAge);
+      if(contract.tool==="leads_retrieve"){let found=false;const ads=(await repo.list("assets",context.principal.tenantId)).filter(a=>a.type==="AD"&&a.provider===contract.provider&&a.clientId===context.clientId&&a.tenantId===context.principal.tenantId&&a.appId===candidate.appId&&a.revokedAt===null).slice(0,100);for(const ad of ads){try{const refs=[...plan.assets,{type:"AD" as const,id:ad.id}],closure=await resolveAuthorizedAssets(repo,context,refs,now,maximumAge);assertLeadReadRelationships(contract.tool,candidate.id,{ad_id:ad.id},closure);await selectConnection(repo,context,{...plan,assets:refs},closure,now);plan.assets=refs;assets=closure;found=true;break;}catch(error){if(!(error instanceof PlatformDenied))throw error;}}if(!found)throw new PlatformDenied("EXACT_REGISTERED_LEAD_AD_AUTHORITY_REQUIRED");}
+      applyProductTaskRequirements(plan,contract,assets);
+      assertProductClientOwnership(contract,candidate.id,client,assets,await loadClientBusinessEvidence(repo,client));
       const connection = await selectConnection(repo, context, plan, assets, now);
       selected = connection;
       const grants = (await repo.list("grants", context.principal.tenantId)).filter(grant =>
@@ -87,7 +117,7 @@ export async function capabilityStatus(ctx: OperationContext, contract: ProductC
         grant.clientId === context.clientId && assets.some(asset => asset.key === grant.assetKey) &&
         grant.revokedAt === null && grant.expiresAt > now,
       );
-      const decision = evaluatePolicy(context, plan, { tenant, member, client, assets, connection, grants }, { writesEnabled: platformWritesEnabled() });
+      const decision = evaluatePolicy(context, plan, { tenant, member, client, assets, connection, grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client) }, { writesEnabled: platformWritesEnabled() });
       if (decision.decision === "DENY") {
         fallback ??= report("DISABLED_BY_LUMIN_POLICY", [decision.reason]);
         continue;
@@ -97,7 +127,7 @@ export async function capabilityStatus(ctx: OperationContext, contract: ProductC
         fallback ??= report("UNVERIFIED", ["CREDENTIAL_BINDING_REQUIRED"]);
         continue;
       }
-      if (!eligibilityVerified(connection, contract, now, maximumAge)) {
+      if (!eligibilityVerified(connection,contract,now,await loadManualEligibilityEvidence(repo,context,connection,Object.keys(contract.eligibilityPolicies??{})),context.clientId)) {
         fallback ??= report("UNVERIFIED", ["Fresh independently verified evidence is required for every eligibility condition."], [candidate.id]);
         continue;
       }

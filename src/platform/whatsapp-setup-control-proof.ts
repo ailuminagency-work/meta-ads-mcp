@@ -1,0 +1,13 @@
+import {z} from "zod";
+import {PlatformDenied} from "./models.js";
+import {whatsappSetupProfileSchema,setupHash,type WhatsAppSetupProfile} from "./whatsapp-setup-types.js";
+import type {SetupInspection} from "./whatsapp-setup-provider.js";
+const registries=new WeakSet<object>();
+export class ImmutableSetupProfileRegistry{private readonly profiles:Map<string,WhatsAppSetupProfile>;constructor(profiles:readonly WhatsAppSetupProfile[]){const parsed=profiles.map(p=>whatsappSetupProfileSchema.parse(structuredClone(p)));if(!parsed.length||parsed.length>32||new Set(parsed.map(p=>p.id)).size!==parsed.length)throw new PlatformDenied("SETUP_PROFILE_REGISTRY_INVALID");this.profiles=new Map(parsed.map(p=>[p.id,Object.freeze(p)]));registries.add(this);Object.freeze(this);}get(id:string):WhatsAppSetupProfile{const p=this.profiles.get(id);if(!p)throw new PlatformDenied("SETUP_PROFILE_UNAVAILABLE");return structuredClone(p);}}
+export interface SetupControlProof{readonly kind:"SERVER_WHATSAPP_SETUP_PROOF"}
+interface ProofData{registry:ImmutableSetupProfileRegistry;profile:WhatsAppSetupProfile;inspection?:SetupInspection;tokenDigest?:string;providerSucceeded?:boolean}
+const proofs=new WeakMap<object,ProofData>();
+const detailSchema=z.object({inspection:z.object({metaAppUserId:z.string().regex(/^[0-9]{1,32}$/),verification:z.enum(["NOT_VERIFIED","VERIFIED"]),connected:z.boolean(),expiresAt:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),checkedAt:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}).strict().refine(v=>v.expiresAt>v.checkedAt).optional(),tokenDigest:z.string().regex(/^[a-f0-9]{64}$/).optional(),providerSucceeded:z.boolean().optional()}).strict();
+/** Internal trusted controller only. Proofs are not JSON-serializable authorization. */
+export function createSetupControlProof(registry:ImmutableSetupProfileRegistry,profileId:string,detail:Omit<ProofData,"registry"|"profile">={}):SetupControlProof{if(!registries.has(registry))throw new PlatformDenied("SETUP_PROFILE_REGISTRY_REQUIRED");const proof=Object.freeze({kind:"SERVER_WHATSAPP_SETUP_PROOF" as const});proofs.set(proof,{registry,profile:registry.get(profileId),...detailSchema.parse(structuredClone(detail))});return proof;}
+export function readSetupControlProof(proof:SetupControlProof|undefined):Omit<ProofData,"registry">{const data=proof&&proofs.get(proof);if(!data||!registries.has(data.registry)||setupHash(data.profile)!==setupHash(data.registry.get(data.profile.id)))throw new PlatformDenied("SETUP_SERVER_PROOF_REQUIRED");return structuredClone({profile:data.profile,inspection:data.inspection,tokenDigest:data.tokenDigest,providerSucceeded:data.providerSucceeded});}

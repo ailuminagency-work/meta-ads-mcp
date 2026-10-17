@@ -1,0 +1,26 @@
+import {describe,it,expect,vi} from "vitest";
+import {createWhatsAppOAuthAdapter,type WhatsAppEnrollmentBinding} from "../../src/platform/oauth-whatsapp.js";
+import type {TrustedOAuthProfile} from "../../src/platform/oauth.js";
+import {PRODUCT_CONTRACTS} from "../../src/platform/products/contracts.js";
+const now=1800000000000,contract=PRODUCT_CONTRACTS.find(c=>c.tool==="whatsapp_platform_get_phone")!;
+const profile:TrustedOAuthProfile={id:"whatsapp",provider:"META_WHATSAPP",appId:"300",strategy:"facebook_business",scopes:["whatsapp_business_management"],tokenTypes:["business_integration_system_user"],redirectUri:"https://fixture.invalid/platform/oauth/whatsapp/callback",authorizeUrl:"https://www.facebook.com/v26.0/dialog/oauth",configurationId:"301",secretReference:"META_APP_SECRET",capabilities:[contract.id],actions:["READ"],requiredTasks:[],verified:true};
+const binding:WhatsAppEnrollmentBinding={profileId:profile.id,tenantId:"tenant",clientId:"client",appId:"300",clientBusinessId:"400",whatsappAccountId:"500",messagingAccountId:"600",phoneId:"700",dualAccountAssignment:true,source:"META_BUSINESS_SUITE_OWNER_REVIEW",approvedBy:"owner",checkedAt:now,expiresAt:now+3600000};
+const requestedAssets=[{type:"WHATSAPP_ACCOUNT" as const,id:"500"},{type:"MESSAGING_ACCOUNT" as const,id:"600"},{type:"WHATSAPP_PHONE" as const,id:"700"}];
+function fixture(mode="valid"){
+ const fetcher=vi.fn(async(input:RequestInfo|URL,options?:RequestInit)=>{const url=new URL(String(input));expect(url.origin).toBe("https://graph.facebook.com");expect(options?.method).toBe("GET");expect(options?.redirect).toBe("error");let response:unknown;
+  if(url.pathname.endsWith("/oauth/access_token"))response={access_token:"synthetic-client-scoped-token"};
+  else if(url.pathname.endsWith("/debug_token"))response={data:{is_valid:mode!=="invalid-token",app_id:mode==="foreign-app"?"999":"300",user_id:"800",scopes:mode==="extra-scope"?[...profile.scopes,"ads_management"]:profile.scopes,expires_at:0}};
+  else if(url.pathname.endsWith("/me"))response=mode==="generic-user"?{id:"800"}:{id:"800",client_business_id:mode==="foreign-business"?"999":"400"};
+  else if(url.pathname.endsWith("/600/phone_numbers")){expect(url.searchParams.get("fields")).toBe("id");response={data:[{id:mode==="foreign-phone"?"999":"700"}]};}
+  else if(url.pathname.endsWith("/700"))response={id:"700",status:mode==="disconnected"?"DISCONNECTED":"CONNECTED"};
+  else throw new Error("unexpected provider endpoint");return new Response(JSON.stringify(response));});
+ const adapter=createWhatsAppOAuthAdapter({bindings:[structuredClone(binding)],fetcher,now:()=>now}),run=()=>adapter.exchangeAndInspect({profile,code:"synthetic-code",appSecret:"synthetic-app-secret",requestedAssets});return {adapter,run,fetcher};
+}
+describe("client-scoped WhatsApp BISU onboarding",()=>{
+ it("binds authenticated tenant/client and verified client-owned business before consent",()=>{const f=fixture(),context={profile,principal:{tenantId:"tenant",operatorId:"operator"},clientId:"client",client:{id:"client",tenantId:"tenant",status:"ACTIVE" as const,revision:1,verifiedBusinessIds:["400"]}};expect(()=>f.adapter.validateEnrollmentContext(context)).not.toThrow();for(const changed of [{...context,principal:{...context.principal,tenantId:"foreign"}},{...context,clientId:"foreign"},{...context,client:{...context.client,verifiedBusinessIds:["999"]}}])expect(()=>f.adapter.validateEnrollmentContext(changed)).toThrow("CLIENT_BUSINESS_BINDING_REQUIRED");});
+ it("proves actual app/scopes/client-business and phone edge without creating/registering/subscribing/sending",async()=>{const f=fixture(),result=await f.run();expect(result).toMatchObject({provider:"META_WHATSAPP",appId:"300",subjectId:"800",tokenType:"business_integration_system_user",expiresAt:binding.expiresAt,assets:requestedAssets.map(a=>({...a,tasks:[]}))});expect(f.fetcher).toHaveBeenCalledTimes(5);});
+ it.each(["invalid-token","foreign-app","extra-scope","generic-user","foreign-business","foreign-phone","disconnected"])("holds %s instead of enrolling",async mode=>{await expect(fixture(mode).run()).rejects.toThrow("WHATSAPP_BISU_INSPECTION_FAILED_HOLD");});
+ it("requires fresh separate owner-reviewed dual-account evidence before consent",()=>{const adapter=createWhatsAppOAuthAdapter({bindings:[{...binding,checkedAt:now-300001}],now:()=>now});expect(()=>adapter.validateProfile(profile)).toThrow("OWNER_REVIEW_REQUIRED");});
+ it("copies immutable deployment proof and rejects generic system-user configuration",()=>{const records=[structuredClone(binding)],adapter=createWhatsAppOAuthAdapter({bindings:records,now:()=>now});records[0].appId="999";expect(()=>adapter.validateProfile(profile)).not.toThrow();expect(()=>adapter.validateProfile({...profile,tokenTypes:["system_user"]})).toThrow("BISU_PROFILE_REQUIRED");});
+ it("rejects unregistered roots before any code exchange",async()=>{const f=fixture();await expect(f.adapter.exchangeAndInspect({profile,code:"synthetic-code",appSecret:"synthetic-app-secret",requestedAssets:[...requestedAssets.slice(0,2),{type:"WHATSAPP_PHONE",id:"999"}]})).rejects.toThrow("EXACT_CLIENT_ACCOUNT_CLOSURE_REQUIRED");expect(f.fetcher).not.toHaveBeenCalled();});
+});

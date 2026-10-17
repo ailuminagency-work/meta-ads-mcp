@@ -1,0 +1,5 @@
+import {it,expect} from "vitest";
+import {buildPausedAdBatchProposal} from "../../src/platform/paused-ad-batch-plan.js";
+const input={account_id:"act_101",ad_set_id:"301",ads:[{name:"Reviewed first",creative_id:"501"},{name:"Reviewed second",creative_id:"502"}]};
+it("creates only ordered PAUSED proposals without reusable approval authority",()=>{const p=buildPausedAdBatchProposal(input);expect(p.mode).toBe("SEPARATE_FRESH_HUMAN_APPROVAL_PER_STEP");expect(p.steps.map(s=>s.input.status)).toEqual(["PAUSED","PAUSED"]);expect(p.steps.map(s=>s.index)).toEqual([0,1]);expect(p.digest).toMatch(/^[a-f0-9]{64}$/);expect(buildPausedAdBatchProposal({...input,ads:[...input.ads].reverse()}).digest).not.toBe(p.digest);});
+it.each([{...input,status:"ACTIVE"},{...input,ads:[{...input.ads[0],status:"ACTIVE"}]},{...input,ads:Array(11).fill(input.ads[0])},{...input,ads:[input.ads[0],input.ads[0]]},{...input,approval_id:"forged"},{...input,ads:[{...input.ads[0],creative:{id:"999"}}]}])("rejects unsafe or ambiguous batch %#",raw=>expect(()=>buildPausedAdBatchProposal(raw)).toThrow());

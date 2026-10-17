@@ -1,0 +1,7 @@
+import {z} from "zod";
+import type {McpServer} from "@modelcontextprotocol/sdk/server/mcp.js";
+import {resolveOperationContext} from "./runtime.js";
+import {configuredAppPromotionService} from "./app-promotion-runtime.js";
+import {PlatformDenied} from "./models.js";
+export const APP_PROMOTION_WORKFLOW_TOOLS=Object.freeze(["meta_prepare_app_promotion_access"]);
+export function registerAppPromotionTools(server:McpServer):void{server.registerTool("meta_prepare_app_promotion_access",{description:"Read the deployment-approved client app assignment and store destination and prepare a protected human review. Does not enroll access, create ads, activate spending or establish app-event delivery.",inputSchema:{client_id:z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),binding_hash:z.string().regex(/^[a-f0-9]{64}$/),connection_id:z.string().min(1).max(128).optional()},annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false}},async input=>{try{const ctx=await resolveOperationContext(input.client_id,"meta_prepare_app_promotion_access","META_MARKETING"),result=await configuredAppPromotionService().prepare(ctx,input.binding_hash,input.connection_id);return {content:[{type:"text" as const,text:JSON.stringify({...result,status:"HUMAN_REVIEW_REQUIRED"})}]};}catch(e){return {isError:true,content:[{type:"text" as const,text:JSON.stringify({status:"HOLD",reason:e instanceof PlatformDenied?e.reason:"APP_PROMOTION_UNAVAILABLE"})}]};}});}

@@ -21,7 +21,7 @@ function checkpointKey(scope: AssetBinding, adapter: string): string {
 }
 
 export class TransactionalEventStore implements EventStore {
-  constructor(private readonly database: AtomicDatabase) {}
+  constructor(private readonly database: AtomicDatabase,private readonly clock:()=>number=Date.now) {}
 
   async due(scope: AssetBinding, now: number, limit: number): Promise<string[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid_due_limit");
@@ -65,7 +65,7 @@ export class TransactionalEventStore implements EventStore {
       delete finished.leaseUntil;
       if (outcome !== "delivered") finished.lastErrorCode = "adapter_failed";
       tx.set(key, finished);
-      if (outcome === "delivered") tx.set(checkpointKey(scope, adapterId), { id, completedAt: now });
+      if (outcome === "delivered") tx.set(checkpointKey(scope, adapterId), { id, completedAt: now, expiresAt: now+90*86400000 });
       return true;
     });
   }
@@ -80,7 +80,7 @@ export class TransactionalEventStore implements EventStore {
   }
 
   checkpoint(scope: AssetBinding, adapterId: string): Promise<string | null> {
-    return this.database.transaction(async tx => (await tx.get<{ id: string }>(checkpointKey(scope, adapterId)))?.id ?? null);
+    return this.database.transaction(async tx => {const record=await tx.get<{id:string;expiresAt:number}>(checkpointKey(scope,adapterId));if(!record)return null;if(!Number.isSafeInteger(record.expiresAt)||record.expiresAt<=this.clock())throw new Error("event_checkpoint_expired_reconciliation_hold");return record.id;});
   }
 }
 
@@ -101,7 +101,7 @@ export function firestoreEventDatabase(firestore: Firestore): AtomicDatabase {
     },
     set: <T>(key: string, value: T): void => {
       const record = value as Record<string, unknown>;
-      const expiresAt = (record.event as NormalizedEvent | undefined)?.expiresAt;
+      const expiresAt = (record.event as NormalizedEvent | undefined)?.expiresAt ?? (typeof record.completedAt === "number" ? record.completedAt+90*86400000 : undefined);
       transaction.set(collection.doc(key), { ...record, ...(expiresAt === undefined ? {} : { expireTime: new Date(expiresAt) }) });
     },
   })) };

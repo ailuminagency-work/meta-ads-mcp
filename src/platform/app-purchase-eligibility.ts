@@ -1,0 +1,7 @@
+import type {ProductContract} from './products/contracts.js';
+import {PlatformDenied} from './models.js';
+export const APP_PURCHASE_SOURCE='https://developers.facebook.com/documentation/app-ads/optimizing-your-app-ad#app-events-opt-via-api';
+export function appPurchaseEnabled(){const v=process.env.LUMIN_MARKETING_APP_PURCHASE_ENABLED;if(v===undefined||v==='false')return false;if(v!=='true')throw new PlatformDenied('APP_PURCHASE_FLAG_INVALID');return true;}
+export function appPurchaseRequirement(bindingHash:string){if(!/^[a-f0-9]{64}$/.test(bindingHash))throw new PlatformDenied('APP_PURCHASE_BINDING_REQUIRED');return 'app_purchase_sdk_currency_value_source:'+bindingHash;}
+/** Human artifact confirms SDK/source implementation; event-name GET never certifies optimization eligibility. */
+export function appPurchaseEligibilityContract(bindingHash:string):ProductContract{const r=appPurchaseRequirement(bindingHash);return{id:'marketing.app_purchase.eligibility',tool:'ads_create_ad_set',title:'Human review of exact app Purchase SDK currency/value/source implementation',provider:'META_MARKETING',product:'marketing',assetType:'APP',method:'GET',path:'/{asset_id}',operationClasses:['READ'],requiredScopes:['ads_read','ads_management'],tokenTypes:['user'],allowedInputKeys:[],responseFields:[],documentation:[APP_PURCHASE_SOURCE],manualRequirements:[r],eligibilityRequirements:[r],eligibilityPolicies:{[r]:{kind:'HUMAN_ATTESTATION',maxAgeMs:300000}},verified:true};}

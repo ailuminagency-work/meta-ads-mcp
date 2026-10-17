@@ -15,7 +15,10 @@ const inputSchema=z.object({
   event_source_url:z.string().url().optional(),
   user_data:z.object({em:z.string().email().optional(),ph:z.string().regex(/^\+[1-9]\d{7,14}$/).optional(),external_id:z.string().min(1).max(200).optional()}).strict(),
   custom_data:z.object({currency:z.string().regex(/^[A-Z]{3}$/).optional(),value:z.number().finite().nonnegative().optional()}).strict().optional(),
-}).strict();
+  data_processing_options:z.array(z.literal("LDU")).max(1).optional(),
+  data_processing_options_country:z.literal(1).optional(),
+  data_processing_options_state:z.number().int().min(1000).max(1013).optional(),
+}).strict().superRefine((value,ctx)=>{const ldu=value.data_processing_options?.length===1,location=value.data_processing_options_country!==undefined&&value.data_processing_options_state!==undefined;if(ldu&&!location||!ldu&&(value.data_processing_options_country!==undefined||value.data_processing_options_state!==undefined))ctx.addIssue({code:"custom",message:"Trusted explicit LDU location required"});});
 export type FirstPartySignalInput=z.infer<typeof inputSchema>;
 export interface SignalEvidence {
   tenantId:string;clientId:string;datasetId:string;payloadDigest:string;sourceReference:string;consentReference:string;
@@ -33,6 +36,8 @@ export async function prepareFirstPartySignal(raw:unknown,scope:{tenantId:string
   const parsed=inputSchema.safeParse(raw);
   if(!parsed.success)throw new PlatformDenied("INVALID_FIRST_PARTY_SIGNAL");
   const input=parsed.data;
+  const ldu=input.data_processing_options?.length===1,hasCountry=input.data_processing_options_country!==undefined,hasState=input.data_processing_options_state!==undefined;
+  if(ldu&&(!hasCountry||!hasState)||!ldu&&(hasCountry||hasState))throw new PlatformDenied("TRUSTED_EXPLICIT_LDU_LOCATION_REQUIRED");
   // A deliberately conservative local freshness policy; not a claim that every
   // Meta product shares this API limit.
   if(input.event_time*1000>now+60000 || input.event_time*1000<now-7*86400000)throw new PlatformDenied("LUMIN_SIGNAL_TIME_POLICY");
@@ -46,7 +51,7 @@ export async function prepareFirstPartySignal(raw:unknown,scope:{tenantId:string
   if(input.user_data.ph)user.ph=[hash(input.user_data.ph.slice(1))];
   if(input.user_data.external_id)user.external_id=[hash(input.user_data.external_id)];
   if(!Object.keys(user).length)throw new PlatformDenied("FIRST_PARTY_MATCH_DATA_REQUIRED");
-  const prepared:PreparedSignal={event:{event_name:input.event_name,event_id:input.event_id,event_time:input.event_time,action_source:input.action_source,user_data:user,...(input.event_source_url?{event_source_url:input.event_source_url}:{}),...(input.custom_data?{custom_data:input.custom_data}:{})},deduplicationKey:hash(JSON.stringify([scope.tenantId,scope.clientId,scope.datasetId,input.event_name,input.event_id])),sourceReference:input.source_reference,consentReference:input.consent_reference};
+  const prepared:PreparedSignal={event:{event_name:input.event_name,event_id:input.event_id,event_time:input.event_time,action_source:input.action_source,user_data:user,...(input.event_source_url?{event_source_url:input.event_source_url}:{}),...(input.custom_data?{custom_data:input.custom_data}:{}),...(input.data_processing_options!==undefined?{data_processing_options:input.data_processing_options}:{}),...(ldu?{data_processing_options_country:input.data_processing_options_country,data_processing_options_state:input.data_processing_options_state}:{})},deduplicationKey:hash(JSON.stringify([scope.tenantId,scope.clientId,scope.datasetId,input.event_name,input.event_id])),sourceReference:input.source_reference,consentReference:input.consent_reference};
   preparedSignals.set(prepared,{scope:canonicalJson(scope),event:canonicalJson(prepared.event),source:prepared.sourceReference,consent:prepared.consentReference,expiresAt:evidence.expiresAt,evidence:canonicalJson(evidence),authorize:()=>resolver.resolve(input.source_reference,input.consent_reference)});
   return prepared;
 }

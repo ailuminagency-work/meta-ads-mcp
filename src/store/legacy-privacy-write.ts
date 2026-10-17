@@ -1,0 +1,4 @@
+import type {Firestore,DocumentReference} from "@google-cloud/firestore";
+import {privacySubjectHash} from "../platform/meta-privacy-provenance.js";
+/** Same transaction as a legacy personal record write, preventing post-erasure reingestion races. */
+export async function commitLegacyPersonalWrite(db:Firestore,fbUserId:string,ref:DocumentReference,value:object,merge=false):Promise<void>{const appId=process.env.META_APP_ID;if(!appId){await ref.set(value,{merge});return;}if(!/^\d{1,100}$/.test(appId)||!/^\d{1,100}$/.test(fbUserId))throw new Error("PRIVACY_IDENTITY_REQUIRED");await db.runTransaction(async tx=>{if((await tx.get(db.collection("platform_meta_privacy_subject_locks").doc(privacySubjectHash(appId,fbUserId)))).exists)throw new Error("USER_AUTHORIZATION_REVOKED");tx.set(ref,value,{merge});});}

@@ -99,8 +99,8 @@ export class MessagingPolicyService {
     const now=this.validate(evidence,5*60_000);if(scope.provider!=="META_WHATSAPP" || evidence.source!=="meta_authenticated_template_refresh" || evidence.category!=="UTILITY" || !/^[a-z0-9_]{1,512}$/.test(evidence.name) || !/^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(evidence.language) || !/^[0-9]+$/.test(evidence.accountId) || !["APPROVED","PENDING","REJECTED","PAUSED","DISABLED"].includes(evidence.status) || !Number.isFinite(evidence.expiresAt) || evidence.expiresAt<=now || evidence.expiresAt>now+RETENTION)throw new PlatformDenied("MESSAGING_TEMPLATE_EVIDENCE_REQUIRED");
     return this.record(scope,{kind:"TEMPLATE",evidence:{eventId:evidence.eventId,occurredAt:evidence.occurredAt,receivedAt:evidence.receivedAt,expiresAt:evidence.expiresAt,name:evidence.name,language:evidence.language,accountId:evidence.accountId,status:evidence.status,category:"UTILITY",verified:true,source:"meta_authenticated_template_refresh"}},now);
   }
-  async verifyExecution(execution:MessagingExecution,input:MessagingRequest):Promise<{messagingAccountId?:string}> {
-    const {context,snapshot,plan}=execution,now=this.clock(),connection=snapshot.connection;
+  async verifyExecution(execution:MessagingExecution,input:MessagingRequest):Promise<{messagingAccountId?:string;validUntil:number}> {
+    const {context,snapshot,plan}=execution,connection=snapshot.connection;let now=this.clock();
     if(!plan.classes.includes("WRITE_MESSAGING") || context.provider!==connection.provider || snapshot.tenant.id!==context.principal.tenantId || snapshot.client.id!==context.clientId || !["META_MESSENGER","META_INSTAGRAM_LOGIN","META_INSTAGRAM_FACEBOOK_LOGIN","META_WHATSAPP"].includes(context.provider))throw new PlatformDenied("MESSAGING_EXECUTION_SCOPE_REQUIRED");
     if(connection.tenantId!==context.principal.tenantId || connection.operatorId!==context.principal.operatorId || connection.revokedAt!==null || !Number.isFinite(connection.verifiedAt) || connection.verifiedAt<=0 || connection.verifiedAt>now || now-connection.verifiedAt>=5*60_000 || connection.expiresAt!==null && (!Number.isFinite(connection.expiresAt) || connection.expiresAt<=now))throw new PlatformDenied("MESSAGING_CONNECTION_REQUIRED");
     const candidates=snapshot.assets.filter(a=>a.id===input.assetId && a.provider===context.provider && a.appId===connection.appId && a.tenantId===context.principal.tenantId && a.clientId===context.clientId && a.revokedAt===null && a.verifiedAt>0 && a.verifiedAt<=now && now-a.verifiedAt<5*60_000);
@@ -120,6 +120,7 @@ export class MessagingPolicyService {
     } else if(input.mode!=="text" || input.template)throw new PlatformDenied("MESSAGING_RESPONSE_ONLY");
     const scope=this.scope({tenantId:context.principal.tenantId,clientId:context.clientId,provider:context.provider,appId:connection.appId,assetId:asset.id},input.recipient),state=await this.store.get(scope);
     if(!state)throw new PlatformDenied("MESSAGING_POLICY_EVIDENCE_REQUIRED");
+    const evaluatedAt=this.clock();if(!Number.isSafeInteger(evaluatedAt)||evaluatedAt<now)throw new PlatformDenied("MESSAGING_POLICY_CLOCK_INVALID");now=evaluatedAt;
     const evidenceTimeValid=(e:{eventId:string;occurredAt:number;receivedAt:number})=>/^[a-f0-9]{64}$/.test(e.eventId) && Number.isFinite(e.occurredAt) && e.occurredAt>0 && e.occurredAt<=now && Number.isFinite(e.receivedAt) && e.receivedAt>=e.occurredAt && e.receivedAt<=now;
     const inbound=state.inbound,open=!!inbound && inbound.verified===true && inbound.source==="meta_signed_webhook" && evidenceTimeValid(inbound) && now-inbound.occurredAt<WINDOW;
     if(context.provider==="META_WHATSAPP") {
@@ -128,10 +129,10 @@ export class MessagingPolicyService {
       if(input.mode==="template") {
         const template=input.template,approved=state.templates.filter(e=>template && e.name===template.name && e.language===template.language && e.accountId===messagingAccountId && e.verified===true && e.source==="meta_authenticated_template_refresh" && e.category==="UTILITY" && e.status==="APPROVED" && Number.isFinite(e.expiresAt) && e.expiresAt>now && evidenceTimeValid(e) && now-e.occurredAt<5*60_000);
         if(approved.length!==1)throw new PlatformDenied("MESSAGING_APPROVED_TEMPLATE_REQUIRED");
-        return {messagingAccountId};
+        return {messagingAccountId,validUntil:Math.min(opt.expiresAt,approved[0].expiresAt,approved[0].occurredAt+300000)};
       }
     }
     if(input.mode!=="text" || input.template || !open)throw new PlatformDenied("MESSAGING_WINDOW_REQUIRED");
-    return messagingAccountId?{messagingAccountId}:{};
+    return {validUntil:Math.min(inbound!.occurredAt+WINDOW,...(context.provider==="META_WHATSAPP"?[state.optIn!.expiresAt]:[])),...(messagingAccountId?{messagingAccountId}:{})};
   }
 }

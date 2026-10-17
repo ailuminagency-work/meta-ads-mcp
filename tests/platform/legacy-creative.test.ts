@@ -1,0 +1,7 @@
+import {describe,expect,it} from "vitest";
+import {buildLegacyImageCreative} from "../../src/platform/legacy-creative.js";
+const input={page_id:"601",image_hash:"a".repeat(32),link_url:"https://fixture.invalid/landing",message:"Synthetic reviewed body",headline:"Synthetic headline",call_to_action_type:"LEARN_MORE"};
+describe("typed registered-image creative",()=>{
+ it("constructs exact story fields and authorizes each private identity",()=>{const result=buildLegacyImageCreative(input);expect(result.assets).toEqual([{type:"PAGE",id:"601"},{type:"AD_IMAGE",id:"a".repeat(32)}]);expect(result.destinationOrigin).toBe("https://fixture.invalid");expect(result.story).toEqual({page_id:"601",link_data:{image_hash:"a".repeat(32),link:input.link_url,message:input.message,name:input.headline,call_to_action:{type:"LEARN_MORE",value:{link:input.link_url}}}});});
+ it.each([{object_story_spec:{page_id:"999"}},{image_url:"https://fixture.invalid/unregistered"},{video_id:"999"},{instagram_actor_id:"999"},{source_instagram_media_id:"999"},{object_story_id:"601_999"},{page_id:"../601"},{image_hash:"unregistered"},{link_url:"http://fixture.invalid"},{link_url:"https://user:password@fixture.invalid"},{link_url:"https://127.0.0.1"},{link_url:"https://fixture.invalid/#secret"},{call_to_action_type:"ARBITRARY"}])("denies unsupported or malformed hidden reference %j",change=>expect(()=>buildLegacyImageCreative({...input,...change})).toThrow());
+});

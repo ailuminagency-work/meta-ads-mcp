@@ -1,3 +1,4 @@
+import {commitLegacyPersonalWrite} from "./legacy-privacy-write.js";
 import { getFirestore } from "./firestore.js";
 import {
   decryptToken,
@@ -215,12 +216,12 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     const now = Math.floor(Date.now() / 1000);
     const snap = await ref.get();
     if (snap.exists) {
-      await ref.update({
+      await commitLegacyPersonalWrite(getFirestore(),fbUserId,ref,{
         email: profile.email,
         name: profile.name,
         picture: profile.pictureUrl,
         lastLoginAt: now,
-      });
+      },true);
     } else {
       const doc: UserDoc = {
         email: profile.email,
@@ -229,7 +230,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
         firstLoginAt: now,
         lastLoginAt: now,
       };
-      await ref.set(doc);
+      await commitLegacyPersonalWrite(getFirestore(),fbUserId,ref,doc);
     }
   }
 
@@ -269,7 +270,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
       }
     }
 
-    await this.tokenDocRef(input.fbUserId, input.name).set(doc, { merge: false });
+    await commitLegacyPersonalWrite(getFirestore(),input.fbUserId,this.tokenDocRef(input.fbUserId,input.name),doc);
   }
 
   private async clearDefaults(fbUserId: string): Promise<void> {
@@ -342,7 +343,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
 
     const data = snap.data() as MetaTokenDoc;
     return maybeRefresh(data, fbUserId, tokenName, serverUrl, async (next) => {
-      await ref.update(next);
+      await commitLegacyPersonalWrite(getFirestore(),fbUserId,ref,next,true);
     });
   }
 }

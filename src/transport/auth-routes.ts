@@ -1,3 +1,4 @@
+import {isMetaPrincipalPrivacyLocked} from "../platform/meta-privacy-access.js";
 import express from "express";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
@@ -356,6 +357,7 @@ export function mountAuthRoutes(
         config.apiVersion,
       );
 
+      if(await isMetaPrincipalPrivacyLocked(profile.id))throw new Error("User authorization has been revoked");
       await upsertUser(profile.id, profile);
       await saveToken({
         fbUserId: profile.id,
@@ -766,4 +768,3 @@ export function mountAuthRoutes(
     },
   );
 }
-

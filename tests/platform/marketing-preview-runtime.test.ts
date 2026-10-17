@@ -1,0 +1,4 @@
+import {it,expect} from 'vitest';
+import {environmentMarketingPreviewRouter} from '../../src/platform/marketing-preview-runtime.js';
+it('keeps defaultoff and rejects malformed flags/platform-off enabled previews',()=>{expect(environmentMarketingPreviewRouter('https://lumin.example',{env:{}})).toBeNull();expect(()=>environmentMarketingPreviewRouter('https://lumin.example',{env:{LUMIN_MARKETING_PREVIEWS_ENABLED:'yes'}})).toThrow('FLAG_INVALID');expect(()=>environmentMarketingPreviewRouter('https://lumin.example',{env:{LUMIN_MARKETING_PREVIEWS_ENABLED:'true',LUMIN_PLATFORM_ENABLED:'false'}})).toThrow('PLATFORM_REQUIRED');});
+it('requires a secure origin and actual server session/encryption configuration',()=>{expect(()=>environmentMarketingPreviewRouter('http://lumin.example',{env:{LUMIN_MARKETING_PREVIEWS_ENABLED:'true',LUMIN_PLATFORM_ENABLED:'true'}})).toThrow('HTTPS_CONFIGURATION_REQUIRED');});

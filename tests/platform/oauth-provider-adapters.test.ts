@@ -1,3 +1,4 @@
+import {PRODUCT_CONTRACTS} from "../../src/platform/products/contracts.js";
 import { describe, expect, it, vi } from "vitest";
 import { createThreadsOAuthAdapter } from "../../src/platform/oauth-threads.js";
 import { createInstagramOAuthAdapter } from "../../src/platform/oauth-instagram.js";
@@ -36,8 +37,17 @@ describe("provider OAuth inspection", () => {
     const adapter = createThreadsOAuthAdapter({ fetch: async () => new Response("x".repeat(65537)) });
     await expect(adapter.exchangeAndInspect({ code: "synthetic-code", profile, appSecret: "synthetic-secret", requestedAssets: [{ type: "THREADS_ACCOUNT", id: "2001" }] })).rejects.toThrow("HOLD");
   });
-  it("holds Instagram before any credential exchange", async () => {
-    const adapter = createInstagramOAuthAdapter(); expect(adapter.verified).toBe(false);
-    await expect(adapter.exchangeAndInspect({ code: "synthetic", profile, appSecret: "synthetic", requestedAssets: [] })).rejects.toThrow("PRODUCT_OAUTH_ADAPTER_UNVERIFIED_HOLD");
+  it("concrete Instagram adapter refuses a Threads profile before any credential exchange", async () => {
+    const fetcher=vi.fn(),adapter = createInstagramOAuthAdapter({fetcher,apiVersion:"v26.0"}); expect(adapter.verified).toBe(true);
+    await expect(adapter.exchangeAndInspect({ code: "synthetic", profile, appSecret: "synthetic", requestedAssets: [] })).rejects.toThrow("INSTAGRAM_LOGIN_PROFILE_UNVERIFIED_HOLD");expect(fetcher).not.toHaveBeenCalled();
   });
+});
+
+describe("Threads verified incremental product profiles",()=>{
+ for(const tool of ["threads_create_image_container","threads_create_video_container","threads_create_carousel_container","threads_keyword_search","threads_get_mentions","threads_list_insights","threads_manage_reply","threads_delete_post"])it("validates exact canonical consent and actual token for "+tool,async()=>{
+ const c=PRODUCT_CONTRACTS.find(c=>c.tool===tool&&c.provider==="META_THREADS"&&c.verified);expect(c,"verified canonical tool").toBeDefined();const selected:TrustedOAuthProfile={...profile,capabilities:[c!.id],scopes:[...new Set(["threads_basic",...c!.requiredScopes])],actions:[...new Set(["READ" as const,...c!.operationClasses])]};
+ const bodies=[{access_token:"synthetic-short",token_type:"bearer",user_id:"2001"},{access_token:"synthetic-long",token_type:"bearer",expires_in:3600},{data:{type:"USER",is_valid:true,user_id:"2001",expires_at:now/1000+3000,data_access_expires_at:now/1000+2000,scopes:selected.scopes}},{id:"2001"}],fetcher=vi.fn(async()=>new Response(JSON.stringify(bodies.shift()))),adapter=createThreadsOAuthAdapter({fetch:fetcher,now:()=>now});
+ expect(()=>adapter.validateProfile(selected)).not.toThrow();expect(await adapter.exchangeAndInspect({code:"synthetic-code",profile:selected,appSecret:"synthetic-secret",requestedAssets:[{type:"THREADS_ACCOUNT",id:"2001"}]})).toMatchObject({subjectId:"2001",grantedScopes:selected.scopes,assets:[{type:"THREADS_ACCOUNT",id:"2001",tasks:[]}]});expect(fetcher).toHaveBeenCalledTimes(4);
+ for(const attack of [{...selected,actions:[...selected.actions,"BILLING"]},{...selected,scopes:[...selected.scopes,"threads_manage_insights_unverified"]},{...selected,capabilities:[...selected.capabilities,"unknown.capability"]},{...selected,requiredTasks:["MANAGE"]}])expect(()=>adapter.validateProfile(attack as TrustedOAuthProfile)).toThrow();
+ });
 });

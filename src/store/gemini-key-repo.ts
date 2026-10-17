@@ -1,3 +1,4 @@
+import {commitLegacyPersonalWrite} from "./legacy-privacy-write.js";
 import type { Firestore } from "@google-cloud/firestore";
 import { decryptToken, encryptToken, type EncryptedPayload } from "../auth/crypto.js";
 import { hashToken } from "../auth/token-store.js";
@@ -120,7 +121,7 @@ export class FirestoreGeminiKeyRepo implements GeminiKeyRepo {
     const snap = await ref.get();
     const existing = snap.exists ? (snap.data() as GeminiKeyDoc) : undefined;
     const createdAt = existing?.createdAt ?? Math.floor(Date.now() / 1000);
-    await ref.set(buildDoc(fbUserId, key, createdAt));
+    await commitLegacyPersonalWrite(this.db,fbUserId,ref,buildDoc(fbUserId, key, createdAt));
   }
 
   async getDecryptedKey(fbUserId: string): Promise<string | null> {

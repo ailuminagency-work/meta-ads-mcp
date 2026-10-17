@@ -36,16 +36,16 @@ describe("trusted messaging policy",()=>{
     const f=fixture();await f.service.recordTrustedInbound(f.scope,inbound);await f.service.recordTrustedInbound(f.scope,{...inbound,eventId:"d".repeat(64),occurredAt:now-2000,receivedAt:now-100});expect((await f.store.get(f.scope))?.inbound?.occurredAt).toBe(inbound.occurredAt);
   });
   it("allows Messenger response only with trusted inbound evidence",async()=>{
-    const f=fixture("META_MESSENGER");await f.service.recordTrustedInbound(f.scope,inbound);expect(await f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"text"})).toEqual({});
+    const f=fixture("META_MESSENGER");await f.service.recordTrustedInbound(f.scope,inbound);expect(await f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"text"})).toEqual({validUntil:now-1000+24*3600000});
     await expect(f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"template",template:{name:template.name,language:template.language}})).rejects.toThrow("RESPONSE_ONLY");
   });
   it("requires separate WhatsApp opt-in and selects the client Messaging account",async()=>{
     const f=fixture();await f.service.recordTrustedInbound(f.scope,inbound);await expect(f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"text"})).rejects.toThrow("OPT_IN");
-    await f.service.recordTrustedOptIn(f.scope,optIn);expect(await f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"text"})).toEqual({messagingAccountId:"2"});
+    await f.service.recordTrustedOptIn(f.scope,optIn);expect(await f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"text"})).toEqual({messagingAccountId:"2",validUntil:now+60000});
   });
   it("allows outside-window utility templates only with exact approved fresh evidence",async()=>{
     const f=fixture();await f.service.recordTrustedOptIn(f.scope,optIn);await f.service.recordTrustedTemplate(f.scope,template);
-    expect(await f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"template",template:{name:template.name,language:template.language}})).toEqual({messagingAccountId:"2"});
+    expect(await f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"template",template:{name:template.name,language:template.language}})).toEqual({messagingAccountId:"2",validUntil:now+60000});
     await expect(f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"text"})).rejects.toThrow("WINDOW");
     for(const selected of [{name:"other",language:template.language},{name:template.name,language:"es"}])await expect(f.service.verifyExecution(f.execution,{assetId:"3",recipient,mode:"template",template:selected})).rejects.toThrow("APPROVED_TEMPLATE");
   });

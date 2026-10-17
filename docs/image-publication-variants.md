@@ -1,0 +1,15 @@
+# Reviewed JPEG publication variants
+
+Current engineering source implements Threads image containers and image carousel children, plus Instagram JPEG story containers and image carousel children for both login families. All use registered decoded JPEG sources and separate human source enrollment and operation approval. No live provider publication is certified here.
+
+Threads sources require the exact threads_content_publishing purpose and THREADS_ACCOUNT owner under the Threads app. Instagram feed/carousel sources use instagram_content_publishing; stories require the distinct instagram_story_publishing purpose. Story rights do not grant feed publishing rights. Story sources support actual decoded portrait JPEGs including 9:16, bounded locally to 4 megapixels and 4096 pixels in height, with the existing byte/decoder limits. These local bounds are not represented as Meta's complete limits.
+
+Carousel children receive a dedicated product kind. A child cannot publish directly. Parent approval preserves the ordered registered child list; every child is atomically claimed by the one parent-draft operation. Unknown parent outcomes retain the claims. Status observation and a separate parent-publication approval remain required. Published resources use the owner account as their authorization parent and retain source keys only as provenance.
+
+Instagram image child bodies use image_url and is_carousel_item=true, without a media_type or unsupported child AI parameter. Story bodies use fixed STORIES and omit caption/alt_text/tags/stickers. The non-AI flag remains a local input/evidence invariant. Threads image bodies use fixed IMAGE and a server-selected child flag.
+
+Independent Instagram Login story drafts use the documented /me fields id,user_id,account_type response: the app-user and professional account must both match, and the documented Business type must be observed. The current Facebook Login IGUser reference does not expose an equivalent account_type field. For that family the exact authorized, manually reviewed Business-eligibility draft and publication requests rely on Meta's documented provider enforcement; the service does not invent a read endpoint or claim an independently observed account-type certificate. Provider rejection is a single uncertain/failed attempt requiring reconciliation.
+
+Extended media variants remain behind the default-off LUMIN_PUBLISHING_VIDEO_ENABLED deployment gate, including these JPEG variants for compatibility with the existing extended-media gate. Trusted JPEG ingress has its own reviewed configuration and app-bound signing keys. Enabling a flag does not supply grants, credentials, source rights, eligibility evidence or human approval.
+
+Primary references: https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-user/media (September 28, 2026), https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/get-started , https://developers.facebook.com/documentation/threads/posts and https://www.postman.com/meta/threads/documentation/dht3nzz/threads-api .

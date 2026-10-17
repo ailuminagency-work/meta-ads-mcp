@@ -1,3 +1,4 @@
+import {commitLegacyPersonalWrite} from "./legacy-privacy-write.js";
 import { getFirestore } from "./firestore.js";
 
 /**
@@ -38,7 +39,7 @@ export class FirestoreJtiStore implements JtiStore {
   }
 
   async put(jti: string, entry: JtiEntry): Promise<void> {
-    await this.collection.doc(jti).set(entry);
+    if(typeof entry.meta?.fbUserId==="string")await commitLegacyPersonalWrite(getFirestore(),entry.meta.fbUserId,this.collection.doc(jti),entry);else await this.collection.doc(jti).set(entry);
   }
 
   async has(jti: string): Promise<boolean> {

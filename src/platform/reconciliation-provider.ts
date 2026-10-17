@@ -1,0 +1,20 @@
+import { z } from "zod";
+import { readBodyWithLimit } from "../utils/bounded-body.js";
+import { PlatformDenied } from "./models.js";
+import type { VerifiedReconciliationAdapter } from "./reconciliation.js";
+/** Static Graph v26 metadata reads only; never searches by customer names,
+ * creates registry entries, follows provider URLs or retries mutations. */
+export class MetaReadOnlyReconciliationAdapter implements VerifiedReconciliationAdapter {
+  readonly provider="META_MARKETING" as const;readonly verified=true as const;readonly readOnly=true as const;
+  constructor(private readonly fetcher:typeof fetch=fetch){}
+  async inspect(input:Parameters<VerifiedReconciliationAdapter["inspect"]>[0]):ReturnType<VerifiedReconciliationAdapter["inspect"]>{
+    const now=Date.now();if(!input.connection.eligibility?.some(e=>e.requirement==="marketing_read_access:v26.0"&&e.verified===true&&Number.isFinite(e.checkedAt)&&e.checkedAt>0&&e.checkedAt<=now&&now-e.checkedAt<=3600000&&Number.isFinite(e.expiresAt)&&e.expiresAt>now&&/^https:\/\/(developers\.facebook\.com\/(?:docs|documentation)\/|www\.postman\.com\/meta\/|github\.com\/facebook\/)/.test(e.source)))throw new PlatformDenied("UNVERIFIED_MARKETING_RECONCILIATION_READ_ACCESS");
+    if(input.connection.provider!==this.provider||!input.connection.scopes.some(s=>s==="ads_read"||s==="ads_management")||input.assets.length>20)throw new PlatformDenied("RECONCILIATION_STATIC_READ_CONTRACT_REQUIRED");
+    const observations:Array<{id:string;type:string;status?:"PAUSED"|"ACTIVE"|"ARCHIVED"|"DELETED"}>=[];
+    for(const asset of input.assets){if(!["AD_ACCOUNT","CAMPAIGN","AD_SET","AD"].includes(asset.type)||! /^(?:act_)?\d{1,32}$/.test(asset.id))continue;
+      const rawId=asset.id.replace(/^act_/,""),path=asset.type==="AD_ACCOUNT"?"act_"+rawId:rawId,url=new URL(`https://graph.facebook.com/v26.0/${path}`);url.searchParams.set("fields",asset.type==="AD_ACCOUNT"?"id,account_id":asset.type==="CAMPAIGN"?"id,account_id,status":asset.type==="AD_SET"?"id,account_id,campaign_id,status":"id,account_id,campaign_id,adset_id,status");
+      try{await input.beforeRead?.();const now=Date.now();if(!input.connection.eligibility?.some(e=>e.requirement==="marketing_read_access:v26.0"&&e.verified===true&&Number.isSafeInteger(e.checkedAt)&&e.checkedAt>0&&e.checkedAt<=now&&now-e.checkedAt<=3600000&&Number.isSafeInteger(e.expiresAt)&&e.expiresAt>now&&/^https:\/\/(developers\.facebook\.com\/(?:docs|documentation)\/|www\.postman\.com\/meta\/|github\.com\/facebook\/)/.test(e.source)))throw new Error();const response=await this.fetcher(url,{method:"GET",redirect:"error",signal:AbortSignal.timeout(15000),headers:{Authorization:`Bearer ${input.token}`}});if(!response.ok){await response.body?.cancel();throw new Error();}const row=z.object({id:z.string().regex(/^(?:act_)?\d{1,32}$/),account_id:z.string().regex(/^\d{1,32}$/).optional(),campaign_id:z.string().regex(/^\d{1,32}$/).optional(),adset_id:z.string().regex(/^\d{1,32}$/).optional(),status:z.enum(["PAUSED","ACTIVE","ARCHIVED","DELETED"]).optional()}).parse(JSON.parse(await readBodyWithLimit(response,65536)));if(row.id.replace(/^act_/,"")!==rawId||typeof row.account_id!=="string"||(asset.type==="AD_SET"||asset.type==="AD")&&typeof row.campaign_id!=="string"||asset.type==="AD"&&typeof row.adset_id!=="string")throw new Error();const closure=new Set<string>();const walk=(a:typeof asset):void=>{if(closure.has(a.key))return;closure.add(a.key);for(const p of a.parents){const parent=input.assets.find(a=>a.type===p.type&&a.id.replace(/^act_/,"")===p.id.replace(/^act_/,""));if(!parent)throw new Error();walk(parent);}};walk(asset);for(const[field,type]of[["account_id","AD_ACCOUNT"],["campaign_id","CAMPAIGN"],["adset_id","AD_SET"]]as const)if(row[field]&&!input.assets.some(a=>closure.has(a.key)&&a.type===type&&a.id.replace(/^act_/,"")===row[field]))throw new Error();observations.push({id:rawId,type:asset.type,...(row.status?{status:row.status}:{})});}catch{throw new PlatformDenied("READONLY_RECONCILIATION_PROVIDER_EVIDENCE_HOLD");}
+    }
+    return {observations};
+  }
+}

@@ -45,3 +45,5 @@ coverage/
 
 # Local Firecrawl scraping cache (never committed)
 .firecrawl/
+# Local isolated test temp directories; never publish runtime artifacts.
+/work/

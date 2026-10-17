@@ -1,0 +1,9 @@
+import type {ProductContract} from "./products/contracts.js";
+import {resolveMetaApiVersion} from "../meta/api-version.js";
+export const LEGACY_MARKETING_READ_REVIEW_SOURCE="https://developers.facebook.com/documentation/ads-commerce/marketing-api/get-started/authorization";
+export const legacyMarketingReadRequirement=():string=>"marketing_read_access:"+resolveMetaApiVersion();
+/** Human observation of external-client access; never grants scopes, assets or Meta approval. */
+export function legacyMarketingReadEligibilityContract():ProductContract {const requirement=legacyMarketingReadRequirement();return {id:"legacy.marketing.read.eligibility",tool:"ads_get_account_info",title:"Human observation of current external-client Marketing read access",product:"marketing",provider:"META_MARKETING",assetType:"AD_ACCOUNT",method:"GET",path:"/{asset_id}",operationClasses:["READ"],requiredScopes:["ads_read"],tokenTypes:["user","system_user","page"],allowedInputKeys:[],responseFields:[],documentation:[LEGACY_MARKETING_READ_REVIEW_SOURCE],manualRequirements:[requirement],eligibilityRequirements:[requirement],eligibilityPolicies:{[requirement]:{kind:"HUMAN_ATTESTATION",maxAgeMs:3600000}},verified:true};}
+
+export const legacyMarketingWriteRequirement=():string=>"marketing_write_access:"+resolveMetaApiVersion();
+export function legacyMarketingWriteEligibilityContract():ProductContract {const base=legacyMarketingReadEligibilityContract(),requirement=legacyMarketingWriteRequirement();return {...base,id:"legacy.marketing.write.eligibility",title:"Human observation of current external-client Marketing write access",requiredScopes:["ads_management"],tokenTypes:["user","system_user"],manualRequirements:[requirement],eligibilityRequirements:[requirement],eligibilityPolicies:{[requirement]:{kind:"HUMAN_ATTESTATION",maxAgeMs:300000}}};}

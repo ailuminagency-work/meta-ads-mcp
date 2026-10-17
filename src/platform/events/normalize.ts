@@ -52,7 +52,7 @@ export async function normalizeWebhook(raw: Buffer, subscription: WebhookSubscri
   for (const entry of body.entry) {
     const candidates: { product: EventProduct; asset: string; parentAsset?: string; field: string; value: Record<string, unknown>; index: string }[] = [];
     for (const [index, change] of (entry.changes ?? []).entries()) {
-      const product: EventProduct = body.object === "whatsapp_business_account" ? "whatsapp" : body.object === "instagram" ? "instagram" : change.field === "leadgen" ? "leads" : "pages";
+      const product: EventProduct = body.object === "whatsapp_business_account" ? "whatsapp" : body.object === "instagram" ? "instagram" : change.field === "leadgen" ? "leads" : change.field === "message_template_status_update" ? "messenger" : "pages";
       if (product === "leads" && (!reference(change.value.leadgen_id) || !reference(change.value.form_id))) throw new InvalidWebhook("invalid_lead_schema");
       if (product === "whatsapp") {
         if (change.field !== "messages") throw new InvalidWebhook("unsupported_whatsapp_field");

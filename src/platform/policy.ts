@@ -1,3 +1,10 @@
+import {CATALOG_CAMPAIGN_TOOL,catalogCampaignEnabled} from "./catalog-campaign-contract.js";
+import {invoiceMetadataEnabled,INVOICE_METADATA_TOOL} from './business-invoice-metadata.js';
+import {assertBusinessOwnerScope} from "./business-owner-scope.js";
+import {attachmentEnabled} from "./attachment-flags.js";
+import {publishingVideoEnabled,isPublishingVideoDraftTool} from "./publishing-video-flags.js";
+import {pageVideoEnabled} from "./video-flags.js";
+import {assertAccountOwnershipEvidence} from "./ownership-evidence.js";
 import { createHash } from "node:crypto";
 import type { AuthorizationSnapshot, OperationClass, OperationContext, OperationPlan, SafeChange } from "./models.js";
 import { PlatformDenied } from "./models.js";
@@ -25,11 +32,12 @@ export function canonicalJson(value: unknown): string {
 }
 function digest(v: unknown): string { return createHash("sha256").update(canonicalJson(v)).digest("hex"); }
 export function canonicalPlanHash(ctx: OperationContext, plan: OperationPlan): string { return digest({ actor: ctx.principal.operatorId, tenant: ctx.principal.tenantId, client: ctx.clientId, tool: ctx.tool, provider: ctx.provider, plan }); }
-export function revisionHash(snapshot: AuthorizationSnapshot): string { return digest({tenant: snapshot.tenant.policyRevision, registry: snapshot.tenant.registryRevision, member: snapshot.member.revision, client: snapshot.client.revision, connection: [snapshot.connection.id, snapshot.connection.revision], assets: snapshot.assets.map(a => [a.key,a.revision]).sort(), grants: snapshot.grants.map(g => [g.id,g.revision]).sort()}); }
+export function revisionHash(snapshot: AuthorizationSnapshot): string { return digest({...(snapshot.businessOwnerEvidence?.attestations.length?{businessOwnerEvidence:{attestations:snapshot.businessOwnerEvidence.attestations.map(r=>[r.id,r.revision]).sort(),issuers:snapshot.businessOwnerEvidence.issuers.map(m=>[m.operatorId,m.revision]).sort(),connections:snapshot.businessOwnerEvidence.connections.map(c=>[c.id,c.revision]).sort(),credentials:snapshot.businessOwnerEvidence.credentials.map(c=>[c.id,digest(c)]).sort()}}:{}),...(snapshot.manualEligibilityEvidence?.attestations.length?{manualEligibility:{attestations:snapshot.manualEligibilityEvidence.attestations.map(r=>[r.id,r.revision]).sort(),issuers:snapshot.manualEligibilityEvidence.issuers.map(m=>[m.operatorId,m.revision]).sort()}}:{}),tenant: snapshot.tenant.policyRevision, registry: snapshot.tenant.registryRevision, ...(snapshot.financialEvidence&&(snapshot.financialEvidence.attestations.length||snapshot.financialEvidence.observations.length)?{financialEvidence:{attestations:snapshot.financialEvidence.attestations.map(r=>[r.id,r.revision]).sort(),observations:snapshot.financialEvidence.observations.map(r=>[r.id,r.revision]).sort()}}:{}), member: snapshot.member.revision, client: snapshot.client.revision, connection: [snapshot.connection.id, snapshot.connection.revision], assets: snapshot.assets.map(a => [a.key,a.revision]).sort(), grants: snapshot.grants.map(g => [g.id,g.revision]).sort()}); }
 export function classifyPlan(plan: OperationPlan): OperationClass[] {
   const classes = new Set(plan.classes);
   const pausedCreation = plan.createOrCopy && classes.has("WRITE_AD_CONFIGURATION");
   if(pausedCreation && plan.parameters.status !== "PAUSED") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
+  const expectationOnly = plan.capability === "marketing.activate.ad" && plan.classes.length===1 && plan.classes[0]==="ACTIVATE_SPEND" && (plan.parameters.endpointContract as {tool?:unknown}|undefined)?.tool==="marketing_activate_ad";
   let nodes = 0;
   function inspect(value: unknown, depth: number): void {
     if(++nodes > 10000 || depth > 30) throw new PlatformDenied("PLAN_TOO_COMPLEX");
@@ -44,7 +52,7 @@ export function classifyPlan(plan: OperationPlan): OperationClass[] {
         if(plan.createOrCopy) throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
         classes.add("ACTIVATE_SPEND");
       }
-      if(k.includes("budget") || k === "bid_amount" || k === "spend_cap" || k === "account_spend_limit") classes.add("WRITE_BUDGET");
+      if((k.includes("budget") || k === "bid_amount" || k === "spend_cap" || k === "account_spend_limit") && !(expectationOnly && depth===1 && value===plan.parameters.input && ["expected_campaign_daily_budget","expected_adset_daily_budget"].includes(k))) classes.add("WRITE_BUDGET");
       if(k.includes("credit_line") || k.includes("payment_method") || k === "funding_id") classes.add("BILLING");
       if(k === "status" && (v === "DELETED" || v === "ARCHIVED")) classes.add("DELETE");
       inspect(v, depth + 1);
@@ -80,15 +88,37 @@ export interface PolicyDecision { decision: "ALLOW" | "DENY" | "REQUIRE_CONFIRMA
 export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot, options: { writesEnabled: boolean }): PolicyDecision {
   const classes = classifyPlan(plan);
   const deny = (reason: string): PolicyDecision => ({decision: "DENY", reason, classes});
+  try{assertBusinessOwnerScope(snapshot);}catch(error){if(error instanceof PlatformDenied)return deny(error.reason);throw error;}
+  if(["messenger_send_audio","messenger_send_file","whatsapp_platform_send_audio","whatsapp_platform_send_document"].includes(ctx.tool)&&!attachmentEnabled())return deny("ATTACHMENT_DISABLED_BY_DEPLOYMENT");
+  if(isPublishingVideoDraftTool(ctx.tool)&&!publishingVideoEnabled())return deny("PUBLISHING_VIDEO_DISABLED_BY_DEPLOYMENT");
+  if(ctx.tool==="marketing_activate_ad"&&process.env.LUMIN_MARKETING_ACTIVATION_ENABLED!=="true")return deny("MARKETING_ACTIVATION_DISABLED_BY_DEPLOYMENT");
+  if(ctx.tool===INVOICE_METADATA_TOOL&&!invoiceMetadataEnabled())return deny('INVOICE_METADATA_DISABLED_BY_DEPLOYMENT');
+  if(ctx.tool==="marketing_get_ad_preview"&&process.env.LUMIN_MARKETING_PREVIEWS_ENABLED!=="true")return deny("MARKETING_PREVIEW_DISABLED_BY_DEPLOYMENT");
+  if(ctx.tool==="marketing_list_app_event_types"&&(process.env.LUMIN_APP_EVENT_TYPES_ENABLED!=="true"||process.env.LUMIN_MARKETING_APP_PROMOTION_ENABLED!=="true"))return deny("APP_EVENT_TYPES_DISABLED");
+  if(["marketing_inspect_image","marketing_inspect_creative_image"].includes(ctx.tool)&&process.env.LUMIN_IMAGE_INSPECTION_ENABLED!=="true")return deny("IMAGE_INSPECTION_DISABLED");
+  if(["marketing_inspect_video","marketing_inspect_creative_video"].includes(ctx.tool)&&process.env.LUMIN_VIDEO_INSPECTION_ENABLED!=="true")return deny("VIDEO_INSPECTION_DISABLED");
+  if(ctx.tool===CATALOG_CAMPAIGN_TOOL&&!catalogCampaignEnabled())return deny("CATALOG_CAMPAIGN_DISABLED");
+  if(ctx.tool==="marketing_create_classic_split_study"&&process.env.LUMIN_MARKETING_STUDIES_ENABLED!=="true")return deny("CLASSIC_STUDY_DISABLED_BY_DEPLOYMENT");
+  if(ctx.tool==="marketing_create_classic_split_study"&&!snapshot.member.roles.includes("admin"))return deny("CLASSIC_STUDY_OWNER_ADMIN_REQUIRED");
+  if(classes.some(c=>c!=="READ")&&snapshot.assets.some(a=>a.type==="AD"&&a.deletionClaim))return deny(ctx.tool==="marketing_delete_paused_ad"?"DELETION_ALREADY_CLAIMED_RECONCILE":"DELETION_PENDING_RECONCILE");
+  if(classes.some(c=>c!=="READ")&&snapshot.assets.some(a=>a.type==="AD"&&a.creativeRepointClaim))return deny("CREATIVE_REPOINT_PENDING_RECONCILE");
+  if(ctx.tool==="marketing_delete_paused_ad"&&process.env.LUMIN_MARKETING_DELETION_ENABLED!=="true")return deny("MARKETING_DELETION_DISABLED_BY_DEPLOYMENT");
+  if(["marketing_activate_ad","marketing_delete_paused_ad"].includes(ctx.tool)&&!snapshot.member.roles.includes("admin"))return deny("MARKETING_OWNER_ADMIN_REQUIRED");
+  if(ctx.tool==="pages_create_videos"&&!pageVideoEnabled())return deny("PAGE_VIDEO_DISABLED_BY_DEPLOYMENT");
   if(snapshot.tenant.id !== ctx.principal.tenantId || snapshot.tenant.status !== "ACTIVE" || snapshot.tenant.migrationState !== "READY") return deny("TENANT_NOT_READY");
   if(snapshot.member.operatorId !== ctx.principal.operatorId || snapshot.member.tenantId !== ctx.principal.tenantId || snapshot.member.disabledAt !== null || !snapshot.member.allowedClientIds.includes(ctx.clientId)) return deny("CLIENT_MEMBERSHIP_REQUIRED");
   if(!Array.isArray(snapshot.member.roles) || !snapshot.member.roles.some(role=>["reader","writer","admin","approver"].includes(role))) return deny("READ_ROLE_REQUIRED");
   if(snapshot.client.id !== ctx.clientId || snapshot.client.tenantId !== ctx.principal.tenantId || snapshot.client.status !== "ACTIVE") return deny("CLIENT_ACCESS_REQUIRED");
+  if(["marketing_upload_image","marketing_upload_video","marketing_create_empty_custom_audience","marketing_create_lookalike_audience","marketing_activate_ad","marketing_delete_paused_ad","marketing_create_purchase_conversion","marketing_create_async_report","marketing_create_disabled_pause_rule","marketing_create_classic_split_study"].includes(ctx.tool)){const account=snapshot.assets.filter(a=>a.type==="AD_ACCOUNT");if(account.length!==1)return deny("EXACT_CLIENT_AD_ACCOUNT_REQUIRED");try{assertAccountOwnershipEvidence(snapshot,account[0]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"CLIENT_OWNER_EVIDENCE_REQUIRED");}}
   if(classes.some(c => c !== "READ")) {
     if(!options.writesEnabled) return deny("DISABLED_BY_LUMIN_POLICY");
     if(!snapshot.member.roles.includes("writer") && !snapshot.member.roles.includes("admin")) return deny("WRITE_ROLE_REQUIRED");
   }
   if(classes.some(c => ["BUSINESS_ADMIN", "IDENTITY_OR_ACCESS", "BILLING"].includes(c)) && !snapshot.member.roles.includes("admin")) return deny("ADMIN_ROLE_REQUIRED");
+  for(const required of plan.requiredAssetTasks??[]){
+    const matches=snapshot.assets.filter(a=>a.type===required.asset.type&&a.id.replace(/^act_/,"")===required.asset.id.replace(/^act_/,""));
+    if(matches.length!==1||!required.tasks.length||!snapshot.grants.some(g=>g.assetKey===matches[0].key&&g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.connectionId===snapshot.connection.id&&g.revokedAt===null&&g.expiresAt>Date.now()&&required.tasks.every(task=>g.tasks.includes(task))))return deny("SCOPED_ASSET_TASK_REQUIRED");
+  }
   const confirmation: OperationClass[] = ["WRITE_AD_CONFIGURATION", "WRITE_BUDGET", "ACTIVATE_SPEND", "DELETE", "BUSINESS_ADMIN", "IDENTITY_OR_ACCESS", "BILLING", "WRITE_CONTENT", "WRITE_MESSAGING"];
-  return classes.some(c => confirmation.includes(c)) ? {decision: "REQUIRE_CONFIRMATION", reason: "HUMAN_APPROVAL_REQUIRED", classes} : {decision: "ALLOW", reason: "AUTHORIZED", classes};
+  return ctx.tool==="signals_send_crm_lead_event"||classes.some(c => confirmation.includes(c)) ? {decision: "REQUIRE_CONFIRMATION", reason: "HUMAN_APPROVAL_REQUIRED", classes} : {decision: "ALLOW", reason: "AUTHORIZED", classes};
 }

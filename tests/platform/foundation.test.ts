@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import {setupPhoneLockKey} from "../../src/platform/whatsapp-setup-types.js";
+import { describe, expect, it,vi,afterEach } from "vitest";
 import { InMemoryPlatformRepository } from "../../src/platform/repository.js";
 import type { AssetGrant, AuthorizationSnapshot, Connection, MetaAsset, OperationContext, OperationPlan } from "../../src/platform/models.js";
 import { authorizeOperation, assertExecutionPermit, claimMutationStep, finishCreatedAsset, finishOperation, getExecutionScope, revalidateExecutionPermit, runWithExecutionPermit, withConnectionCredential } from "../../src/platform/execution.js";
 import { encryptCredential, decryptCredential, selectConnection } from "../../src/platform/connections.js";
 import { canonicalPlanHash, classifyPlan, normalizeSafeDiff, revisionHash } from "../../src/platform/policy.js";
 import { resolveAuthorizedAssets } from "../../src/platform/assets.js";
+import {privacySubjectHash} from "../../src/platform/meta-privacy-provenance.js";
 
 const ctx: OperationContext = {principal:{operatorId:"operator",tenantId:"tenant"},clientId:"client-a",tool:"ads_get_campaign",provider:"META_MARKETING",requestId:"request"};
 const now = Date.now();
@@ -19,16 +21,51 @@ async function fixture() {
   await repo.put("members","tenant","human",{operatorId:"human",tenantId:"tenant",roles:["approver"],allowedClientIds:["client-a"],revision:1,disabledAt:null});
   await repo.put("clients","tenant","client-a",{id:"client-a",tenantId:"tenant",status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
   await repo.put("operatorIndex","_index","operator",ctx.principal);
+  await repo.put("operatorIndex","_index","human",{operatorId:"human",tenantId:"tenant"});
   for(const a of [account,ad]) await repo.put("assets","tenant",a.key,a);
   await repo.put("connections","tenant","narrow",connection);
   for(const a of [account,ad]) { const g: AssetGrant = {id:a.key,tenantId:"tenant",clientId:"client-a",assetKey:a.key,connectionId:"narrow",capabilities:["ads.read"],actions:["READ","WRITE_AD_CONFIGURATION","WRITE_BUDGET"],tasks:[],verifiedAt:now-1000,expiresAt:now+3600000,revokedAt:null,revision:1}; await repo.put("grants","tenant",g.id,g); }
   return repo;
 }
 describe("strict platform authorization foundation",()=>{
+  it("quarantines existing WhatsApp authority at selection and immediately before credential use",async()=>{
+    const repo=await fixture(),provider="META_WHATSAPP" as const,phone={...account,type:"WHATSAPP_PHONE" as const,provider,parents:[{type:"WHATSAPP_ACCOUNT" as const,id:"303"},{type:"MESSAGING_ACCOUNT" as const,id:"404"}]},c={...connection,provider,assetKeys:[phone.key,"wa","messaging"]},waCtx={...ctx,provider},waPlan={...plan,assets:[{type:"WHATSAPP_PHONE" as const,id:phone.id}]};
+    for(const asset of [{...account,key:"wa",id:"303",type:"WHATSAPP_ACCOUNT" as const,provider},{...account,key:"messaging",id:"404",type:"MESSAGING_ACCOUNT" as const,provider,parents:[{type:"WHATSAPP_ACCOUNT" as const,id:"303"}]}]){await repo.put("assets","tenant",asset.key,asset);const g=(await repo.get("grants","tenant",account.key))!;await repo.put("grants","tenant",asset.key,{...g,id:asset.key,assetKey:asset.key});}
+    await repo.put("assets","tenant",phone.key,phone);await repo.put("connections","tenant",c.id,c);
+    vi.stubEnv("TOKEN_ENCRYPTION_KEY","e".repeat(64));await repo.put("credentials","tenant","credential",encryptCredential({id:"credential",tenantId:"tenant",operatorId:"operator",provider,appId:"app",keyVersion:"primary"},"synthetic-wa"));
+    const permit=await authorizeOperation(repo,waCtx,waPlan,{writesEnabled:false}),lock=setupPhoneLockKey(c.appId,phone.id);
+    repo.setupPhoneLocks.set(lock,{commandId:"unknown-setup"});
+    await expect(selectConnection(repo,waCtx,waPlan,[phone])).rejects.toThrow("PERMISSION_OR_CONNECTION_REQUIRED");
+    const egress=vi.fn(async()=>true);await expect(withConnectionCredential(permit,egress)).rejects.toThrow("WHATSAPP_SETUP_PHONE_UNRESOLVED");expect(egress).not.toHaveBeenCalled();
+    repo.setupPhoneLocks.delete(lock);await expect(withConnectionCredential(permit,egress)).resolves.toBe(true);
+    egress.mockClear();const get=repo.get.bind(repo);let injected=false;repo.get=async(...args)=>{const result=await get(...args);if(!injected&&args[0]==="credentials"){injected=true;repo.setupPhoneLocks.set(lock,{commandId:"concurrent-setup"});}return result;};await expect(withConnectionCredential(permit,egress)).rejects.toThrow("WHATSAPP_SETUP_PHONE_UNRESOLVED");expect(egress).not.toHaveBeenCalled();
+
+  });
+
+  it("blocks the actual provider app user without transferring another account's lock within the same app",async()=>{
+    const repo=await fixture(),provider="META_THREADS" as const;
+    for(const id of ["101","303"]){const key=`threads-${id}`,c={...connection,id:`connection-${id}`,provider,appId:"300",subjectId:id,metaAppUserId:id,tokenType:"threads" as const,assetKeys:[key]};await repo.put("assets","tenant",key,{...account,key,id,type:"THREADS_ACCOUNT",provider,appId:"300"});await repo.put("connections","tenant",c.id,c);await repo.put("grants","tenant",key,{id:key,tenantId:"tenant",clientId:"client-a",assetKey:key,connectionId:c.id,capabilities:["threads.read"],actions:["READ"],tasks:[],verifiedAt:now-1000,expiresAt:now+3600000,revokedAt:null,revision:1});}
+    const context={...ctx,provider},request:OperationPlan={parameters:{},assets:[{type:"THREADS_ACCOUNT",id:"303"}],classes:["READ"],capability:"threads.read",requiredScopes:["ads_read"],tokenTypes:["threads"]};
+    repo.privacySubjectLocks.set(privacySubjectHash("300","101"),{state:"DELETE_PENDING"});
+    const permit=await authorizeOperation(repo,context,request,{writesEnabled:false});expect(permit.connectionId).toBe("connection-303");
+    await expect(authorizeOperation(repo,context,{...request,assets:[{type:"THREADS_ACCOUNT",id:"101"}]},{writesEnabled:false})).rejects.toThrow("PERMISSION_OR_CONNECTION_REQUIRED");
+    repo.privacySubjectLocks.set(privacySubjectHash("300","303"),{state:"DELETE_PENDING"});await expect(revalidateExecutionPermit(permit)).rejects.toThrow("APP_USER_LIFECYCLE_EGRESS_LOCKED");
+  });
+  it("keeps reads available before financial evidence exists and binds any recorded attestation to final revalidation",async()=>{
+    const repo=await fixture();
+    expect(await authorizeOperation(repo,ctx,plan,{writesEnabled:false})).toBeDefined();
+    const attestation={id:"owner-review",tenantId:"tenant",clientId:"client-a",appId:"300",accountKey:account.key,accountId:account.id,businessId:"900",source:"CLIENT_OWNER_ATTESTATION" as const,approvedBy:"human",documentReferenceHash:"a".repeat(64),checkedAt:now-1000,expiresAt:now+3600000,revokedAt:null,revision:1};
+    await repo.put("assets","tenant",account.key,{...account,ownerBillingAttestationId:attestation.id});
+    await repo.put("ownerBillingAttestations","tenant",attestation.id,attestation);
+    const permit=await authorizeOperation(repo,ctx,plan,{writesEnabled:false});
+    await repo.put("ownerBillingAttestations","tenant",attestation.id,{...attestation,revokedAt:Date.now(),revision:2});
+    await expect(revalidateExecutionPermit(permit)).rejects.toThrow("AUTHORIZATION_CHANGED");
+  });
   it("resolves trusted index and refuses missing identity",async()=>{const repo=await fixture(); expect(await repo.resolvePrincipal("operator")).toEqual(ctx.principal); expect(await repo.resolvePrincipal("unknown")).toBeNull();});
   it("resolves every ancestor and denies cross-client parent",async()=>{const repo=await fixture();expect((await resolveAuthorizedAssets(repo,ctx,plan.assets)).map(a=>a.key)).toEqual(["account","ad"]);await repo.put("assets","tenant","account",{...account,clientId:"client-b"});await expect(resolveAuthorizedAssets(repo,ctx,plan.assets)).rejects.toThrow("ASSET_ACCESS_REQUIRED");});
   it("denies unregistered IDs and cycles",async()=>{const repo=await fixture();await expect(resolveAuthorizedAssets(repo,ctx,[{type:"AD",id:"999"}])).rejects.toThrow("UNREGISTERED");await repo.put("assets","tenant","account",{...account,parents:[{type:"AD",id:"202"}]});await expect(resolveAuthorizedAssets(repo,ctx,plan.assets)).rejects.toThrow("CYCLE");});
   it("rejects explicit unavailable connection without broader fallback",async()=>{const repo=await fixture();await repo.put("connections","tenant","broad",{...connection,id:"broad",scopes:["ads_read","ads_management"]});expect((await selectConnection(repo,ctx,plan,[account,ad])).id).toBe("narrow");await repo.put("connections","tenant","narrow",{...connection,revokedAt:now});await expect(selectConnection(repo,ctx,plan,[account,ad],Date.now(),"narrow")).rejects.toThrow("SELECTED_CONNECTION_UNAVAILABLE");});
+  it("requires tasks on the exact selected asset without transferring another asset's task",async()=>{const repo=await fixture(),page:MetaAsset={...account,key:"page",type:"PAGE",id:"303"};await repo.put("assets","tenant",page.key,page);await repo.put("connections","tenant",connection.id,{...connection,assetKeys:[...connection.assetKeys,page.key]});await repo.put("grants","tenant","page",{id:"page",tenantId:"tenant",clientId:"client-a",assetKey:page.key,connectionId:connection.id,capabilities:["ads.read"],actions:["READ"],tasks:["ADVERTISE"],verifiedAt:now-1000,expiresAt:now+3600000,revokedAt:null,revision:1});const scoped:OperationPlan={...plan,assets:[...plan.assets,{type:"PAGE",id:page.id}],requiredAssetTasks:[{asset:{type:"PAGE",id:page.id},tasks:["ADVERTISE"]}]};expect(await authorizeOperation(repo,ctx,scoped,{writesEnabled:false})).toBeDefined();await expect(authorizeOperation(repo,ctx,{...scoped,requiredAssetTasks:[{asset:{type:"AD_ACCOUNT",id:account.id},tasks:["ADVERTISE"]}]},{writesEnabled:false})).rejects.toThrow("PERMISSION_OR_CONNECTION_REQUIRED");await expect(authorizeOperation(repo,ctx,{...scoped,requiredAssetTasks:[{asset:{type:"PAGE",id:"999"},tasks:["ADVERTISE"]}]},{writesEnabled:false})).rejects.toThrow("SCOPED_ASSET_TASK_REFERENCE_REQUIRED");});
   it("guards opaque permit and isolates async contexts",async()=>{const repo=await fixture();const permit=await authorizeOperation(repo,ctx,plan,{writesEnabled:false});expect(()=>assertExecutionPermit({provider:"META_MARKETING"})).toThrow("PERMIT_REQUIRED");await runWithExecutionPermit(permit,async()=>{expect(assertExecutionPermit({provider:"META_MARKETING",assetKeys:["ad"]})).toBe(permit);expect(()=>assertExecutionPermit({provider:"META_THREADS"})).toThrow("MISMATCH");const scope=getExecutionScope();scope.context.clientId="client-b";expect(getExecutionScope().context.clientId).toBe("client-a");await Promise.resolve();expect(getExecutionScope().context.clientId).toBe("client-a");});});
   it("revocation invalidates existing permits",async()=>{const repo=await fixture();const permit=await authorizeOperation(repo,ctx,plan,{writesEnabled:false});await repo.put("assets","tenant","ad",{...ad,revokedAt:now});await expect(revalidateExecutionPermit(permit)).rejects.toThrow("AUTHORIZATION_CHANGED");});
   it("binds ciphertext to tenant provider operator and app without fallback",()=>{const c=encryptCredential({id:"credential",tenantId:"tenant",operatorId:"operator",provider:"META_MARKETING",appId:"app",keyVersion:"primary"},"synthetic-test-value");expect(decryptCredential(c)).toBe("synthetic-test-value");expect(()=>decryptCredential({...c,tenantId:"other"})).toThrow();expect(()=>decryptCredential({...c,provider:"META_THREADS"})).toThrow();});
@@ -60,6 +97,11 @@ describe("atomic created asset completion",()=>{
   const creation:OperationPlan={...plan,assets:[{type:"AD_ACCOUNT",id:"101"}],parameters:{status:"PAUSED"},classes:["WRITE_AD_CONFIGURATION"],createOrCopy:true};
   async function creationFixture(){const repo=await fixture();const permit=await approvedPermit(repo,creation);return {repo,permit};}
   it("requires claimed mutation before registration",async()=>{const {permit}=await creationFixture();await expect(finishCreatedAsset(permit,{id:"303",type:"CAMPAIGN",parent:creation.assets[0]})).rejects.toThrow("CLAIMED_CREATION");});
+  it("withholds created authority if the exact selected credential rotates after the provider receipt",async()=>{
+    vi.stubEnv("TOKEN_ENCRYPTION_KEY","e".repeat(64));const {repo,permit}=await creationFixture();const credential=encryptCredential({id:"credential",tenantId:"tenant",operatorId:"operator",provider:"META_MARKETING",appId:"app",keyVersion:"primary"},"synthetic-original-creation-token");await repo.put("credentials","tenant",credential.id,credential);const assetsBefore=await repo.list("assets","tenant"),grantsBefore=await repo.list("grants","tenant"),connectionBefore=await repo.get("connections","tenant","narrow");let sends=0;const providerReceipt=await runWithExecutionPermit(permit,()=>withConnectionCredential(permit,async token=>{expect(token).toBe("synthetic-original-creation-token");claimMutationStep(permit);sends++;return {id:"303"};}));
+    // The provider receipt already exists; a credential update cannot mint continuation authority.
+    const rotated=encryptCredential({id:credential.id,tenantId:credential.tenantId,operatorId:credential.operatorId,provider:credential.provider,appId:credential.appId,keyVersion:"primary"},"synthetic-rotated-creation-token");await repo.put("credentials","tenant",rotated.id,rotated);expect(await finishCreatedAsset(permit,{id:providerReceipt.id,type:"CAMPAIGN",parent:creation.assets[0]})).toBe(false);expect(await repo.list("assets","tenant")).toEqual(assetsBefore);expect(await repo.list("grants","tenant")).toEqual(grantsBefore);expect(await repo.get("connections","tenant","narrow")).toEqual(connectionBefore);expect(await repo.get("credentials","tenant",rotated.id)).toEqual(rotated);expect((await repo.get("operations","tenant",permit.operationId))?.state).toBe("PARTIAL");expect((await repo.get("audit","tenant",permit.operationId+":result"))?.event).toBe("PARTIAL");expect(()=>claimMutationStep(permit)).toThrow();expect(sends).toBe(1);
+  });
   it("atomically registers child, inherited narrow grant, revised connection and terminal audit",async()=>{
     const {repo,permit}=await creationFixture();claimMutationStep(permit);
     expect(await finishCreatedAsset(permit,{id:"303",type:"CAMPAIGN",parent:creation.assets[0]})).toBe(true);
@@ -127,3 +169,6 @@ describe("created-asset dependent reference closure",()=>{
     await expect(resolveAuthorizedAssets(repo,ctx,[{type:"AD",id:"304"}])).rejects.toThrow("ASSET_ACCESS_REQUIRED");
   });
 });
+
+afterEach(()=>vi.unstubAllEnvs());
+it("enforces reviewed deployment version before exposing a dedicated transport credential",async()=>{const repo=await fixture(),permit=await authorizeOperation(repo,ctx,plan,{writesEnabled:false}),transport=vi.fn();vi.stubEnv("META_API_VERSION","v25.0");await expect(withConnectionCredential(permit,transport)).rejects.toThrow("GRAPH_PRODUCT_VERSION_UNVERIFIED");expect(transport).not.toHaveBeenCalled();});

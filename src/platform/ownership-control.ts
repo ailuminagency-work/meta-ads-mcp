@@ -1,0 +1,32 @@
+import {clientBusinessBound,clientBusinessEvidenceFromExpected} from "./client-business.js";
+import {createHash,randomUUID} from "node:crypto";
+import {canonicalJson} from "./policy.js";
+import {PlatformDenied,type MetaAsset,type Member,type Client,type Tenant} from "./models.js";
+import type {ControlCommit} from "./repository.js";
+import {validateOwnerAttestation,ownershipObservationProof,ACCOUNT_OWNERSHIP_SOURCE,type OwnerBillingAttestation,type AccountOwnershipObservation} from "./ownership-evidence.js";
+export const ownershipHash=(value:unknown):string=>createHash("sha256").update(canonicalJson(value)).digest("hex");
+export function ownershipAsset(before:MetaAsset,attestation:OwnerBillingAttestation,observation?:AccountOwnershipObservation):MetaAsset {
+ return {...before,ownerBillingAttestationId:attestation.id,...(observation?{ownershipObservationId:observation.id,ownerBusinessId:observation.businessId,ownershipEvidenceVerifiedAt:observation.checkedAt,ownershipEvidenceSource:ACCOUNT_OWNERSHIP_SOURCE}:{}),revision:before.revision+1};
+}
+export function validateOwnershipControl(input:ControlCommit):void {
+ const financial=input.writes.filter(w=>["ownerBillingAttestations","accountOwnershipObservations"].includes(w.collection));
+ if(!["OWNER_BILLING_ATTESTED","ACCOUNT_OWNER_OBSERVED"].includes(input.audit.event)){if(financial.length)throw new PlatformDenied("OWNERSHIP_CONTROL_REQUIRED");return;}
+ const attesting=input.audit.event==="OWNER_BILLING_ATTESTED",collection=attesting?"ownerBillingAttestations":"accountOwnershipObservations",rows=input.writes.filter(w=>w.collection===collection),assetWrites=input.writes.filter(w=>w.collection==="assets");
+ if(input.writes.length!==2||rows.length!==1||assetWrites.length!==1||!rows[0].createOnly||assetWrites[0].createOnly)throw new PlatformDenied("OWNERSHIP_ATOMIC_CONTROL_REQUIRED");
+ const expected=<T>(collection:string,id:string):T=>{const record=input.expected.find(e=>e.collection===collection&&e.id===id);if(!record)throw new PlatformDenied("OWNERSHIP_EXPECTED_RECORD_REQUIRED");return JSON.parse(record.canonical) as T;};
+ const row=rows[0].value as OwnerBillingAttestation|AccountOwnershipObservation,account=expected<MetaAsset>("assets",row.accountKey),tenant=expected<Tenant>("tenants",input.tenantId),member=expected<Member>("members",input.audit.actorId),client=expected<Client>("clients",input.audit.clientId),now=Date.now();
+ const allowed=attesting?["id","tenantId","clientId","appId","accountKey","accountId","businessId","source","approvedBy","documentReferenceHash","checkedAt","expiresAt","revokedAt","revision"]:["id","tenantId","clientId","appId","accountKey","accountId","businessId","actorId","connectionId","attestationId","source","sourceUrl","checkedAt","expiresAt","revokedAt","revision","encryptedProof"];
+ if(Object.keys(row).some(key=>!allowed.includes(key)))throw new PlatformDenied("OWNERSHIP_METADATA_ALLOWLIST_REQUIRED");
+ if(!Number.isSafeInteger(now)||now<=0||tenant.id!==input.tenantId||client.id!==input.audit.clientId||account.key!==row.accountKey||tenant.status!=="ACTIVE"||tenant.migrationState!=="READY"||member.disabledAt!==null||member.tenantId!==input.tenantId||member.operatorId!==input.audit.actorId||!member.allowedClientIds.includes(client.id)||!member.roles.some(r=>["admin","connection_admin"].includes(r))||client.status!=="ACTIVE"||client.tenantId!==input.tenantId||!clientBusinessBound(client,row.businessId,now,clientBusinessEvidenceFromExpected(input.expected),account.appId)||account.tenantId!==input.tenantId||account.clientId!==client.id||account.provider!=="META_MARKETING"||account.type!=="AD_ACCOUNT"||account.revokedAt!==null||account.appId!==row.appId||account.id.replace(/^act_/,"")!==row.accountId||row.tenantId!==input.tenantId||row.clientId!==client.id||row.id!==rows[0].id||row.id!==input.audit.subjectId||row.checkedAt!==input.audit.timestamp||row.checkedAt>now||now-row.checkedAt>300000||input.audit.planHash!==ownershipHash(row))throw new PlatformDenied("OWNERSHIP_CONTROL_BINDING_INVALID");
+ const attestation=attesting?row as OwnerBillingAttestation:expected<OwnerBillingAttestation>("ownerBillingAttestations",(row as AccountOwnershipObservation).attestationId);validateOwnerAttestation(attestation,now);
+ if(attesting){if((row as OwnerBillingAttestation).approvedBy!==member.operatorId||row.revision!==1)throw new PlatformDenied("OWNERSHIP_HUMAN_ATTESTATION_REQUIRED");}
+ else {
+  ownershipObservationProof(row as AccountOwnershipObservation,now);
+  const connection=expected<import("./models.js").Connection>("connections",(row as AccountOwnershipObservation).connectionId);
+  if((row as AccountOwnershipObservation).actorId!==member.operatorId||row.revision!==1||attestation.id!==account.ownerBillingAttestationId||attestation.tenantId!==row.tenantId||attestation.clientId!==row.clientId||attestation.accountKey!==account.key||attestation.appId!==row.appId||attestation.businessId!==row.businessId||row.expiresAt>attestation.expiresAt||connection.tenantId!==row.tenantId||connection.operatorId!==(row as AccountOwnershipObservation).actorId||connection.provider!=="META_MARKETING"||connection.appId!==row.appId||connection.revokedAt!==null||!connection.expiresAt||connection.expiresAt<row.expiresAt||!connection.assetKeys.includes(account.key)||!connection.scopes.includes("ads_read"))throw new PlatformDenied("OWNERSHIP_PROVIDER_OBSERVATION_BINDING_INVALID");
+  const grants=input.expected.filter(e=>e.collection==="grants").map(e=>JSON.parse(e.canonical) as import("./models.js").AssetGrant);
+  if(!grants.some(g=>g.tenantId===row.tenantId&&g.clientId===row.clientId&&g.connectionId===connection.id&&g.assetKey===account.key&&g.revokedAt===null&&g.expiresAt>=row.expiresAt&&g.verifiedAt>0&&g.verifiedAt<=now&&now-g.verifiedAt<=3600000&&g.actions.includes("READ")&&g.capabilities.includes("legacy.ads_get_account_info")))throw new PlatformDenied("OWNERSHIP_OBSERVATION_READ_GRANT_REQUIRED");
+ }
+ if(assetWrites[0].id!==account.key||canonicalJson(assetWrites[0].value)!==canonicalJson(ownershipAsset(account,attestation,attesting?undefined:row as AccountOwnershipObservation)))throw new PlatformDenied("OWNERSHIP_ASSET_CHANGE_INVALID");
+}
+export function newOwnershipAudit(row:OwnerBillingAttestation|AccountOwnershipObservation,actorId:string,event:"OWNER_BILLING_ATTESTED"|"ACCOUNT_OWNER_OBSERVED"):ControlCommit["audit"] {return {id:randomUUID(),tenantId:row.tenantId,clientId:row.clientId,actorId,event,timestamp:row.checkedAt,subjectId:row.id,planHash:ownershipHash(row)};}

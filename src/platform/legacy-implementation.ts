@@ -1,0 +1,24 @@
+import {LEGACY_RESEARCH_LIST_TOOLS} from "./legacy-research-list.js";
+import {LEGACY_IMAGE_INSPECTION_TOOLS} from "./legacy-image-inspection.js";
+import {LEGACY_INVOICE_METADATA_TOOLS} from "./legacy-invoice-metadata.js";
+import {AUDIENCE_ESTIMATE_TOOL} from "./audience-estimate-contract.js";
+import {LEGACY_AD_COMMENT_READ_TOOLS} from "./legacy-ad-comments.js";
+import {LEGACY_TARGETING_TAXONOMY_TOOLS} from "./legacy-targeting-taxonomy.js";
+import {LEGACY_BUSINESS_INVENTORY_TOOLS} from "./legacy-business-inventory.js";
+import {LEGACY_ENTITY_UPDATE_TOOLS} from "./legacy-entity-update.js";
+import {LEGACY_TRACKING_WORKFLOW_TOOLS} from "./legacy-tracking.js";
+import {LEGACY_MARKETING_PRODUCT_READ_TOOLS,LEGACY_MARKETING_PRODUCT_WRITE_TOOLS} from "./legacy-marketing-products.js";
+import {LEGACY_MARKETING_IMAGE_TOOLS} from "./legacy-marketing-image.js";
+import {LEGACY_INSTAGRAM_READ_TOOLS} from "./legacy-instagram.js";
+import {LEGACY_LEAD_FORM_WRITE_TOOLS} from "./legacy-lead-form.js";
+import {LEGACY_LEAD_READ_TOOLS} from "./legacy-leads.js";
+import {LEGACY_MANIFEST} from "./legacy-manifest.js";
+import {LEGACY_CORE_READ_TOOLS} from "./legacy-read.js";
+import {LEGACY_CORE_WRITE_TOOLS} from "./legacy-write.js";
+import {LEGACY_WHATSAPP_READ_TOOLS,LEGACY_WHATSAPP_WRITE_TOOLS} from "./legacy-whatsapp.js";
+import {LEGACY_TARGETING_LOOKUP_TOOLS} from "./legacy-targeting-lookup.js";
+/** Engineering inventory only; never evidence of provider eligibility or an authenticated connection. */
+export const LEGACY_MIGRATED_READ_TOOLS=Object.freeze([...new Set([...LEGACY_RESEARCH_LIST_TOOLS,...LEGACY_IMAGE_INSPECTION_TOOLS,...LEGACY_INVOICE_METADATA_TOOLS,...LEGACY_MARKETING_PRODUCT_READ_TOOLS,AUDIENCE_ESTIMATE_TOOL,...LEGACY_AD_COMMENT_READ_TOOLS,...LEGACY_TARGETING_TAXONOMY_TOOLS,...LEGACY_BUSINESS_INVENTORY_TOOLS,...LEGACY_CORE_READ_TOOLS,...LEGACY_LEAD_READ_TOOLS,...LEGACY_WHATSAPP_READ_TOOLS,...LEGACY_TARGETING_LOOKUP_TOOLS,...LEGACY_INSTAGRAM_READ_TOOLS])]);
+export const LEGACY_MIGRATED_WRITE_TOOLS=Object.freeze([...new Set([...LEGACY_ENTITY_UPDATE_TOOLS,...LEGACY_CORE_WRITE_TOOLS,...LEGACY_WHATSAPP_WRITE_TOOLS,...LEGACY_LEAD_FORM_WRITE_TOOLS,...LEGACY_MARKETING_IMAGE_TOOLS,...LEGACY_MARKETING_PRODUCT_WRITE_TOOLS])]);
+export const LEGACY_MIGRATED_WORKFLOW_TOOLS=LEGACY_TRACKING_WORKFLOW_TOOLS;
+export const LEGACY_IMPLEMENTATION_STATUS=Object.freeze(LEGACY_MANIFEST.map(entry=>Object.freeze({name:entry.name,provider:entry.provider,implementation:LEGACY_MIGRATED_WORKFLOW_TOOLS.includes(entry.name)?"WORKFLOW":LEGACY_MIGRATED_READ_TOOLS.includes(entry.name)?"READ":LEGACY_MIGRATED_WRITE_TOOLS.includes(entry.name)?"WRITE":"HOLD",providerEligibility:"UNVERIFIED" as const})));

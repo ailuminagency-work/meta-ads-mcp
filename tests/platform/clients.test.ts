@@ -1,3 +1,5 @@
+import {establishManualEligibilityFixture} from "./manual-eligibility-fixture.js";
+import {loadManualEligibilityEvidence} from "../../src/platform/manual-eligibility.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MetaGraphClient, ProductRateController, assertContractEligibility, configureMessagingWindowVerifier, contractPlanParameters, productVersion, projectProviderResponse, validateContractParameters } from "../../src/platform/clients.js";
 import { PRODUCT_CONTRACTS, type ProductContract } from "../../src/platform/products/contracts.js";
@@ -20,20 +22,23 @@ async function fixture(contract: ProductContract, parameters: Record<string, unk
   const member = { operatorId: "operator-test", tenantId: tenant.id, roles: ["admin"], allowedClientIds: [clientId], revision: 1, disabledAt: null };
   const client = { id: clientId, tenantId: tenant.id, status: "ACTIVE" as const, revision: 1, verifiedBusinessIds: [] };
   const asset: MetaAsset = { key: "asset-test", id: "123", type: contract.assetType, tenantId: tenant.id, clientId, provider: contract.provider, appId: "app-test", parents: [], verifiedAt: now - 1, revokedAt: null, revision: 1 };
-  const connection: Connection = { id: connectionId, tenantId: tenant.id, operatorId: member.operatorId, provider: contract.provider, authStrategy: "fixture", credentialId: "credential-test", appId: "app-test", tokenType: contract.tokenTypes[0], scopes: contract.requiredScopes, assetKeys: [asset.key], expiresAt: now + 3600000, revokedAt: null, verifiedAt: now - 1, revision: 1, eligibility: contract.manualRequirements.map(requirement => ({ requirement, source: "https://developers.facebook.com/docs/fixture", checkedAt: now - 1, expiresAt: now + eligibilityLifetimeMs, verified: true })) };
+  let connection: Connection = { subjectId:asset.id,id: connectionId, tenantId: tenant.id, operatorId: member.operatorId, provider: contract.provider, authStrategy: "fixture", credentialId: "credential-test", appId: "app-test", tokenType: contract.tokenTypes[0], scopes: contract.requiredScopes, assetKeys: [asset.key], expiresAt: now + 3600000, revokedAt: null, verifiedAt: now - 1, revision: 1, eligibility: contract.manualRequirements.map(requirement => ({ requirement, source: "https://developers.facebook.com/docs/fixture", checkedAt: now - 1, expiresAt: now + eligibilityLifetimeMs, verified: true })) };
   const plan: OperationPlan = { parameters: contractPlanParameters(contract, asset.id, parameters), assets: [{ type: asset.type, id: asset.id }], classes: contract.operationClasses, capability: contract.id, requiredScopes: contract.requiredScopes, tokenTypes: contract.tokenTypes, requiredTasks: contract.requiredTasks ?? [], createOrCopy: contract.createOrCopy ?? false };
   plan.classes = classifyPlan(plan);
   const grant: AssetGrant = { id: "grant-test", tenantId: tenant.id, clientId, assetKey: asset.key, connectionId, capabilities: [contract.id], actions: plan.classes, tasks: contract.requiredTasks ?? [], verifiedAt: now - 1, expiresAt: now + 3600000, revokedAt: null, revision: 1 };
   await repo.put("tenants", tenant.id, tenant.id, tenant);
   await repo.put("members", tenant.id, member.operatorId, member);
+await repo.put("operatorIndex","_index",member.operatorId,{operatorId:member.operatorId,tenantId:tenant.id});
   await repo.put("clients", tenant.id, clientId, client);
   await repo.put("assets", tenant.id, asset.key, asset);
   await repo.put("connections", tenant.id, connectionId, connection);
   await repo.put("grants", tenant.id, grant.id, grant);
   await repo.put("credentials", tenant.id, connection.credentialId, encryptCredential({ id: connection.credentialId, tenantId: tenant.id, operatorId: member.operatorId, provider: contract.provider, appId: connection.appId, keyVersion: "primary" }, token));
+  if(contract.eligibilityPolicies){if(eligibilityLifetimeMs!==3600000){connection={...connection,expiresAt:now+eligibilityLifetimeMs};await repo.put("connections",tenant.id,connectionId,connection);}await establishManualEligibilityFixture(repo,tenant.id,clientId,connectionId);connection=(await repo.get("connections",tenant.id,connectionId))!;}
+  const manualEligibilityEvidence=await loadManualEligibilityEvidence(repo,ctx,connection,contract.eligibilityRequirements);
   const mutation = plan.classes.some(c => c !== "READ");
   if (mutation) {
-    const snapshot: AuthorizationSnapshot = { tenant, member, client, assets: [asset], connection, grants: [grant] };
+    const snapshot: AuthorizationSnapshot = { tenant, member, client, assets: [asset], connection, grants: [grant],manualEligibilityEvidence };
     await repo.put("approvals", tenant.id, "approval-test", { id: "approval-test", tenantId: tenant.id, clientId, actorId: member.operatorId, approverId: member.operatorId, approverRevision: member.revision, planHash: canonicalPlanHash(ctx, plan), revisionHash: revisionHash(snapshot), expiresAt: now + 60000, consumedAt: null, operationId: null });
   }
   const permit = await authorizeOperation(repo, ctx, plan, { writesEnabled: mutation, ...(mutation ? { approvalId: "approval-test" } : {}) });
@@ -41,13 +46,24 @@ async function fixture(contract: ProductContract, parameters: Record<string, unk
 }
 
 describe("product client egress boundary", () => {
+  it("denies grant revocation while the final messaging policy lookup is pending",async()=>{const {permit,repo}=await fixture(messaging,input,"window-revoked-client","window-revoked-connection","synthetic-window-revoked");let checks=0;configureMessagingWindowVerifier(async()=>{if(++checks===2){const g=(await repo.get("grants","tenant-test","grant-test"))!;await repo.put("grants","tenant-test","grant-test",{...g,revokedAt:Date.now(),revision:2});}return {validUntil:Date.now()+60000};});const fetcher=vi.fn(async()=>new Response('{"message_id":"must-not-send"}'));await expect(runWithExecutionPermit(permit,()=>new MetaGraphClient(messaging.provider,fetcher).request(messaging,"123",input))).rejects.toThrow("AUTHORIZATION_CHANGED");expect(fetcher).not.toHaveBeenCalled();});
+
+  it("rejects a window deadline crossed during the final asynchronous verifier",async()=>{
+    const started=Date.now(),clock=vi.spyOn(Date,"now").mockReturnValue(started);
+    try{const {permit}=await fixture(messaging,input,"window-deadline-client","window-deadline-connection","synthetic-window-deadline");let checks=0;
+      configureMessagingWindowVerifier(async()=>{if(++checks===2)clock.mockReturnValue(started+11);return {validUntil:started+10};});
+      const fetcher=vi.fn(async()=>new Response('{"message_id":"must-not-send"}'));
+      await expect(runWithExecutionPermit(permit,()=>new MetaGraphClient(messaging.provider,fetcher).request(messaging,"123",input))).rejects.toThrow("MESSAGING_WINDOW_EXPIRED_BEFORE_EGRESS");expect(fetcher).not.toHaveBeenCalled();
+    }finally{clock.mockRestore();}
+  });
+
   it("rechecks eligibility that expires during the final awaited messaging check",async()=>{
     const started=Date.now(),clock=vi.spyOn(Date,"now").mockReturnValue(started);
     try{
       const {permit}=await fixture(messaging,input,"eligibility-client","eligibility-connection","synthetic-final-eligibility",10);
       let checks=0;configureMessagingWindowVerifier(async()=>{if(++checks===2)clock.mockReturnValue(started+11);return true;});
       const fetcher=vi.fn(async()=>new Response('{"message_id":"must-not-send"}'));
-      await expect(runWithExecutionPermit(permit,()=>new MetaGraphClient(messaging.provider,fetcher).request(messaging,"123",input))).rejects.toThrow("ELIGIBILITY");
+      await expect(runWithExecutionPermit(permit,()=>new MetaGraphClient(messaging.provider,fetcher).request(messaging,"123",input))).rejects.toThrow(/ELIGIBILITY|EXPIRED/);
       expect(checks).toBe(2);expect(fetcher).not.toHaveBeenCalled();
     }finally{clock.mockRestore();}
   });
@@ -162,12 +178,13 @@ it("returns pagination cursors only when explicitly verified and drops nested ex
   for (const malformed of [null,[],123,"ok",{}]) expect(() => projectProviderResponse(malformed,profile)).toThrow("PROVIDER_RESPONSE_SCHEMA_INVALID");
 });
 
-it("requires official eligibility sources and shorter freshness for writes", async () => {
-  const { connection } = await fixture(messaging, input);
+it("binds durable human eligibility to its original reviewed source and timestamps", async () => {
+  const { connection,repo } = await fixture(messaging, input);
+  const proof={clientId:"client-test",evidence:await loadManualEligibilityEvidence(repo,{principal:{tenantId:"tenant-test",operatorId:"operator-test"},clientId:"client-test",provider:messaging.provider,tool:messaging.tool,requestId:"synthetic"},connection,messaging.eligibilityRequirements)};
   const now = Date.now();
-  expect(() => assertContractEligibility(messaging, { ...connection, eligibility: connection.eligibility!.map(e => ({ ...e, source: "https://attacker.invalid/docs" })) }, now)).toThrow("ELIGIBILITY");
-  expect(() => assertContractEligibility(messaging, { ...connection, eligibility: connection.eligibility!.map(e => ({ ...e, checkedAt: now - 300001 })) }, now)).toThrow("ELIGIBILITY");
-  expect(() => assertContractEligibility(messaging, connection, now)).not.toThrow();
+  expect(() => assertContractEligibility(messaging, { ...connection, eligibility: connection.eligibility!.map(e => ({ ...e, source: "https://attacker.invalid/docs" })) }, now,proof)).toThrow("ELIGIBILITY");
+  expect(() => assertContractEligibility(messaging, { ...connection, eligibility: connection.eligibility!.map(e => ({ ...e, checkedAt: now - 300001 })) }, now,proof)).toThrow("ELIGIBILITY");
+  expect(() => assertContractEligibility(messaging, connection, now,proof)).not.toThrow();
 });
 
 it("validates Page feed schema and rejects indirect mentions and unsafe links", () => {

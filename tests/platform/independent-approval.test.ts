@@ -1,3 +1,4 @@
+import {establishManualEligibilityFixture} from "./manual-eligibility-fixture.js";
 import cookieParser from "cookie-parser";
 import express from "express";
 import type { Server } from "node:http";
@@ -17,12 +18,14 @@ afterEach(async () => { vi.unstubAllEnvs(); if (server) await new Promise<void>(
 
 async function fixture() {
   const repo = new InMemoryPlatformRepository(), now = Date.now(), tenantId = ctx.principal.tenantId;
+  for(const operatorId of [ctx.principal.operatorId,human.operatorId])await repo.put('operatorIndex','_index',operatorId,{operatorId,tenantId});
   await repo.put("tenants", tenantId, tenantId, { id: tenantId, status: "ACTIVE", migrationState: "READY", policyRevision: 1, registryRevision: 1 });
   await repo.put("clients", tenantId, ctx.clientId, { id: ctx.clientId, tenantId, status: "ACTIVE", revision: 1, verifiedBusinessIds: [] });
   for (const [operatorId, roles] of [[ctx.principal.operatorId, ["writer"]], [human.operatorId, ["approver"]]] as const) await repo.put("members", tenantId, operatorId, { operatorId, tenantId, roles: [...roles], allowedClientIds: [ctx.clientId], disabledAt: null, revision: 1 });
   await repo.put("assets", tenantId, "page-fixture", { key: "page-fixture", id: "123", type: "PAGE", tenantId, clientId: ctx.clientId, provider: contract.provider, appId: "app-fixture", parents: [], verifiedAt: now, revokedAt: null, revision: 1 });
-  await repo.put("connections", tenantId, "connection-fixture", { id: "connection-fixture", tenantId, operatorId: ctx.principal.operatorId, provider: contract.provider, authStrategy: "fixture", credentialId: "credential-fixture", appId: "app-fixture", tokenType: "page", scopes: [...contract.requiredScopes], assetKeys: ["page-fixture"], expiresAt: now + 3600000, revokedAt: null, verifiedAt: now, revision: 1, eligibility: contract.manualRequirements.map(requirement => ({ requirement, source: "https://developers.facebook.com/docs/fixture", checkedAt: now, expiresAt: now + 3600000, verified: true })) });
+  await repo.put("connections", tenantId, "connection-fixture", { id: "connection-fixture", tenantId, operatorId: ctx.principal.operatorId, provider: contract.provider, authStrategy: "fixture", credentialId: "credential-fixture", appId: "app-fixture", tokenType: "page",subjectId:"123", scopes: [...contract.requiredScopes], assetKeys: ["page-fixture"], expiresAt: now + 3600000, revokedAt: null, verifiedAt: now, revision: 1, eligibility: contract.manualRequirements.map(requirement => ({ requirement, source: "https://developers.facebook.com/docs/fixture", checkedAt: now, expiresAt: now + 3600000, verified: true })) });
   await repo.put("grants", tenantId, "grant-fixture", { id: "grant-fixture", tenantId, clientId: ctx.clientId, assetKey: "page-fixture", connectionId: "connection-fixture", capabilities: [contract.id], actions: [...contract.operationClasses], tasks: contract.requiredTasks ?? [], verifiedAt: now, expiresAt: now + 3600000, revokedAt: null, revision: 1 });
+ await establishManualEligibilityFixture(repo,tenantId,ctx.clientId,"connection-fixture");
   return repo;
 }
 
