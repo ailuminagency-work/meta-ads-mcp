@@ -124,7 +124,8 @@ jobs:
           docker run --rm lumin-meta-platform:${{ github.sha }} node --version
           docker run --rm lumin-meta-platform:${{ github.sha }} ffmpeg -version >/dev/null
           docker run --rm lumin-meta-platform:${{ github.sha }} ffprobe -version >/dev/null
-          ! docker run --rm lumin-meta-platform:${{ github.sha }} sh -c 'find /app -type f \( -name ".env" -o -name "*.key" -o -name "*.pem" \) | grep .'
+          secret_files="$(docker run --rm lumin-meta-platform:${{ github.sha }} sh -c 'find /app -type f \( -name ".env" -o -name "*.key" -o -name "*.pem" \) -print')"
+          test -z "$secret_files"
 
       - name: Credential-waiting health smoke
         run: |
@@ -134,7 +135,11 @@ jobs:
             lumin-meta-platform:${{ github.sha }}
           trap 'docker logs lumin-meta-platform-smoke; docker rm --force lumin-meta-platform-smoke' EXIT
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:3000/health; then exit 0; fi
+            health="$(curl --fail --silent http://127.0.0.1:3000/health)"
+            if [ "$health" = '{"status":"ok","state":"awaiting_credentials","metaConnected":false}' ]; then
+              test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/mcp)" = "503"
+              exit 0
+            fi
             sleep 1
           done
           exit 1
