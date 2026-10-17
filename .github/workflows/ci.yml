@@ -3,7 +3,9 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+      - feat/lumin-meta-platform-v1
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -16,7 +18,10 @@ jobs:
   quality:
     name: Lint, typecheck, test, build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The complete Vitest suite includes provider-contract and media tests and
+    # can exceed fifteen minutes on a hosted runner. Keep one bounded job so a
+    # timeout cannot be mistaken for a green partial certificate.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v4
@@ -61,7 +66,7 @@ jobs:
     # by maintainers running pre-deploy-guard locally on the
     # merged result.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Skip notice (fork PR)
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
@@ -99,3 +104,37 @@ jobs:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITLEAKS_CONFIG: .gitleaks.toml
           GITLEAKS_VERSION: ${{ env.GITLEAKS_VERSION }}
+
+  docker:
+    name: Linux Docker build and credential-waiting smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v4
+
+      - name: Build image
+        run: docker build --pull --tag lumin-meta-platform:${{ github.sha }} .
+
+      - name: Verify image contents and runtime identity
+        run: |
+          test "$(docker run --rm lumin-meta-platform:${{ github.sha }} id -u)" = "1000"
+          docker run --rm lumin-meta-platform:${{ github.sha }} node --version
+          docker run --rm lumin-meta-platform:${{ github.sha }} ffmpeg -version >/dev/null
+          docker run --rm lumin-meta-platform:${{ github.sha }} ffprobe -version >/dev/null
+          ! docker run --rm lumin-meta-platform:${{ github.sha }} sh -c 'find /app -type f \( -name ".env" -o -name "*.key" -o -name "*.pem" \) | grep .'
+
+      - name: Credential-waiting health smoke
+        run: |
+          docker run --detach --name lumin-meta-platform-smoke --publish 3000:3000 \
+            --env DEPLOYMENT_MODE=awaiting_credentials \
+            --env NODE_ENV=production \
+            lumin-meta-platform:${{ github.sha }}
+          trap 'docker logs lumin-meta-platform-smoke; docker rm --force lumin-meta-platform-smoke' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3000/health; then exit 0; fi
+            sleep 1
+          done
+          exit 1
