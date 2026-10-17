@@ -109,7 +109,13 @@ export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snaps
   if(snapshot.member.operatorId !== ctx.principal.operatorId || snapshot.member.tenantId !== ctx.principal.tenantId || snapshot.member.disabledAt !== null || !snapshot.member.allowedClientIds.includes(ctx.clientId)) return deny("CLIENT_MEMBERSHIP_REQUIRED");
   if(!Array.isArray(snapshot.member.roles) || !snapshot.member.roles.some(role=>["reader","writer","admin","approver"].includes(role))) return deny("READ_ROLE_REQUIRED");
   if(snapshot.client.id !== ctx.clientId || snapshot.client.tenantId !== ctx.principal.tenantId || snapshot.client.status !== "ACTIVE") return deny("CLIENT_ACCESS_REQUIRED");
-  if(["marketing_upload_image","marketing_upload_video","marketing_create_empty_custom_audience","marketing_create_lookalike_audience","marketing_activate_ad","marketing_delete_paused_ad","marketing_create_purchase_conversion","marketing_create_async_report","marketing_create_disabled_pause_rule","marketing_create_classic_split_study"].includes(ctx.tool)){const account=snapshot.assets.filter(a=>a.type==="AD_ACCOUNT");if(account.length!==1)return deny("EXACT_CLIENT_AD_ACCOUNT_REQUIRED");try{assertAccountOwnershipEvidence(snapshot,account[0]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"CLIENT_OWNER_EVIDENCE_REQUIRED");}}
+  // Every advertising-account mutation must be bound to independently verified
+  // client ownership and client billing evidence.  Keep this class based rather
+  // than tool-list based so newly registered campaign/ad-set/ad controls cannot
+  // accidentally bypass the ownership gate.  A payment method or account
+  // status alone is never sufficient evidence.
+  const requiresClientAdAccountEvidence = ctx.provider === "META_MARKETING" && classes.some(c => ["WRITE_AD_CONFIGURATION", "WRITE_BUDGET", "ACTIVATE_SPEND"].includes(c));
+  if(requiresClientAdAccountEvidence || ["marketing_upload_image","marketing_upload_video","marketing_create_empty_custom_audience","marketing_create_lookalike_audience","marketing_activate_ad","marketing_delete_paused_ad","marketing_create_purchase_conversion","marketing_create_async_report","marketing_create_disabled_pause_rule","marketing_create_classic_split_study"].includes(ctx.tool)){const account=snapshot.assets.filter(a=>a.type==="AD_ACCOUNT");if(account.length!==1)return deny("EXACT_CLIENT_AD_ACCOUNT_REQUIRED");try{assertAccountOwnershipEvidence(snapshot,account[0]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"CLIENT_OWNER_EVIDENCE_REQUIRED");}}
   if(classes.some(c => c !== "READ")) {
     if(!options.writesEnabled) return deny("DISABLED_BY_LUMIN_POLICY");
     if(!snapshot.member.roles.includes("writer") && !snapshot.member.roles.includes("admin")) return deny("WRITE_ROLE_REQUIRED");
