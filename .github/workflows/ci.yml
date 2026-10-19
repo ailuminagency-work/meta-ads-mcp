@@ -135,7 +135,12 @@ jobs:
             lumin-meta-platform:${{ github.sha }}
           trap 'docker logs lumin-meta-platform-smoke; docker rm --force lumin-meta-platform-smoke' EXIT
           for attempt in $(seq 1 30); do
-            health="$(curl --fail --silent http://127.0.0.1:3000/health)"
+            if [ "$(docker inspect --format '{{.State.Running}}' lumin-meta-platform-smoke 2>/dev/null)" != "true" ]; then
+              echo "credential-waiting container exited before health became available"
+              docker logs lumin-meta-platform-smoke
+              exit 1
+            fi
+            health="$(curl --silent --show-error --http1.1 http://127.0.0.1:3000/health || true)"
             if [ "$health" = '{"status":"ok","state":"awaiting_credentials","metaConnected":false}' ]; then
               test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/mcp)" = "503"
               exit 0
