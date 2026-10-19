@@ -591,7 +591,7 @@
       "verifiedAt": 1792203169662,
       "revokedAt": null,
       "revision": 3,
-      "ownerBillingAttestationId": "93e8cfdb-3799-4b0a-a0b3-aa27f63152c2",
+      "billingOwnershipVerified": true,`n      "ownerBillingAttestationId": "93e8cfdb-3799-4b0a-a0b3-aa27f63152c2",
       "ownershipObservationId": "26beea86-c9c5-45f0-82b6-75012b29161b",
       "ownerBusinessId": "900",
       "ownershipEvidenceVerifiedAt": 1792203169920,
