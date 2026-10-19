@@ -41,7 +41,8 @@ export function assertAccountOwnershipEvidence(snapshot:AuthorizationSnapshot,ac
  if(classification!=="CLIENT_OWNED" && classification!=="AGENCY_OWNED") {
   const refs=account as MetaAsset&{ownerBillingAttestationId?:string};
   const attestation=snapshot.financialEvidence?.attestations.find(r=>r.id===refs.ownerBillingAttestationId);
-  throw new PlatformDenied(attestation?.source==="CLIENT_OWNER_ATTESTATION"?"CLIENT_OWNER_BILLING_EVIDENCE_BINDING_INVALID":"ACCOUNT_OWNERSHIP_UNVERIFIED");
+  if(!refs.ownerBillingAttestationId || !refs.ownershipObservationId) throw new PlatformDenied("EXACT_FINANCIAL_EVIDENCE_REQUIRED");
+  throw new PlatformDenied(attestation?.source==="CLIENT_OWNER_ATTESTATION" || (snapshot.financialEvidence?.attestations.length??0)>0 ? "CLIENT_OWNER_BILLING_EVIDENCE_BINDING_INVALID" : "ACCOUNT_OWNERSHIP_UNVERIFIED");
  }
  const refs=account as MetaAsset&{ownerBillingAttestationId?:string;ownershipObservationId?:string},evidence=(snapshot as AuthorizationSnapshot&{financialEvidence?:FinancialEvidence}).financialEvidence,attestations=evidence?.attestations.filter(r=>r.id===refs.ownerBillingAttestationId)??[],observations=evidence?.observations.filter(r=>r.id===refs.ownershipObservationId)??[];
  if(account.type!=="AD_ACCOUNT"||account.provider!=="META_MARKETING"||attestations.length!==1||observations.length!==1)throw new PlatformDenied("EXACT_FINANCIAL_EVIDENCE_REQUIRED");const attestation=attestations[0],observation=observations[0];validateOwnerAttestation(attestation,now);ownershipObservationProof(observation,now);
