@@ -427,7 +427,7 @@
         {
           "collection": "assets",
           "id": "account",
-          "canonical": "{\"appId\":\"300\",\"clientId\":\"client\",\"id\":\"101\",\"key\":\"account\",\"ownerBillingAttestationId\":\"93e8cfdb-3799-4b0a-a0b3-aa27f63152c2\",\"ownerBusinessId\":\"900\",\"ownershipEvidenceSource\":\"https://developers.facebook.com/docs/marketing-api/reference/ad-account/\",\"ownershipEvidenceVerifiedAt\":1792203169920,\"ownershipObservationId\":\"26beea86-c9c5-45f0-82b6-75012b29161b\",\"parents\":[],\"provider\":\"META_MARKETING\",\"revision\":3,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"AD_ACCOUNT\",\"verifiedAt\":1792203169662}"
+          "canonical": "{\"appId\":\"300\",\"billingOwnershipVerified\":true,\"clientId\":\"client\",\"id\":\"101\",\"key\":\"account\",\"ownerBillingAttestationId\":\"93e8cfdb-3799-4b0a-a0b3-aa27f63152c2\",\"ownerBusinessId\":\"900\",\"ownershipEvidenceSource\":\"https://developers.facebook.com/docs/marketing-api/reference/ad-account/\",\"ownershipEvidenceVerifiedAt\":1792203169920,\"ownershipObservationId\":\"26beea86-c9c5-45f0-82b6-75012b29161b\",\"parents\":[],\"provider\":\"META_MARKETING\",\"revision\":3,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"AD_ACCOUNT\",\"verifiedAt\":1792203169662}"
         },
         {
           "collection": "assets",
@@ -591,7 +591,8 @@
       "verifiedAt": 1792203169662,
       "revokedAt": null,
       "revision": 3,
-      "billingOwnershipVerified": true,`n      "ownerBillingAttestationId": "93e8cfdb-3799-4b0a-a0b3-aa27f63152c2",
+      "billingOwnershipVerified": true,
+            "ownerBillingAttestationId": "93e8cfdb-3799-4b0a-a0b3-aa27f63152c2",
       "ownershipObservationId": "26beea86-c9c5-45f0-82b6-75012b29161b",
       "ownerBusinessId": "900",
       "ownershipEvidenceVerifiedAt": 1792203169920,
