@@ -36,11 +36,16 @@ describe("credential waiting deployment", () => {
     NODE_ENV: "production", META_APP_ID: "123", META_APP_SECRET: "test-app-secret",
     TOKEN_ENCRYPTION_KEY: Buffer.alloc(32).toString("hex"),
     SESSION_COOKIE_SECRET: "test-session-".repeat(4), OAUTH_SECRET: "test-signing-".repeat(4),
-    AUTH_ALLOWED_FB_USER_IDS: "123", FIRESTORE_PROJECT_ID: "test-project",
+    AUTH_ALLOWED_FB_USER_IDS: "123", FIRESTORE_PROJECT_ID: "test-project", LUMIN_EXPECTED_FIRESTORE_PROJECT_ID: "test-project",
     GOOGLE_APPLICATION_CREDENTIALS: "/run/secrets/google.json", SERVER_URL: "https://agency.example.com",
   };
   it("accepts complete agency configuration", () => {
     expect(() => validateAgencyEnvironment(valid)).not.toThrow();
+  });
+  it("requires an explicit project and rejects conflicting or unapproved projects", () => {
+    expect(() => validateAgencyEnvironment({ ...valid, FIRESTORE_PROJECT_ID: undefined, GOOGLE_CLOUD_PROJECT: "test-project" })).toThrow(/explicit FIRESTORE_PROJECT_ID/);
+    expect(() => validateAgencyEnvironment({ ...valid, GOOGLE_CLOUD_PROJECT: "other-project" })).toThrow(/must match/);
+    expect(() => validateAgencyEnvironment({ ...valid, FIRESTORE_PROJECT_ID: "other-project" })).toThrow(/not approved/);
   });
   it.each(["MCP_API_KEY", "META_ACCESS_TOKEN", "META_TOKENS", "FIRESTORE_EMULATOR_HOST", "APIFY_TOKEN", "GEMINI_API_KEY"])("rejects %s bypass configuration", (key) => {
     expect(() => validateAgencyEnvironment({ ...valid, [key]: "test-value" })).toThrow(/forbidden/);
