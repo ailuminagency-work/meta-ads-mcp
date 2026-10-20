@@ -11,6 +11,11 @@ function serverUrl(): URL {
   return new URL(raw);
 }
 
+/** Google tools are exposed only when the server has a complete OAuth client configuration. */
+export function googleProviderConfigured(): boolean {
+  return Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() && process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim());
+}
+
 async function providerForCurrentTenant() {
   const tenant = resolveTenantId({ feature: "Google" });
   const repo = getGoogleTokenRepo();

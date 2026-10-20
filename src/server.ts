@@ -6,6 +6,7 @@ import { PLATFORM_SERVER_INSTRUCTIONS } from "./platform/instructions.js";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAllTools } from "./tools/index.js";
+import { googleProviderConfigured, registerGoogleTools } from "./tools/google.js";
 import { SERVER_INSTRUCTIONS } from "./skills/instructions.js";
 import { registerSkillPrompts } from "./skills/prompts.js";
 import { registerSkillResources } from "./skills/resources.js";
@@ -54,6 +55,7 @@ export function createServer(): McpServer {
   const finishLegacyRegistration = installLegacyGuard(server);
   registerAllTools(server);
   finishLegacyRegistration();
+  if (googleProviderConfigured()) registerGoogleTools(server);
   if (platformEnabled()) registerPlatformTools(server,new Set(LEGACY_MANIFEST.map(t=>t.name)));
   if (process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true") {
     const tools = (server as unknown as { _registeredTools: Record<string, { annotations?: { readOnlyHint?: boolean }; disable(): void }> })._registeredTools;

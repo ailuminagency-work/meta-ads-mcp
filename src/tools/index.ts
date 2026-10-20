@@ -35,7 +35,6 @@ import { registerWhatsAppTools } from "./whatsapp.js";
 import { registerWhatsAppTemplateTools } from "./whatsapp-templates.js";
 import { registerWhatsAppFlowTools } from "./whatsapp-flows.js";
 import { registerWhatsAppConfigTools } from "./whatsapp-config.js";
-import { registerGoogleTools } from "./google.js";
 
 /**
  * Register all Meta Ads tools on the MCP server.
@@ -47,9 +46,6 @@ import { registerGoogleTools } from "./google.js";
  *   - 5 named insight views + diagnostic + help + agency macro-tools added
  */
 export function registerAllTools(server: McpServer): void {
-  // ─── Google marketing read/validation boundary ───────────
-  registerGoogleTools(server);
-
   // ─── Core Ad Management ─────────────────────────────────
   registerAccountTools(server);      // 3 tools
   registerCampaignTools(server);     // 5 tools
@@ -104,5 +100,6 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 147 tools (142 Meta/WhatsApp tools + 5 Google read/validation tools)
+  // Total: 142 Meta/WhatsApp tools. Provider extensions register after the
+  // legacy Meta contract guard has finished its baseline registration.
 }
