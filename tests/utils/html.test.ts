@@ -11,7 +11,7 @@ describe("escapeHtml", () => {
   });
 
   it("escapes & first so the other entities are not double-escaped", () => {
-    // If `<` were replaced before `&`, the resulting "&lt;" would become
+    // If < were replaced before &, the resulting "&lt;" would become
     // "&amp;lt;" and render as literal text instead of a less-than sign.
     expect(escapeHtml("<")).toBe("&lt;");
     expect(escapeHtml("&lt;")).toBe("&amp;lt;");
@@ -30,9 +30,18 @@ describe("escapeHtml", () => {
     );
   });
 
+  it("coerces non-string values before escaping", () => {
+    expect(escapeHtml(42)).toBe("42");
+    expect(escapeHtml(true)).toBe("true");
+    expect(escapeHtml(["<"])).toBe("&lt;");
+    expect(escapeHtml({ value: "tag" })).toBe("[object Object]");
+    expect(escapeHtml(null)).toBe("");
+    expect(escapeHtml(undefined)).toBe("");
+  });
+
   it("leaves safe text untouched", () => {
     expect(escapeHtml("ByAds_Black_GlobalCom")).toBe("ByAds_Black_GlobalCom");
-    expect(escapeHtml("Agencia Ñandú — 100% ✅")).toBe("Agencia Ñandú — 100% ✅");
+    expect(escapeHtml("Agencia Nandu - 100%")).toBe("Agencia Nandu - 100%");
     expect(escapeHtml("")).toBe("");
   });
 });

@@ -1,36 +1,3 @@
-import {environmentSignalDiscoveryRouter} from "../platform/signal-discovery-runtime.js";
-import {configureCrmCredentialInspector} from "../platform/crm-client.js";
-import {createEnvironmentCrmCredentialInspector} from "../platform/crm-credential-inspector.js";
-import {environmentAppPromotionRouter} from "../platform/app-promotion-runtime.js";
-import {getCrmRuntime,crmSignalsEnabled} from "../platform/crm-runtime.js";
-import {configureCrmIngress} from "../platform/events/runtime.js";
-import {environmentMarketingPreviewRouter} from "../platform/marketing-preview-runtime.js";
-import {environmentTrackingChangeRouter} from "../platform/tracking-change-runtime.js";
-import {environmentPausedAdBatchRouter} from "../platform/paused-ad-batch-runtime.js";
-import {environmentBusinessOwnerRouter} from "../platform/business-owner-runtime.js";
-import {environmentWhatsAppSetupRouter} from "../platform/whatsapp-setup-runtime.js";
-import {environmentResearchReviewRouter} from '../platform/research-runtime.js';
-import {environmentClientEnrollmentRouter} from "../platform/client-enrollment-runtime.js";
-import {environmentHealthEventStorage} from "../platform/health-events.js";
-import {environmentAttachmentRouters} from "../platform/attachment-runtime.js";
-import {environmentMessengerUtilityIngress} from "../platform/messenger-utility-runtime.js";
-import {environmentManualEligibilityRouter} from "../platform/manual-eligibility-runtime.js";
-import {environmentPublishingVideoRouters} from "../platform/publishing-video-runtime.js";
-import {environmentVideoRouters} from "../platform/video-runtime.js";
-import {environmentMetaPrivacyRouter} from "../platform/meta-privacy-runtime.js";
-import {createOEmbedPreviewRouter,oEmbedEnabled} from "../platform/oembed-preview.js";
-import {environmentOwnershipRouter} from "../platform/ownership-runtime.js";
-import {environmentMediaRouters} from "../platform/media-runtime.js";
-import {environmentDiscoveryRouter} from "../platform/discovery-runtime.js";
-import { createApprovalRouter } from "../platform/approval-router.js";
-import { environmentSourceIngressRouter } from "../platform/source-ingress.js";
-import {environmentOperationalRouter} from "../platform/operational-runtime.js";
-import { platformConnectionRouters } from "../platform/connection-runtime.js";
-import { initializeMessagingPolicyRuntime } from "../platform/messaging-runtime.js";
-import { initializeEnvironmentWebhooks } from "../platform/events/environment.js";
-import { initializeFirstPartySignalRuntime } from "../platform/signals-runtime.js";
-import { getPlatformRepository, platformEnabled } from "../platform/runtime.js";
-import { platformWebhookRouter } from "../platform/events/runtime.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isIP } from "node:net";
 import express from "express";
@@ -47,6 +14,7 @@ import { tokenManager } from "../auth/token-manager.js";
 import { configureSessionJtiStore, getSession } from "../auth/session.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, safeReturnTo } from "./auth-routes.js";
+import { mountGoogleAuthRoutes } from "./google-auth-routes.js";
 import { escapeHtml } from "../utils/html.js";
 import {
   CONNECTIONS_PATH,
@@ -485,32 +453,6 @@ export async function startHttpTransport(
   );
   logger.info({ corsAllowedOrigins }, "CORS allowlist configured");
   app.use(cookieParser());
-  initializeMessagingPolicyRuntime();
-  initializeEnvironmentWebhooks();
-  initializeFirstPartySignalRuntime();
-  app.use(["/platform/crm/source","/platform/ad-previews","/webhooks/meta","/platform/first-party","/platform/messenger-utility/source","/platform/attachments/ingress","/platform/media/ingress","/platform/videos/ingress","/platform/publishing-videos/ingress"],(req,res,next)=>{
-    res.setHeader("Cache-Control","no-store");res.setHeader("X-Content-Type-Options","nosniff");res.setHeader("Referrer-Policy","no-referrer");
-    if(isProduction){res.setHeader("Strict-Transport-Security","max-age=31536000; includeSubDomains");if(req.header("x-forwarded-proto")!=="https"){res.sendStatus(400);return;}}
-    next();
-  });
-  const attachmentRouters=environmentAttachmentRouters(getServerUrl().origin);
-  if(attachmentRouters)app.use("/platform/attachments/ingress",attachmentRouters.ingress);
-  const publishingVideoRouters=environmentPublishingVideoRouters(getServerUrl().origin);
-  if(publishingVideoRouters)app.use("/platform/publishing-videos/ingress",publishingVideoRouters.ingress);
-  const videoRouters=environmentVideoRouters(getServerUrl().origin);
-  if(videoRouters)app.use("/platform/videos/ingress",videoRouters.ingress);
-  const mediaRouters=environmentMediaRouters(getServerUrl().origin);
-  if(mediaRouters)app.use("/platform/media/ingress",mediaRouters.ingress);
-  configureCrmCredentialInspector(createEnvironmentCrmCredentialInspector());
-  const crmRuntime=crmSignalsEnabled()||process.env.LUMIN_CRM_SOURCE_INGRESS_ENABLED==="true"?getCrmRuntime():null;
-  configureCrmIngress(crmRuntime?(...args)=>crmRuntime.recordVerified(...args):undefined);
-  if(crmRuntime)app.use("/platform/crm/source",crmRuntime.router());
-  const webhooks = platformWebhookRouter();
-  if (webhooks) app.use("/webhooks/meta",webhooks);
-  const utilityIngress=environmentMessengerUtilityIngress();
-  if(utilityIngress)app.use("/platform/messenger-utility/source",utilityIngress);
-  const sourceIngress=environmentSourceIngressRouter();
-  if(sourceIngress)app.use("/platform/first-party",sourceIngress);
   app.use(express.json({ limit: "10mb" }));
 
   app.use((_req, res, next) => {
@@ -535,41 +477,6 @@ export async function startHttpTransport(
   }
 
   const serverUrl = getServerUrl();
-  if(attachmentRouters)app.use("/platform/attachments/review",attachmentRouters.review);
-  if(mediaRouters)app.use("/platform/media/review",mediaRouters.review);
-  if(videoRouters)app.use("/platform/videos/review",videoRouters.review);
-  if(publishingVideoRouters)app.use("/platform/publishing-videos/review",publishingVideoRouters.review);
-  const privacyRouter=environmentMetaPrivacyRouter(serverUrl.origin);
-  if(privacyRouter)app.use("/meta/privacy",privacyRouter);
-  const clientEnrollmentRouter=environmentClientEnrollmentRouter(serverUrl.origin);
-  if(clientEnrollmentRouter)app.use("/platform/clients/new",clientEnrollmentRouter);
-  const whatsappSetupRouter=environmentWhatsAppSetupRouter(serverUrl.origin);
-  if(whatsappSetupRouter)app.use("/platform/whatsapp-setup",whatsappSetupRouter);
-  const pausedAdBatchRouter=environmentPausedAdBatchRouter(serverUrl.origin);
-  if(pausedAdBatchRouter)app.use("/platform/paused-ads",pausedAdBatchRouter);
-  const marketingPreviewRouter=environmentMarketingPreviewRouter(serverUrl.origin);
-  if(marketingPreviewRouter)app.use("/platform/ad-previews",marketingPreviewRouter);
-  const trackingChangeRouter=environmentTrackingChangeRouter(serverUrl.origin);
-  if(trackingChangeRouter)app.use("/platform/tracking",trackingChangeRouter);
-  environmentHealthEventStorage();
-  const operationalRouter=environmentOperationalRouter(serverUrl.origin);
-  if(operationalRouter)app.use("/platform/operations",operationalRouter);
-  const businessOwnerRouter=environmentBusinessOwnerRouter(serverUrl.origin);
-  if(businessOwnerRouter) app.use("/platform/business-owner",businessOwnerRouter);
-  const researchReviewRouter=environmentResearchReviewRouter(serverUrl.origin);
-  if(researchReviewRouter) app.use('/platform/research/review',researchReviewRouter);
-  const eligibilityRouter=environmentManualEligibilityRouter(serverUrl.origin);
-  if(eligibilityRouter)app.use("/platform/eligibility/review",eligibilityRouter);
-  const ownershipRouter=environmentOwnershipRouter(serverUrl.origin);
-  if(ownershipRouter)app.use("/platform/ownership",ownershipRouter);
-  const signalDiscoveryRouter=environmentSignalDiscoveryRouter(serverUrl.origin);if(signalDiscoveryRouter)app.use("/platform/signals/discovery",signalDiscoveryRouter);
-  const appPromotionRouter=environmentAppPromotionRouter(serverUrl.origin);if(appPromotionRouter)app.use("/platform/app-promotion",appPromotionRouter);
-  const discoveryRouter=environmentDiscoveryRouter(serverUrl.origin);
-  if(discoveryRouter)app.use("/platform/discovery",discoveryRouter);
-  const platformConnections=platformConnectionRouters(serverUrl.origin);
-  if(platformConnections){app.use("/platform/oauth",platformConnections.oauth);app.use("/platform/connections",platformConnections.connections);}
-  if(platformEnabled()&&oEmbedEnabled())app.use("/platform/embeds",createOEmbedPreviewRouter({repo:getPlatformRepository(),resolveSession:async req=>{const session=await getSession(req);return session?getPlatformRepository().resolvePrincipal(session.fbUserId):null;}}));
-  if (platformEnabled()) app.use("/platform/approvals",createApprovalRouter({repo:getPlatformRepository(),origin:serverUrl.origin,csrfSecret:process.env.SESSION_COOKIE_SECRET ?? "",resolveSession:async req=>{const session=await getSession(req);return session?getPlatformRepository().resolvePrincipal(session.fbUserId):null;}}));
 
   if (config.multiTenantEnabled) {
     if (!isFirestoreEnabled()) {
@@ -665,6 +572,7 @@ export async function startHttpTransport(
       serverUrl,
       getClient: (id) => oauthProvider.clientsStore.getClient(id),
     });
+    mountGoogleAuthRoutes(app, { serverUrl });
 
     app.get("/authorize", async (req, res) => {
       const query = req.query as Record<string, string>;

@@ -35,6 +35,7 @@ import { registerWhatsAppTools } from "./whatsapp.js";
 import { registerWhatsAppTemplateTools } from "./whatsapp-templates.js";
 import { registerWhatsAppFlowTools } from "./whatsapp-flows.js";
 import { registerWhatsAppConfigTools } from "./whatsapp-config.js";
+import { registerGoogleTools } from "./google.js";
 
 /**
  * Register all Meta Ads tools on the MCP server.
@@ -46,6 +47,9 @@ import { registerWhatsAppConfigTools } from "./whatsapp-config.js";
  *   - 5 named insight views + diagnostic + help + agency macro-tools added
  */
 export function registerAllTools(server: McpServer): void {
+  // ─── Google marketing read/validation boundary ───────────
+  registerGoogleTools(server);
+
   // ─── Core Ad Management ─────────────────────────────────
   registerAccountTools(server);      // 3 tools
   registerCampaignTools(server);     // 5 tools
@@ -100,5 +104,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 142 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier)
+  // Total: 147 tools (142 Meta/WhatsApp tools + 5 Google read/validation tools)
 }

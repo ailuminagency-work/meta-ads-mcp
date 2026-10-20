@@ -1,8 +1,16 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 142 in total; 79 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 147 in total; 84 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
+
+## Google marketing (read-only and validation)
+
+- `google_connection_status` — Show the tenant's Google connection and verified Ads, Search Console and GA4 bindings without returning credentials.
+- `google_ads_search` — Run a bounded GAQL report against a verified Google Ads customer account.
+- `google_ads_validate` — Validate up to 100 Ads mutate operations with `validateOnly=true`; it never commits or activates advertising.
+- `google_search_console_query` — Query bounded Search Console Search Analytics rows for a verified site.
+- `google_analytics_report` — Run a bounded GA4 channel report for a verified property.
 
 ## Accounts and pages
 
