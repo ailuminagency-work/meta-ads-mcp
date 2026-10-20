@@ -2,7 +2,7 @@
 
 Status: Google consent/callback routes, encrypted tenant grant storage, and five read/validation MCP tools are implemented locally. No authenticated Google API calls or deployed Google callback have been verified.
 
-`src/providers/google/client.ts` constructs requests for Ads GAQL reporting, Ads non-committing validation, Search Console Search Analytics and a GA4 channel report. Ads requests use v25; Analytics uses the v1beta Data API. Verify the supported API version before release.
+`src/providers/google/client.ts` constructs requests for Ads GAQL reporting, Ads non-committing validation, Search Console Search Analytics and a GA4 channel report. Ads requests use v26 (the current major release as of October 14, 2026); Analytics uses the v1beta Data API.
 
 ## Authorization boundary
 
