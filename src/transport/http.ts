@@ -14,6 +14,7 @@ import { tokenManager } from "../auth/token-manager.js";
 import { configureSessionJtiStore, getSession } from "../auth/session.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, safeReturnTo } from "./auth-routes.js";
+import { mountGoogleAuthRoutes } from "./google-auth-routes.js";
 import { escapeHtml } from "../utils/html.js";
 import {
   CONNECTIONS_PATH,
@@ -571,6 +572,7 @@ export async function startHttpTransport(
       serverUrl,
       getClient: (id) => oauthProvider.clientsStore.getClient(id),
     });
+    mountGoogleAuthRoutes(app, { serverUrl });
 
     app.get("/authorize", async (req, res) => {
       const query = req.query as Record<string, string>;

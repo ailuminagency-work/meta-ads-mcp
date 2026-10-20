@@ -3,7 +3,7 @@ import { registerAllTools } from "../../src/tools/index.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 142 tools total", () => {
+  it("registers exactly 147 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -16,10 +16,10 @@ describe("registerAllTools", () => {
     //   1 Ad Library details tool (ads_library_get_ad_details) +
     //   1 Gemini video analysis tool (ads_analyze_video) +
     //   3 Gemini key management tools (ads_register_gemini_key / status / delete) +
-    //   1 ad dossier tool (ads_get_ad_dossier).
+    //   1 ad dossier tool (ads_get_ad_dossier) + 5 Google read/validation tools.
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(142);
+    expect(server.registerTool).toHaveBeenCalledTimes(147);
   });
 
   it("registers all tools with unique names", () => {
@@ -31,12 +31,12 @@ describe("registerAllTools", () => {
     expect(uniqueNames.size).toBe(names.length);
   });
 
-  it("all tool names start with ads_ or whatsapp_ (no meta_ prefix)", () => {
+  it("all tool names use an approved provider prefix (no meta_ prefix)", () => {
     const server = createMockMcpServer();
     registerAllTools(server as never);
 
     for (const tool of server._registeredTools) {
-      expect(tool.name).toMatch(/^(ads|whatsapp)_/);
+      expect(tool.name).toMatch(/^(ads|whatsapp|google)_/);
       expect(tool.name).not.toMatch(/^meta_/);
     }
   });
