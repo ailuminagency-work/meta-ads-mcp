@@ -7,6 +7,8 @@ const STATE_AUDIENCE = "meta-oauth-state";
 export interface OAuthStatePayload {
   returnTo: string;
   nonce: string;
+  /** Session identity captured before redirecting to the provider. */
+  userId?: string;
 }
 
 let cachedSecret: Uint8Array | undefined;
@@ -40,6 +42,7 @@ export async function signOAuthState(
   return new SignJWT({
     rt: payload.returnTo,
     n: payload.nonce,
+    ...(payload.userId ? { uid: payload.userId } : {}),
     jti: crypto.randomBytes(8).toString("hex"),
   })
     .setProtectedHeader({ alg: "HS256" })
@@ -61,7 +64,8 @@ export async function verifyOAuthState(
     if (typeof payload.rt !== "string") return null;
     if (typeof payload.n !== "string") return null;
     if (expectedNonce !== undefined && payload.n !== expectedNonce) return null;
-    return { returnTo: payload.rt, nonce: payload.n };
+    if (payload.uid !== undefined && typeof payload.uid !== "string") return null;
+    return { returnTo: payload.rt, nonce: payload.n, ...(typeof payload.uid === "string" ? { userId: payload.uid } : {}) };
   } catch {
     return null;
   }

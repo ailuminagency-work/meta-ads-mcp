@@ -35,4 +35,12 @@ describe("InMemoryGoogleTokenRepo", () => {
     const repo = new InMemoryGoogleTokenRepo();
     await expect(repo.saveGrant({ ...grant, tokens: { ...grant.tokens, refreshToken: null } })).rejects.toThrow(/refresh token/);
   });
+
+  it("does not reuse a prior identity's refresh token or bindings", async () => {
+    const repo = new InMemoryGoogleTokenRepo();
+    await repo.saveGrant({ ...grant, customerIds: ["1111111111"], googleSubject: "subject-a" });
+    await expect(repo.saveGrant({ ...grant, googleSubject: "subject-b", tokens: { ...grant.tokens, refreshToken: null }, customerIds: undefined })).rejects.toThrow(/refresh token/);
+    await repo.saveGrant({ ...grant, googleSubject: "subject-b", tokens: { ...grant.tokens, refreshToken: "new-refresh" }, customerIds: undefined });
+    expect((await repo.getSummary("tenant-a")).customerIds).toEqual([]);
+  });
 });

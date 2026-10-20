@@ -3,7 +3,7 @@ import { buildGoogleAuthorizeUrl, exchangeGoogleCode, fetchGoogleIdentity, loadG
 import { generateOAuthStateNonce, signOAuthState, verifyOAuthState } from "../auth/oauth-state.js";
 import { getSession } from "../auth/session.js";
 import { getGoogleTokenRepo } from "../store/google-token-repo-singleton.js";
-import { safeReturnTo } from "./auth-routes.js";
+import { isSameOriginRequest, safeReturnTo } from "./auth-routes.js";
 import { CONNECTIONS_PATH } from "./html-pages.js";
 
 const COOKIE = process.env.NODE_ENV === "production" ? "__Host-google_oauth_state" : "google_oauth_state";
@@ -21,7 +21,7 @@ export function mountGoogleAuthRoutes(app: express.Express, opts: { serverUrl: U
     if (!config) return error(res, 503, "Google OAuth is not configured.");
     const returnTo = safeReturnTo(req.query.return, CONNECTIONS_PATH);
     const nonce = generateOAuthStateNonce();
-    const state = await signOAuthState({ returnTo, nonce });
+    const state = await signOAuthState({ returnTo, nonce, userId: session.fbUserId });
     res.cookie(COOKIE, nonce, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", maxAge: 10 * 60 * 1000, path: "/" });
     res.redirect(302, buildGoogleAuthorizeUrl(config, state));
   });
@@ -34,6 +34,7 @@ export function mountGoogleAuthRoutes(app: express.Express, opts: { serverUrl: U
     if (!session || !nonce || typeof req.query.state !== "string") return error(res, 400, "Google authorization state is invalid or expired.");
     const state = await verifyOAuthState(req.query.state, nonce);
     if (!state) return error(res, 400, "Google authorization state is invalid or expired.");
+    if (state.userId !== session.fbUserId) return error(res, 400, "Google authorization state is invalid or expired.");
     if (typeof req.query.error === "string") return error(res, 400, "Google authorization was not completed.");
     if (typeof req.query.code !== "string") return error(res, 400, "Google authorization code is missing.");
     let config;
@@ -52,6 +53,9 @@ export function mountGoogleAuthRoutes(app: express.Express, opts: { serverUrl: U
   });
 
   app.post("/auth/google/disconnect", async (req, res) => {
+    if (!isSameOriginRequest({ secFetchSite: req.get("sec-fetch-site"), origin: req.get("origin"), selfOrigin: `${req.protocol}://${req.get("host")}` })) {
+      return error(res, 403, "Cross-origin request rejected.");
+    }
     const session = await getSession(req);
     if (!session) return error(res, 401, "Sign in before disconnecting Google.");
     await getGoogleTokenRepo().deleteGrant(session.fbUserId);

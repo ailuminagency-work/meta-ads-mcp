@@ -29,6 +29,11 @@ describe("oauth-state", () => {
     expect(payload).toEqual({ returnTo: "/authorize?x=1", nonce: "nonce-a" });
   });
 
+  it("binds an optional state to the initiating session", async () => {
+    const token = await signOAuthState({ returnTo: "/connections", nonce: "nonce-a", userId: "tenant-a" });
+    expect(await verifyOAuthState(token, "nonce-a")).toMatchObject({ userId: "tenant-a" });
+  });
+
   it("rejects tampered tokens", async () => {
     const token = await signOAuthState({ returnTo: "/authorize", nonce: "nonce-a" });
     const tampered = token.slice(0, -4) + "AAAA";

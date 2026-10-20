@@ -66,9 +66,14 @@ export class InMemoryGoogleTokenRepo implements GoogleTokenRepo {
 
   async saveGrant(input: GoogleGrantInput): Promise<void> {
     const old = this.grants.get(input.userId);
-    const refreshToken = input.tokens.refreshToken ?? input.existingRefreshToken ?? (old ? decrypt(old.encryptedRefreshToken, input.userId) : null);
+    const sameSubject = old?.googleSubject === input.googleSubject;
+    const refreshToken = input.tokens.refreshToken ?? (sameSubject ? input.existingRefreshToken ?? (old ? decrypt(old.encryptedRefreshToken, input.userId) : null) : null);
     if (!refreshToken) throw new Error("Google authorization did not return a refresh token");
     const now = Math.floor(Date.now() / 1000);
+    const oldCustomerIds = sameSubject ? old?.customerIds : undefined;
+    const oldLoginCustomerIds = sameSubject ? old?.loginCustomerIds : undefined;
+    const oldSearchConsoleSites = sameSubject ? old?.searchConsoleSites : undefined;
+    const oldAnalyticsPropertyIds = sameSubject ? old?.analyticsPropertyIds : undefined;
     this.grants.set(input.userId, {
       encryptedRefreshToken: encryptToken(refreshToken, aadFor(input.userId)),
       encryptedAccessToken: encryptToken(input.tokens.accessToken, aadFor(input.userId)),
@@ -76,10 +81,10 @@ export class InMemoryGoogleTokenRepo implements GoogleTokenRepo {
       scopes: [...new Set(input.tokens.scopes.length ? input.tokens.scopes : (old?.scopes ?? []))],
       googleSubject: input.googleSubject,
       email: input.email,
-      customerIds: [...(input.customerIds ?? old?.customerIds ?? [])],
-      loginCustomerIds: { ...(input.loginCustomerIds ?? old?.loginCustomerIds ?? {}) },
-      searchConsoleSites: [...(input.searchConsoleSites ?? old?.searchConsoleSites ?? [])],
-      analyticsPropertyIds: [...(input.analyticsPropertyIds ?? old?.analyticsPropertyIds ?? [])],
+      customerIds: [...(input.customerIds ?? oldCustomerIds ?? [])],
+      loginCustomerIds: { ...(input.loginCustomerIds ?? oldLoginCustomerIds ?? {}) },
+      searchConsoleSites: [...(input.searchConsoleSites ?? oldSearchConsoleSites ?? [])],
+      analyticsPropertyIds: [...(input.analyticsPropertyIds ?? oldAnalyticsPropertyIds ?? [])],
       createdAt: old?.createdAt ?? now,
       updatedAt: now,
     });
@@ -109,9 +114,14 @@ export class FirestoreGoogleTokenRepo implements GoogleTokenRepo {
   async saveGrant(input: GoogleGrantInput): Promise<void> {
     const ref = this.ref(input.userId);
     const old = (await ref.get()).data() as GoogleGrantDoc | undefined;
-    const refreshToken = input.tokens.refreshToken ?? input.existingRefreshToken ?? (old ? decrypt(old.encryptedRefreshToken, input.userId) : null);
+    const sameSubject = old?.googleSubject === input.googleSubject;
+    const refreshToken = input.tokens.refreshToken ?? (sameSubject ? input.existingRefreshToken ?? (old ? decrypt(old.encryptedRefreshToken, input.userId) : null) : null);
     if (!refreshToken) throw new Error("Google authorization did not return a refresh token");
     const now = Math.floor(Date.now() / 1000);
+    const oldCustomerIds = sameSubject ? old?.customerIds : undefined;
+    const oldLoginCustomerIds = sameSubject ? old?.loginCustomerIds : undefined;
+    const oldSearchConsoleSites = sameSubject ? old?.searchConsoleSites : undefined;
+    const oldAnalyticsPropertyIds = sameSubject ? old?.analyticsPropertyIds : undefined;
     const doc: GoogleGrantDoc = {
       encryptedRefreshToken: encryptToken(refreshToken, aadFor(input.userId)),
       encryptedAccessToken: encryptToken(input.tokens.accessToken, aadFor(input.userId)),
@@ -119,10 +129,10 @@ export class FirestoreGoogleTokenRepo implements GoogleTokenRepo {
       scopes: [...new Set(input.tokens.scopes.length ? input.tokens.scopes : (old?.scopes ?? []))],
       googleSubject: input.googleSubject,
       email: input.email,
-      customerIds: [...(input.customerIds ?? old?.customerIds ?? [])],
-      loginCustomerIds: { ...(input.loginCustomerIds ?? old?.loginCustomerIds ?? {}) },
-      searchConsoleSites: [...(input.searchConsoleSites ?? old?.searchConsoleSites ?? [])],
-      analyticsPropertyIds: [...(input.analyticsPropertyIds ?? old?.analyticsPropertyIds ?? [])],
+      customerIds: [...(input.customerIds ?? oldCustomerIds ?? [])],
+      loginCustomerIds: { ...(input.loginCustomerIds ?? oldLoginCustomerIds ?? {}) },
+      searchConsoleSites: [...(input.searchConsoleSites ?? oldSearchConsoleSites ?? [])],
+      analyticsPropertyIds: [...(input.analyticsPropertyIds ?? oldAnalyticsPropertyIds ?? [])],
       createdAt: old?.createdAt ?? now,
       updatedAt: now,
     };
