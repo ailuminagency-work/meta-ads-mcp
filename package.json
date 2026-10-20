@@ -58,6 +58,7 @@
     "zod": "^4.6.5"
   },
   "overrides": {
+    "hono": "^4.13.11",
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "^2.0.5"
     }
