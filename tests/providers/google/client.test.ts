@@ -41,7 +41,7 @@ describe("Google provider boundary", () => {
     const { client, transport } = fixture();
     await client.validateAds("1234567890", [{ campaignOperation: { create: { name: "Test", status: "PAUSED" } } }]);
     const [url, options] = transport.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("https://googleads.googleapis.com/v25/customers/1234567890/googleAds:mutate");
+    expect(url).toBe("https://googleads.googleapis.com/v26/customers/1234567890/googleAds:mutate");
     expect(JSON.parse(String(options.body))).toMatchObject({ validateOnly: true, partialFailure: false });
     expect(options.redirect).toBe("error");
   });
