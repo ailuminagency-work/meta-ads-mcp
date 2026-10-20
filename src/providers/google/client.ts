@@ -96,7 +96,7 @@ export class GoogleProviderClient {
     this.account(id);
     if (!/^\s*SELECT\s/i.test(query) || query.length > 16_000) throw new Error("Invalid GAQL query");
     if (pageToken && pageToken.length > 4096) throw new Error("Invalid page token");
-    return this.request(`https://googleads.googleapis.com/v25/customers/${id}/googleAds:search`, ADS_SCOPE, { query, ...(pageToken ? { pageToken } : {}) }, this.managers.get(id));
+    return this.request(`https://googleads.googleapis.com/v26/customers/${id}/googleAds:search`, ADS_SCOPE, { query, ...(pageToken ? { pageToken } : {}) }, this.managers.get(id));
   }
 
   async validateAds(id: string, operations: readonly Record<string, unknown>[]): Promise<unknown> {
@@ -106,7 +106,7 @@ export class GoogleProviderClient {
     for (const match of serialized.matchAll(/customers\/([^/"\\]+)\//g)) {
       if (match[1] !== id) throw new Error("Cross-account reference");
     }
-    return this.request(`https://googleads.googleapis.com/v25/customers/${id}/googleAds:mutate`, ADS_SCOPE, {
+    return this.request(`https://googleads.googleapis.com/v26/customers/${id}/googleAds:mutate`, ADS_SCOPE, {
       mutateOperations: JSON.parse(serialized) as unknown,
       validateOnly: true,
       partialFailure: false,
