@@ -39,6 +39,7 @@ describe("client connection form origin policy", () => {
       expect(await response.text()).toContain('/platform/oauth/meta-readonly/start');
       expect(response.headers.get("referrer-policy")).toBe("same-origin");
       expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; form-action 'self' https://www.facebook.com; frame-ancestors 'none'; base-uri 'none'");
     } finally { await f.close(); }
   });
   it.each([undefined, "null", "https://foreign.example.com"])("rejects untrusted POST Origin %s before creating a challenge", async origin => {
