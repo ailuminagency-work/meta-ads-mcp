@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { DocumentReference } from "@google-cloud/firestore";
 import { getFirestore } from "../store/firestore.js";
 import {
   resetKeyCache,
@@ -115,7 +116,7 @@ function isFreshRunningMarker(marker: MigrationMarker): boolean {
 }
 
 async function claimMigration(
-  markerRef: FirebaseFirestore.DocumentReference,
+  markerRef: DocumentReference,
   projectId: string,
   oldKey: Buffer,
   newKey: Buffer,
@@ -195,6 +196,7 @@ export async function runTokenEncryptionMigration(): Promise<void> {
         }
 
         let plaintext: string | undefined;
+        let wasAlreadyCurrent = false;
         try {
           plaintext = decryptCompatible(
             data.encryptedToken,
@@ -212,15 +214,14 @@ export async function runTokenEncryptionMigration(): Promise<void> {
               tokenDocument.id,
             );
             alreadyCurrent++;
+            wasAlreadyCurrent = true;
           } catch {
             failed++;
             failureIds.push(tokenId);
           }
         }
 
-        if (plaintext === undefined || alreadyCurrent > rotated + total) {
-          continue;
-        }
+        if (plaintext === undefined || wasAlreadyCurrent) continue;
 
         const nextPayload = encryptWithKey(
           plaintext,
