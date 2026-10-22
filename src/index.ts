@@ -5,6 +5,7 @@ import { resolveDeploymentMode, validateAgencyEnvironment } from "./transport/de
 import { startWaitingTransport } from "./transport/waiting.js";
 import { materializeGoogleCredentials } from "./transport/google-credentials.js";
 import { logger } from "./utils/logger.js";
+import { runTokenEncryptionMigration } from "./auth/token-key-migration.js";
 
 const { values } = parseArgs({
   options: {
@@ -37,6 +38,7 @@ async function main(): Promise<void> {
     process.once("exit", cleanup);
     validateAgencyEnvironment();
   }
+  await runTokenEncryptionMigration();
   const { createServer } = await import("./server.js");
   logger.info(
     { transport, port: transport === "http" ? port : undefined },
