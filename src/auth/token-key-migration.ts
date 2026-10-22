@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { logger } from "../utils/logger.js";
 import type { DocumentReference } from "@google-cloud/firestore";
 import { getFirestore } from "../store/firestore.js";
 import {
@@ -134,6 +135,9 @@ async function claimMigration(
     if (existing && isFreshRunningMarker(existing)) {
       throw new Error("Token encryption migration is already running");
     }
+    if (oldKey.equals(newKey)) {
+      throw new Error("TOKEN_ENCRYPTION_KEY and TOKEN_ENCRYPTION_KEY_NEXT must differ");
+    }
 
     const marker: MigrationMarker = {
       status: "running",
@@ -157,10 +161,6 @@ export async function runTokenEncryptionMigration(): Promise<void> {
     process.env.TOKEN_ENCRYPTION_KEY_NEXT,
     "TOKEN_ENCRYPTION_KEY_NEXT",
   );
-  if (oldKey.equals(newKey)) {
-    throw new Error("TOKEN_ENCRYPTION_KEY and TOKEN_ENCRYPTION_KEY_NEXT must differ");
-  }
-
   const db = getFirestore();
   const markerRef = db.collection(MARKER_COLLECTION).doc(MARKER_ID);
   const claim = await claimMigration(markerRef, projectId, oldKey, newKey);
@@ -170,6 +170,12 @@ export async function runTokenEncryptionMigration(): Promise<void> {
     // available for rollback during the verification window.
     process.env.TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY_NEXT;
     resetKeyCache();
+    logger.info({
+      event: "token_encryption_migration_already_completed",
+      projectId,
+      operationId: claim.operationId,
+      newKeyFingerprint: fingerprint(newKey),
+    }, "Token encryption migration already completed");
     return;
   }
 
@@ -278,6 +284,16 @@ export async function runTokenEncryptionMigration(): Promise<void> {
 
     process.env.TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY_NEXT;
     resetKeyCache();
+    logger.info({
+      event: "token_encryption_migration_completed",
+      projectId,
+      operationId: claim.operationId,
+      total,
+      rotated,
+      alreadyCurrent,
+      failed,
+      newKeyFingerprint: fingerprint(newKey),
+    }, "Token encryption migration completed");
   } catch (error) {
     await markerRef.set(
       {
