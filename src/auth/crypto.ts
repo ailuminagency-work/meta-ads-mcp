@@ -89,6 +89,10 @@ export function decryptToken(payload: EncryptedPayload, aad?: string): string {
   return plaintext.toString("utf8");
 }
 
-export function resetKeyCacheForTests(): void {
+export function resetKeyCache(): void {
   cachedKey = undefined;
+}
+
+export function resetKeyCacheForTests(): void {
+  resetKeyCache();
 }
