@@ -55,6 +55,7 @@ export interface UserDoc {
 
 export interface MetaTokenDoc {
   encryptedToken: EncryptedPayload;
+  keyVersion?: string;
   kind: TokenKind;
   expiresAt: number | null;
   scopes: string[];
@@ -127,7 +128,7 @@ async function maybeRefresh(
   fbUserId: string,
   tokenName: string,
   serverUrl: URL | undefined,
-  persist: (next: { encryptedToken: EncryptedPayload; expiresAt: number; updatedAt: number }) => Promise<void>,
+  persist: (next: { encryptedToken: EncryptedPayload; keyVersion?: string; expiresAt: number; updatedAt: number }) => Promise<void>,
 ): Promise<string> {
   const plaintext = decryptCompat(doc.encryptedToken, fbUserId, tokenName);
 
@@ -154,11 +155,13 @@ async function maybeRefresh(
 
   try {
     const refreshed = await exchangeForLongLivedToken(config, plaintext);
+    const refreshedPayload = encryptToken(
+      refreshed.accessToken,
+      aadFor(fbUserId, tokenName),
+    );
     await persist({
-      encryptedToken: encryptToken(
-        refreshed.accessToken,
-        aadFor(fbUserId, tokenName),
-      ),
+      encryptedToken: refreshedPayload,
+      keyVersion: refreshedPayload.keyVersion,
       expiresAt: refreshed.expiresAt,
       updatedAt: Math.floor(Date.now() / 1000),
     });
@@ -249,6 +252,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
 
     const doc: MetaTokenDoc = {
       encryptedToken,
+      keyVersion: encryptedToken.keyVersion,
       kind: input.kind,
       expiresAt: input.expiresAt,
       scopes: input.scopes ?? [],
@@ -403,11 +407,13 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
       }
     }
 
+    const encryptedToken = encryptToken(
+      input.accessToken,
+      aadFor(input.fbUserId, input.name),
+    );
     bucket.set(input.name, {
-      encryptedToken: encryptToken(
-        input.accessToken,
-        aadFor(input.fbUserId, input.name),
-      ),
+      encryptedToken,
+      keyVersion: encryptedToken.keyVersion,
       kind: input.kind,
       expiresAt: input.expiresAt,
       scopes: input.scopes ?? [],
