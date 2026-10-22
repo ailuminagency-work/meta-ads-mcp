@@ -27,6 +27,7 @@ function aadFor(fbUserId: string): string {
 
 export interface GeminiKeyDoc {
   encryptedKey: EncryptedPayload;
+  keyVersion?: string;
   /** Truncated SHA-256, for log correlation only. No character of the key is stored in clear. */
   keyHash: string;
   createdAt: number;
@@ -50,8 +51,10 @@ export interface GeminiKeyRepo {
 const EMPTY_STATUS: GeminiKeyStatus = { registered: false, keyFingerprint: null, updatedAt: null };
 
 function buildDoc(fbUserId: string, key: string, createdAt: number): GeminiKeyDoc {
+  const encryptedKey = encryptToken(key, aadFor(fbUserId));
   return {
-    encryptedKey: encryptToken(key, aadFor(fbUserId)),
+    encryptedKey,
+    keyVersion: encryptedKey.keyVersion,
     keyHash: hashToken(key),
     createdAt,
     updatedAt: Math.floor(Date.now() / 1000),
