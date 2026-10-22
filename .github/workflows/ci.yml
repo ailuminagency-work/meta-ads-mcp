@@ -45,7 +45,11 @@ jobs:
         run: npm run typecheck
 
       - name: Install ffmpeg (video keyframe tests)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+        run: |
+          # The hosted runner may contain a blocked Microsoft source. Use only the
+          # Ubuntu source list for this ephemeral test dependency.
+          sudo apt-get update -o Dir::Etc::sourceparts="-" -o Dir::Etc::sourcelist="/etc/apt/sources.list.d/ubuntu.sources"
+          sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Test
         env:
