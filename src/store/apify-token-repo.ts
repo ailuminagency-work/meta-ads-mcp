@@ -29,6 +29,7 @@ function aadFor(fbUserId: string): string {
 
 export interface ApifyTokenDoc {
   encryptedToken: EncryptedPayload;
+  keyVersion?: string;
   apifyUserId: string | null;
   apifyUsername: string | null;
   createdAt: number;
@@ -68,8 +69,10 @@ function buildDoc(
   createdAt: number,
 ): ApifyTokenDoc {
   const now = Math.floor(Date.now() / 1000);
+  const encryptedToken = encryptToken(token, aadFor(fbUserId));
   return {
-    encryptedToken: encryptToken(token, aadFor(fbUserId)),
+    encryptedToken,
+    keyVersion: encryptedToken.keyVersion,
     apifyUserId: user?.id ?? null,
     apifyUsername: user?.username ?? null,
     createdAt,
