@@ -9,7 +9,6 @@ import {
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
-const KEY_LENGTH = 32;
 const MIGRATION_MODE = "run";
 const MARKER_COLLECTION = "_lumin_migrations";
 const MARKER_ID = "token-encryption-key";
