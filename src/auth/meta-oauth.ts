@@ -1,6 +1,8 @@
 import { logger } from "../utils/logger.js";
 import { resolveMetaApiVersion } from "../meta/api-version.js";
 
+import { MetaOAuthRequestError, requestMetaAuth, requireMetaAccessToken } from "./meta-oauth-request.js";
+
 const META_GRAPH = "https://graph.facebook.com";
 const META_OAUTH_DIALOG = "https://www.facebook.com";
 
@@ -74,19 +76,11 @@ export async function exchangeCodeForToken(
   url.searchParams.set("redirect_uri", config.redirectUri);
   url.searchParams.set("code", code);
 
-  const response = await fetch(url.toString());
-  const body = (await response.json()) as Record<string, unknown>;
-
-  if (!response.ok || body.error) {
-    const message =
-      typeof body.error === "object" && body.error && "message" in body.error
-        ? String((body.error as { message?: unknown }).message)
-        : `HTTP ${response.status}`;
-    throw new Error(`Meta code exchange failed: ${message}`);
-  }
+  const body = await requestMetaAuth(url, "code-exchange");
+  const accessToken = requireMetaAccessToken(body, "code-exchange");
 
   return {
-    accessToken: String(body.access_token),
+    accessToken,
     expiresIn: typeof body.expires_in === "number" ? body.expires_in : null,
   };
 }
@@ -106,18 +100,8 @@ export async function exchangeForLongLivedToken(
   url.searchParams.set("client_secret", config.appSecret);
   url.searchParams.set("fb_exchange_token", shortLivedToken);
 
-  const response = await fetch(url.toString());
-  const body = (await response.json()) as Record<string, unknown>;
-
-  if (!response.ok || body.error) {
-    const message =
-      typeof body.error === "object" && body.error && "message" in body.error
-        ? String((body.error as { message?: unknown }).message)
-        : `HTTP ${response.status}`;
-    throw new Error(`Meta long-lived swap failed: ${message}`);
-  }
-
-  const accessToken = String(body.access_token);
+  const body = await requestMetaAuth(url, "token-exchange");
+  const accessToken = requireMetaAccessToken(body, "token-exchange");
   const expiresIn =
     typeof body.expires_in === "number" ? body.expires_in : 60 * 24 * 60 * 60;
 
@@ -148,16 +132,7 @@ export async function fetchProfile(
   );
   url.searchParams.set("access_token", accessToken);
 
-  const response = await fetch(url.toString());
-  const body = (await response.json()) as Record<string, unknown>;
-
-  if (!response.ok || body.error) {
-    const message =
-      typeof body.error === "object" && body.error && "message" in body.error
-        ? String((body.error as { message?: unknown }).message)
-        : `HTTP ${response.status}`;
-    throw new Error(`Meta /me fetch failed: ${message}`);
-  }
+  const body = await requestMetaAuth(url, "profile");
 
   if (typeof body.id !== "string" || !/^[0-9]+$/.test(body.id)) {
     throw new Error("Meta profile is missing a valid user ID");
@@ -209,17 +184,7 @@ export async function fetchPrimaryBusiness(
   url.searchParams.set("access_token", accessToken);
 
   try {
-    const response = await fetch(url.toString());
-    const body = (await response.json()) as Record<string, unknown>;
-
-    if (!response.ok || body.error) {
-      const message =
-        typeof body.error === "object" && body.error && "message" in body.error
-          ? String((body.error as { message?: unknown }).message)
-          : `HTTP ${response.status}`;
-      logger.warn({ error: message }, "Meta /me/businesses fetch failed");
-      return null;
-    }
+    const body = await requestMetaAuth(url, "business-lookup");
 
     const data = Array.isArray(body.data) ? body.data : [];
     const first = data[0];
@@ -232,8 +197,8 @@ export async function fetchPrimaryBusiness(
       name: typeof name === "string" ? name : null,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.warn({ error: message }, "Meta /me/businesses fetch threw");
+    const failure = err instanceof MetaOAuthRequestError ? err : null;
+    logger.warn({stage: "business-lookup", kind: failure?.kind ?? "internal", providerCode: failure?.providerCode}, "Meta business lookup unavailable");
     return null;
   }
 }

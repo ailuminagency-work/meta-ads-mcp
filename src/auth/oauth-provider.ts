@@ -297,7 +297,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   }
 
   async revokeToken(
-    _client: OAuthClientInformationFull,
+    client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest,
   ): Promise<void> {
     // RFC 7009: best-effort revoke. We can only revoke refresh tokens (the
@@ -309,7 +309,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
         algorithms: ["HS256"],
         audience: REFRESH_AUDIENCE,
       });
-      if (payload.type === "refresh" && typeof payload.jti === "string") {
+      if (payload.type === "refresh" && payload.sub === client.client_id && typeof payload.jti === "string") {
         await this.refreshJtiStoreImpl.delete(payload.jti);
         logger.info({ jti: payload.jti }, "Refresh token revoked");
       }
