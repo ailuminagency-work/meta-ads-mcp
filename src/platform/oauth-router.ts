@@ -13,6 +13,18 @@ const cookieOptions = { httpOnly: true, secure: true, sameSite: "lax" as const, 
 const cookieName = (state: string): string => `__Host-lumin-connect-${state}`;
 const cookieSchema = z.object({ clientId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), nonce: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 
+function sameOriginRequest(req: express.Request, expectedOrigin: string): boolean {
+  const origin = req.get("origin");
+  if (origin) return origin === expectedOrigin;
+  const referer = req.get("referer");
+  if (!referer) return false;
+  try {
+    return new URL(referer).origin === expectedOrigin;
+  } catch {
+    return false;
+  }
+}
+
 export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies): express.Router {
   const origin = new URL(deps.publicOrigin);
   if (origin.protocol !== "https:" || origin.origin !== deps.publicOrigin) throw new Error("OAuth publicOrigin must be an HTTPS origin");
@@ -23,7 +35,10 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
     try {
       const operator = await deps.getSessionOperator(req);
       if (!operator) { res.sendStatus(401); return; }
-      if (req.get("origin") !== deps.publicOrigin) { res.sendStatus(403); return; }
+      if (!sameOriginRequest(req, deps.publicOrigin)) {
+        res.status(403).json({ status: "HOLD", reason: "OAUTH_ORIGIN_MISMATCH" });
+        return;
+      }
       const body = z.object({ client_id: cookieSchema.shape.clientId }).strict().safeParse(req.body);
       if (!body.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) { res.sendStatus(400); return; }
       const started = await deps.service.start(operator, body.data.client_id, req.params.profileId);
@@ -34,7 +49,10 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
   router.get("/:profileId/callback", async (req, res) => {
     try {
       const operator = await deps.getSessionOperator(req);
-      if (!operator) { res.sendStatus(401); return; }
+      if (!operator) {
+        res.status(401).type("html").send("<p>Session expired. Return to the client connections page and reconnect.</p>");
+        return;
+      }
       const query = z.object({ state: z.string().regex(/^[a-f0-9]{64}$/), code: z.string().min(1).max(4096) }).strict().safeParse(req.query);
       if (!query.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) { res.sendStatus(400); return; }
       const state = query.data.state;
