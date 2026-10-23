@@ -338,12 +338,14 @@ describe("MetaAdsOAuthProvider", () => {
       code,
     );
 
-    await oauthProvider.revokeToken(fakeClient, {
+    await oauthProvider.revokeToken({...fakeClient, client_id: "other-client"}, {
       token: tokens.refresh_token!,
     });
+    const rotated = await oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!);
+    await oauthProvider.revokeToken(fakeClient, {token: rotated.refresh_token!});
 
     await expect(
-      oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!),
+      oauthProvider.exchangeRefreshToken(fakeClient, rotated.refresh_token!),
     ).rejects.toThrow(/revoked|already used/i);
   });
 
