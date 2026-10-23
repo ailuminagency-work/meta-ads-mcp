@@ -7,6 +7,7 @@ export interface AuthCodeEntry {
   clientId: string;
   codeChallenge: string;
   redirectUri: string;
+  redirectUriRequired?: boolean;
   resource?: string;
   fbUserId?: string;
   expiresAt: number;

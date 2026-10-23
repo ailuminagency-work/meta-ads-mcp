@@ -67,17 +67,23 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   private authCodesImpl: AuthCodesStore = new InMemoryAuthCodesStore();
   private refreshJtiStoreImpl: JtiStore = new InMemoryJtiStore();
   private pendingAuthResolver: () => PendingAuthSession | null = () => null;
+  private defaultResource: URL | undefined;
+  private requireRedirectUri = false;
 
   configure(opts: {
     clientsStore?: OAuthRegisteredClientsStore;
     authCodesStore?: AuthCodesStore;
     refreshJtiStore?: JtiStore;
     resolvePendingAuth?: () => PendingAuthSession | null;
+    defaultResource?: URL | null;
+    requireRedirectUri?: boolean;
   }): void {
     if (opts.clientsStore) this.clientsStoreImpl = opts.clientsStore;
     if (opts.authCodesStore) this.authCodesImpl = opts.authCodesStore;
     if (opts.refreshJtiStore) this.refreshJtiStoreImpl = opts.refreshJtiStore;
     if (opts.resolvePendingAuth) this.pendingAuthResolver = opts.resolvePendingAuth;
+    if (opts.defaultResource !== undefined) this.defaultResource = opts.defaultResource ?? undefined;
+    if (opts.requireRedirectUri !== undefined) this.requireRedirectUri = opts.requireRedirectUri;
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
@@ -91,12 +97,16 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   ): Promise<void> {
     const code = crypto.randomBytes(32).toString("hex");
     const pending = this.pendingAuthResolver();
+    const suppliedRedirectUri = res.req?.method === "POST"
+      ? res.req.body?.redirect_uri
+      : res.req?.query?.redirect_uri;
 
     await this.authCodesImpl.set(code, {
       clientId: client.client_id,
       codeChallenge: params.codeChallenge,
       redirectUri: params.redirectUri,
-      resource: params.resource?.href,
+      redirectUriRequired: this.requireRedirectUri && typeof suppliedRedirectUri === "string",
+      resource: (params.resource ?? this.defaultResource)?.href,
       fbUserId: pending?.fbUserId,
       expiresAt: Math.floor(Date.now() / 1000) + 600,
     });
@@ -138,7 +148,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     authorizationCode: string,
     codeVerifier?: string,
-    _redirectUri?: string,
+    redirectUri?: string,
     resource?: URL,
   ): Promise<OAuthTokens> {
     // Atomic get-and-delete: under concurrent exchange requests, only the
@@ -155,6 +165,13 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     }
     if (entry.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new InvalidGrantError("Authorization code has expired");
+    }
+
+    if ((entry.redirectUriRequired || redirectUri !== undefined) && redirectUri !== entry.redirectUri) {
+      throw new InvalidGrantError("Authorization code redirect URI mismatch");
+    }
+    if (entry.resource && resource && resource.href !== entry.resource) {
+      throw new InvalidGrantError("Authorization code resource mismatch");
     }
 
     // Defense-in-depth PKCE check. mcp-sdk's primary verification happens
@@ -205,6 +222,10 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
         "Refresh token was issued to a different client",
       );
     }
+    const boundResource = typeof payload.resource === "string" ? new URL(payload.resource) : undefined;
+    if (boundResource && resource && boundResource.href !== resource.href) {
+      throw new InvalidGrantError("Refresh token resource mismatch");
+    }
     // jti must be present in the allow-list — i.e. issued by us, not yet
     // revoked, and not yet rotated. Old tokens issued before this code
     // existed don't carry a jti and would be rejected here, which is the
@@ -228,7 +249,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
 
     return this.generateTokens({
       clientId: client.client_id,
-      resource,
+      resource: boundResource ?? resource,
       fbUserId:
         typeof payload.fb_user_id === "string" ? payload.fb_user_id : undefined,
     });
@@ -268,6 +289,9 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     };
     if (payload.resource) {
       authInfo.resource = new URL(payload.resource as string);
+    } else if (this.defaultResource) {
+      // Pre-upgrade tokens belong to this single-resource service; retain them until normal rotation.
+      authInfo.resource = this.defaultResource;
     }
     return authInfo;
   }
@@ -308,7 +332,8 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       sub: input.clientId,
       type: "access",
     };
-    if (input.resource) claims.resource = input.resource.href;
+    const resource = input.resource ?? this.defaultResource;
+    if (resource) claims.resource = resource.href;
     if(input.fbUserId&&await isMetaPrincipalPrivacyLocked(input.fbUserId))throw new InvalidGrantError("User authorization has been revoked");
     if (input.fbUserId) claims.fb_user_id = input.fbUserId;
 
@@ -329,6 +354,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       type: "refresh",
       jti: refreshJti,
     };
+    if (resource) refreshClaims.resource = resource.href;
     if (input.fbUserId) refreshClaims.fb_user_id = input.fbUserId;
 
     const refreshToken = await new SignJWT(refreshClaims)
@@ -369,5 +395,7 @@ export function resetOAuthProviderForTests(): void {
     authCodesStore: new InMemoryAuthCodesStore(),
     refreshJtiStore: new InMemoryJtiStore(),
     resolvePendingAuth: () => null,
+    defaultResource: null,
+    requireRedirectUri: false,
   });
 }

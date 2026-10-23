@@ -110,6 +110,49 @@ describe("MetaAdsOAuthProvider", () => {
     ).rejects.toThrow(/different client/);
   });
 
+  async function issueResourceCode(resource = new URL("https://example.com/mcp")) {
+    const res = fakeRes();
+    await oauthProvider.authorize(fakeClient, {
+      codeChallenge: "ch",
+      codeChallengeMethod: "S256",
+      redirectUri: "https://example.com/cb",
+      scopes: [],
+      resource,
+    }, res);
+    return new URL((res.redirect as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1]).searchParams.get("code")!;
+  }
+
+  it("preserves the authorized resource through repeated refreshes without a resource parameter", async () => {
+    const code = await issueResourceCode();
+    let tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, code);
+    for (let rotation = 0; rotation < 3; rotation++) {
+      expect((await oauthProvider.verifyAccessToken(tokens.access_token)).resource?.href).toBe("https://example.com/mcp");
+      tokens = await oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!);
+    }
+    expect((await oauthProvider.verifyAccessToken(tokens.access_token)).resource?.href).toBe("https://example.com/mcp");
+  });
+
+  it("rejects changing the resource during code exchange", async () => {
+    const code = await issueResourceCode();
+    await expect(oauthProvider.exchangeAuthorizationCode(fakeClient, code, undefined, undefined,
+      new URL("https://other.example.com/mcp"))).rejects.toThrow(/resource mismatch/);
+  });
+
+  it("rejects a different redirect URI during code exchange", async () => {
+    const code = await issueResourceCode();
+    await expect(oauthProvider.exchangeAuthorizationCode(fakeClient, code, undefined,
+      "https://example.com/different-callback")).rejects.toThrow(/redirect URI mismatch/);
+  });
+
+  it("rejects changing the refresh resource without consuming the valid refresh token", async () => {
+    const code = await issueResourceCode();
+    const tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, code);
+    await expect(oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!, undefined,
+      new URL("https://other.example.com/mcp"))).rejects.toThrow(/resource mismatch/);
+    const refreshed = await oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!);
+    expect((await oauthProvider.verifyAccessToken(refreshed.access_token)).resource?.href).toBe("https://example.com/mcp");
+  });
+
   it("CODE-A1: code consume() is single-use under concurrent exchange (race fix)", async () => {
     const res = fakeRes();
     await oauthProvider.authorize(
