@@ -10,3 +10,12 @@ tests
 .claude
 scripts
 .gitignore
+# Local engineering artifacts and tool configuration never enter build context.
+work
+coverage
+.codex
+.agents
+.railway
+*.log
+*credential*.json
+*service-account*.json

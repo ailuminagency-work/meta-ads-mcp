@@ -1,4 +1,7 @@
+import {isMetaPrincipalPrivacyLocked} from "../platform/meta-privacy-access.js";
 import express from "express";
+import { randomUUID } from "node:crypto";
+import { MetaOAuthRequestError } from "../auth/meta-oauth-request.js";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
   buildAuthorizeUrl,
@@ -167,6 +170,7 @@ export function safeReturnTo(
 }
 
 function renderError(res: express.Response, status: number, message: string): void {
+  res.setHeader("Cache-Control", "no-store");
   // Restrictive CSP on every server-rendered HTML page (CODE-B3): even
   // though renderError only emits inline <style>, pinning the policy
   // limits the blast radius if user-controlled content ever leaks
@@ -176,11 +180,11 @@ function renderError(res: express.Response, status: number, message: string): vo
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
   );
   res.status(status).type("html").send(
-    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Auth error</title>
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Lumin connection needs attention</title>
     <style>body{background:#0f0f0f;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
     .card{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:2.5rem;max-width:420px;text-align:center}
     h1{color:#fca5a5;margin:0 0 0.5rem}p{color:#aaa;margin:0}</style></head>
-    <body><div class="card"><h1>Auth error</h1><p>${escapeHtml(message)}</p></div></body></html>`,
+    <body><main class="card"><h1>Connection needs attention</h1><p>${escapeHtml(message)}</p></main></body></html>`,
   );
 }
 
@@ -300,10 +304,9 @@ export function mountAuthRoutes(
       // server-side and show a generic message (CODE-M1).
       logger.warn(
         {
-          metaError: error,
-          metaErrorCode: req.query.error_code,
-          metaErrorReason: req.query.error_reason,
-          metaErrorDescription: req.query.error_description,
+          reference: randomUUID(),
+          stage: "provider-authorization",
+          kind: error === "access_denied" ? "denied" : "provider",
         },
         "Meta OAuth callback returned an error",
       );
@@ -356,6 +359,7 @@ export function mountAuthRoutes(
         config.apiVersion,
       );
 
+      if(await isMetaPrincipalPrivacyLocked(profile.id))throw new Error("User authorization has been revoked");
       await upsertUser(profile.id, profile);
       await saveToken({
         fbUserId: profile.id,
@@ -378,11 +382,18 @@ export function mountAuthRoutes(
 
       res.redirect(302, safeReturnTo(pending.returnTo));
     } catch (err) {
+      const reference = randomUUID();
+      const failure = err instanceof MetaOAuthRequestError ? err : null;
       logger.error(
-        { error: err instanceof Error ? err.message : String(err) },
+        { reference, stage: failure?.stage ?? "complete-login", kind: failure?.kind ?? "internal", providerCode: failure?.providerCode },
         "Meta callback failed",
       );
-      renderError(res, 500, "Login failed. Please try again.");
+      const message = failure?.kind === "configuration"
+        ? "Lumin could not complete the connection because its Meta app configuration needs attention. Contact the administrator; reconnecting will not fix this."
+        : failure?.kind === "unavailable"
+          ? "The connection could not be completed because a required service is unavailable. Return to ChatGPT and start a new connection attempt shortly."
+          : "The connection could not be completed. Return to ChatGPT to start a new attempt. If this continues, contact the administrator.";
+      renderError(res, failure?.kind === "unavailable" ? 503 : 500, `${message} Support reference: ${reference}`);
     }
   });
 
@@ -766,4 +777,3 @@ export function mountAuthRoutes(
     },
   );
 }
-

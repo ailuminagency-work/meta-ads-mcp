@@ -1,0 +1,11 @@
+# Catalog operational observations
+
+Two read-only tools use already registered client assets: `catalog_get_feed_status` and `catalog_get_item_diagnostics`. Both require the current client-owned Business evidence, exact catalog owner, selected USER credential and catalog MANAGE task. Feed status additionally proves current feed membership before fetching the latest upload. Neither tool enrolls assets or changes a feed.
+
+The feed result contains only the upload ID, observed times and aggregate item/error/warning counters. Missing fields remain unknown. Diagnostics contain product-item scope, severity, category, error code and aggregate affected counts, with an explicit partial-page marker. Neither result certifies catalog health or exhaustive diagnostics. File names, feed URLs, item contents, schedules and raw error details are withheld. Credential-shaped output and an exact selected-token echo are rejected.
+
+Each provider read checks current authorization. After the read completes, a single atomic checkpoint checks original authorization rows, the actual selected encrypted credential, member indices and lifecycle/privacy locks before releasing the response. Withdrawal or credential rotation denies the response.
+
+Contracts were checked against the pinned Meta Business SDK source: [ProductFeed](https://github.com/facebook/facebook-python-business-sdk/blob/efd8423a2e595ea8d4c04eb824ce113f2f1d68cd/facebook_business/adobjects/productfeed.py), [ProductFeedUpload](https://github.com/facebook/facebook-python-business-sdk/blob/efd8423a2e595ea8d4c04eb824ce113f2f1d68cd/facebook_business/adobjects/productfeedupload.py), [ProductCatalog](https://github.com/facebook/facebook-python-business-sdk/blob/efd8423a2e595ea8d4c04eb824ce113f2f1d68cd/facebook_business/adobjects/productcatalog.py) and [ProductCatalogDiagnosticGroup](https://github.com/facebook/facebook-python-business-sdk/blob/efd8423a2e595ea8d4c04eb824ce113f2f1d68cd/facebook_business/adobjects/productcatalogdiagnosticgroup.py).
+
+Local native MCP tests use fake provider responses and real repository/credential/authorization paths. They establish engineering behavior, not live Meta permission eligibility, actual client ownership or staging acceptance. No production configuration was changed.

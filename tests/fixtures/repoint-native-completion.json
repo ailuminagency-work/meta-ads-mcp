@@ -1,0 +1,1128 @@
+{
+  "input": {
+    "tenantId": "tenant",
+    "operationId": "7cd369e0-8215-4bb4-b96b-412e13458878",
+    "result": "SUCCEEDED",
+    "audit": {
+      "id": "7cd369e0-8215-4bb4-b96b-412e13458878:result",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "actorId": "100",
+      "tool": "ads_update_ad",
+      "operationId": "7cd369e0-8215-4bb4-b96b-412e13458878",
+      "event": "SUCCEEDED",
+      "timestamp": 1792203170760,
+      "assetKeys": [
+        "account",
+        "campaign",
+        "adset",
+        "page",
+        "image",
+        "creative",
+        "ad",
+        "__SYNTHETIC_CREATED_CREATIVE_KEY__"
+      ],
+      "planHash": "d838545e07c483acba609014e4a714ea6104ef02458ce9d77c886caf33688066",
+      "approvalId": "816f7669-2ada-43f1-b9d8-9134d1c39635",
+      "beforeEvidence": "UNKNOWN",
+      "afterSummary": [
+        {
+          "field": "status",
+          "value": "PAUSED"
+        },
+        {
+          "field": "creative_id",
+          "value": "502"
+        }
+      ]
+    },
+    "repointed": {
+      "assetBefore": {
+        "key": "ad",
+        "id": "401",
+        "type": "AD",
+        "parents": [
+          {
+            "type": "AD_SET",
+            "id": "301"
+          },
+          {
+            "type": "CREATIVE",
+            "id": "501"
+          },
+          {
+            "type": "AD_ACCOUNT",
+            "id": "101"
+          },
+          {
+            "type": "PAGE",
+            "id": "601"
+          }
+        ],
+        "provider": "META_MARKETING",
+        "appId": "300",
+        "tenantId": "tenant",
+        "clientId": "client",
+        "verifiedAt": 1792203169662,
+        "revokedAt": null,
+        "revision": 2,
+        "creativeRepointClaim": {
+          "operationId": "7cd369e0-8215-4bb4-b96b-412e13458878",
+          "claimedAt": 1792203170685,
+          "oldCreativeId": "501",
+          "newCreativeId": "502"
+        }
+      },
+      "assetAfter": {
+        "key": "ad",
+        "id": "401",
+        "type": "AD",
+        "parents": [
+          {
+            "type": "AD_SET",
+            "id": "301"
+          },
+          {
+            "type": "CREATIVE",
+            "id": "502"
+          },
+          {
+            "type": "AD_ACCOUNT",
+            "id": "101"
+          },
+          {
+            "type": "PAGE",
+            "id": "601"
+          }
+        ],
+        "provider": "META_MARKETING",
+        "appId": "300",
+        "tenantId": "tenant",
+        "clientId": "client",
+        "verifiedAt": 1792203169662,
+        "revokedAt": null,
+        "revision": 3
+      },
+      "connection": {
+        "id": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+        "metaAppUserId": "100",
+        "tenantId": "tenant",
+        "operatorId": "100",
+        "provider": "META_MARKETING",
+        "authStrategy": "facebook_business",
+        "credentialId": "0942539b-3c42-42f5-95b2-fe5c984f12c6",
+        "appId": "300",
+        "tokenType": "user",
+        "subjectId": "100",
+        "scopes": [
+          "public_profile",
+          "ads_read",
+          "ads_management",
+          "pages_read_engagement",
+          "pages_show_list"
+        ],
+        "assetKeys": [
+          "account",
+          "campaign",
+          "adset",
+          "page",
+          "image",
+          "creative",
+          "ad",
+          "__SYNTHETIC_CREATED_CREATIVE_KEY__"
+        ],
+        "expiresAt": 1792206769000,
+        "revokedAt": null,
+        "verifiedAt": 1792203169832,
+        "revision": 5,
+        "eligibility": [
+          {
+            "requirement": "marketing_read_access:v26.0",
+            "source": "https://developers.facebook.com/docs/permissions",
+            "verified": true,
+            "checkedAt": 1792203169932,
+            "expiresAt": 1792203469932
+          },
+          {
+            "requirement": "marketing_write_access:v26.0",
+            "source": "https://developers.facebook.com/docs/permissions",
+            "verified": true,
+            "checkedAt": 1792203169932,
+            "expiresAt": 1792203469932
+          },
+          {
+            "requirement": "marketing_creative_destination:https://client.fixture.invalid",
+            "source": "https://developers.facebook.com/docs/permissions",
+            "verified": true,
+            "checkedAt": 1792203169932,
+            "expiresAt": 1792203469932
+          },
+          {
+            "requirement": "marketing_creative_page_advertise:601:101",
+            "source": "https://developers.facebook.com/documentation/ads-commerce/marketing-api/guides/lead-ads/create",
+            "bindingHash": "b2a098c1807b94966f49bf3010808ca0b9eac1c0d3f91e91b7bd4f92fb679648",
+            "checkedAt": 1792203170381,
+            "expiresAt": 1792203470381,
+            "verified": true
+          },
+          {
+            "requirement": "marketing_update_state:ads_update_ad:401",
+            "source": "https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/ad.py",
+            "bindingHash": "299e57a2b697d11f5a04c3cf423f0e773ae32cf230423cc6a0b900423a1f226e",
+            "checkedAt": 1792203170628,
+            "expiresAt": 1792203470628,
+            "verified": true
+          }
+        ]
+      },
+      "grants": [
+        {
+          "id": "877ebc30-577b-499d-87f9-46195ce13c38",
+          "tenantId": "tenant",
+          "clientId": "client",
+          "assetKey": "account",
+          "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "capabilities": [
+            "legacy.ads_get_account_info",
+            "marketing.activate.ad",
+            "marketing.delete.paused.ad",
+            "legacy.ads_get_ad_details",
+            "legacy.ads_get_creative_details",
+            "legacy.ads_get_ad_set_details",
+            "legacy.ads_create_ad_creative",
+            "legacy.ads_update_ad"
+          ],
+          "actions": [
+            "READ",
+            "WRITE_AD_CONFIGURATION",
+            "ACTIVATE_SPEND",
+            "DELETE"
+          ],
+          "tasks": [],
+          "verifiedAt": 1792203169832,
+          "expiresAt": 1792206769000,
+          "revokedAt": null,
+          "revision": 1
+        },
+        {
+          "id": "29a51c54-746d-4039-bdf1-0b5bf14860a8",
+          "tenantId": "tenant",
+          "clientId": "client",
+          "assetKey": "campaign",
+          "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "capabilities": [
+            "legacy.ads_get_account_info",
+            "marketing.activate.ad",
+            "marketing.delete.paused.ad",
+            "legacy.ads_get_ad_details",
+            "legacy.ads_get_creative_details",
+            "legacy.ads_get_ad_set_details",
+            "legacy.ads_create_ad_creative",
+            "legacy.ads_update_ad"
+          ],
+          "actions": [
+            "READ",
+            "WRITE_AD_CONFIGURATION",
+            "ACTIVATE_SPEND",
+            "DELETE"
+          ],
+          "tasks": [],
+          "verifiedAt": 1792203169832,
+          "expiresAt": 1792206769000,
+          "revokedAt": null,
+          "revision": 1
+        },
+        {
+          "id": "52eda7d8-80c3-482a-a347-1d6cbdae8346",
+          "tenantId": "tenant",
+          "clientId": "client",
+          "assetKey": "adset",
+          "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "capabilities": [
+            "legacy.ads_get_account_info",
+            "marketing.activate.ad",
+            "marketing.delete.paused.ad",
+            "legacy.ads_get_ad_details",
+            "legacy.ads_get_creative_details",
+            "legacy.ads_get_ad_set_details",
+            "legacy.ads_create_ad_creative",
+            "legacy.ads_update_ad"
+          ],
+          "actions": [
+            "READ",
+            "WRITE_AD_CONFIGURATION",
+            "ACTIVATE_SPEND",
+            "DELETE"
+          ],
+          "tasks": [],
+          "verifiedAt": 1792203169832,
+          "expiresAt": 1792206769000,
+          "revokedAt": null,
+          "revision": 1
+        },
+        {
+          "id": "9713a82b-b547-4bdb-b56e-c5c182fe64c8",
+          "tenantId": "tenant",
+          "clientId": "client",
+          "assetKey": "page",
+          "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "capabilities": [
+            "legacy.ads_get_account_info",
+            "marketing.activate.ad",
+            "marketing.delete.paused.ad",
+            "legacy.ads_get_ad_details",
+            "legacy.ads_get_creative_details",
+            "legacy.ads_get_ad_set_details",
+            "legacy.ads_create_ad_creative",
+            "legacy.ads_update_ad"
+          ],
+          "actions": [
+            "READ",
+            "WRITE_AD_CONFIGURATION",
+            "ACTIVATE_SPEND",
+            "DELETE"
+          ],
+          "tasks": [
+            "ADVERTISE"
+          ],
+          "verifiedAt": 1792203169832,
+          "expiresAt": 1792206769000,
+          "revokedAt": null,
+          "revision": 1
+        },
+        {
+          "id": "77335482-b9db-4f50-ba94-501f24d0fbc0",
+          "tenantId": "tenant",
+          "clientId": "client",
+          "assetKey": "image",
+          "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "capabilities": [
+            "legacy.ads_get_account_info",
+            "marketing.activate.ad",
+            "marketing.delete.paused.ad",
+            "legacy.ads_get_ad_details",
+            "legacy.ads_get_creative_details",
+            "legacy.ads_get_ad_set_details",
+            "legacy.ads_create_ad_creative",
+            "legacy.ads_update_ad"
+          ],
+          "actions": [
+            "READ",
+            "WRITE_AD_CONFIGURATION",
+            "ACTIVATE_SPEND",
+            "DELETE"
+          ],
+          "tasks": [],
+          "verifiedAt": 1792203169832,
+          "expiresAt": 1792206769000,
+          "revokedAt": null,
+          "revision": 1
+        },
+        {
+          "id": "f5593c57-056c-4b97-b717-a8cfc82e5ab6",
+          "tenantId": "tenant",
+          "clientId": "client",
+          "assetKey": "creative",
+          "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "capabilities": [
+            "legacy.ads_get_account_info",
+            "marketing.activate.ad",
+            "marketing.delete.paused.ad",
+            "legacy.ads_get_ad_details",
+            "legacy.ads_get_creative_details",
+            "legacy.ads_get_ad_set_details",
+            "legacy.ads_create_ad_creative",
+            "legacy.ads_update_ad"
+          ],
+          "actions": [
+            "READ",
+            "WRITE_AD_CONFIGURATION",
+            "ACTIVATE_SPEND",
+            "DELETE"
+          ],
+          "tasks": [],
+          "verifiedAt": 1792203169832,
+          "expiresAt": 1792206769000,
+          "revokedAt": null,
+          "revision": 1
+        },
+        {
+          "id": "4cad1e79-7c7a-4574-b534-69924aed4c3e",
+          "tenantId": "tenant",
+          "clientId": "client",
+          "assetKey": "ad",
+          "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "capabilities": [
+            "legacy.ads_get_account_info",
+            "marketing.activate.ad",
+            "marketing.delete.paused.ad",
+            "legacy.ads_get_ad_details",
+            "legacy.ads_get_creative_details",
+            "legacy.ads_get_ad_set_details",
+            "legacy.ads_create_ad_creative",
+            "legacy.ads_update_ad"
+          ],
+          "actions": [
+            "READ",
+            "WRITE_AD_CONFIGURATION",
+            "ACTIVATE_SPEND",
+            "DELETE"
+          ],
+          "tasks": [],
+          "verifiedAt": 1792203169832,
+          "expiresAt": 1792206769000,
+          "revokedAt": null,
+          "revision": 1
+        },
+        {
+          "id": "62f1878f-48a6-4827-878b-ed9f397711aa:created",
+          "tenantId": "tenant",
+          "clientId": "client",
+          "assetKey": "__SYNTHETIC_CREATED_CREATIVE_KEY__",
+          "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "capabilities": [
+            "legacy.ads_get_account_info",
+            "marketing.activate.ad",
+            "marketing.delete.paused.ad",
+            "legacy.ads_get_ad_details",
+            "legacy.ads_get_creative_details",
+            "legacy.ads_get_ad_set_details",
+            "legacy.ads_create_ad_creative",
+            "legacy.ads_update_ad"
+          ],
+          "actions": [
+            "READ",
+            "WRITE_AD_CONFIGURATION",
+            "ACTIVATE_SPEND",
+            "DELETE"
+          ],
+          "tasks": [],
+          "verifiedAt": 1792203169832,
+          "expiresAt": 1792206769000,
+          "revokedAt": null,
+          "revision": 1
+        }
+      ],
+      "expectedRecords": [
+        {
+          "collection": "tenants",
+          "id": "tenant",
+          "canonical": "{\"id\":\"tenant\",\"migrationState\":\"READY\",\"policyRevision\":1,\"registryRevision\":1,\"status\":\"ACTIVE\"}"
+        },
+        {
+          "collection": "members",
+          "id": "100",
+          "canonical": "{\"allowedClientIds\":[\"client\"],\"disabledAt\":null,\"operatorId\":\"100\",\"revision\":1,\"roles\":[\"admin\"],\"tenantId\":\"tenant\"}"
+        },
+        {
+          "collection": "clients",
+          "id": "client",
+          "canonical": "{\"id\":\"client\",\"revision\":1,\"status\":\"ACTIVE\",\"tenantId\":\"tenant\",\"verifiedBusinessIds\":[\"900\"]}"
+        },
+        {
+          "collection": "connections",
+          "id": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+          "canonical": "{\"appId\":\"300\",\"assetKeys\":[\"account\",\"campaign\",\"adset\",\"page\",\"image\",\"creative\",\"ad\",\"__SYNTHETIC_CREATED_CREATIVE_KEY__\"],\"authStrategy\":\"facebook_business\",\"credentialId\":\"0942539b-3c42-42f5-95b2-fe5c984f12c6\",\"eligibility\":[{\"checkedAt\":1792203169932,\"expiresAt\":1792203469932,\"requirement\":\"marketing_read_access:v26.0\",\"source\":\"https://developers.facebook.com/docs/permissions\",\"verified\":true},{\"checkedAt\":1792203169932,\"expiresAt\":1792203469932,\"requirement\":\"marketing_write_access:v26.0\",\"source\":\"https://developers.facebook.com/docs/permissions\",\"verified\":true},{\"checkedAt\":1792203169932,\"expiresAt\":1792203469932,\"requirement\":\"marketing_creative_destination:https://client.fixture.invalid\",\"source\":\"https://developers.facebook.com/docs/permissions\",\"verified\":true},{\"bindingHash\":\"b2a098c1807b94966f49bf3010808ca0b9eac1c0d3f91e91b7bd4f92fb679648\",\"checkedAt\":1792203170381,\"expiresAt\":1792203470381,\"requirement\":\"marketing_creative_page_advertise:601:101\",\"source\":\"https://developers.facebook.com/documentation/ads-commerce/marketing-api/guides/lead-ads/create\",\"verified\":true},{\"bindingHash\":\"299e57a2b697d11f5a04c3cf423f0e773ae32cf230423cc6a0b900423a1f226e\",\"checkedAt\":1792203170628,\"expiresAt\":1792203470628,\"requirement\":\"marketing_update_state:ads_update_ad:401\",\"source\":\"https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/ad.py\",\"verified\":true}],\"expiresAt\":1792206769000,\"id\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"metaAppUserId\":\"100\",\"operatorId\":\"100\",\"provider\":\"META_MARKETING\",\"revision\":5,\"revokedAt\":null,\"scopes\":[\"public_profile\",\"ads_read\",\"ads_management\",\"pages_read_engagement\",\"pages_show_list\"],\"subjectId\":\"100\",\"tenantId\":\"tenant\",\"tokenType\":\"user\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "assets",
+          "id": "account",
+          "canonical": "{\"appId\":\"300\",\"billingOwnershipVerified\":true,\"clientId\":\"client\",\"id\":\"101\",\"key\":\"account\",\"ownerBillingAttestationId\":\"93e8cfdb-3799-4b0a-a0b3-aa27f63152c2\",\"ownerBusinessId\":\"900\",\"ownershipEvidenceSource\":\"https://developers.facebook.com/docs/marketing-api/reference/ad-account/\",\"ownershipEvidenceVerifiedAt\":1792203169920,\"ownershipObservationId\":\"26beea86-c9c5-45f0-82b6-75012b29161b\",\"parents\":[],\"provider\":\"META_MARKETING\",\"revision\":3,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"AD_ACCOUNT\",\"verifiedAt\":1792203169662}"
+        },
+        {
+          "collection": "assets",
+          "id": "campaign",
+          "canonical": "{\"appId\":\"300\",\"clientId\":\"client\",\"id\":\"201\",\"key\":\"campaign\",\"parents\":[{\"id\":\"101\",\"type\":\"AD_ACCOUNT\"}],\"provider\":\"META_MARKETING\",\"revision\":1,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"CAMPAIGN\",\"verifiedAt\":1792203169662}"
+        },
+        {
+          "collection": "assets",
+          "id": "adset",
+          "canonical": "{\"appId\":\"300\",\"clientId\":\"client\",\"id\":\"301\",\"key\":\"adset\",\"parents\":[{\"id\":\"201\",\"type\":\"CAMPAIGN\"},{\"id\":\"101\",\"type\":\"AD_ACCOUNT\"}],\"provider\":\"META_MARKETING\",\"revision\":1,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"AD_SET\",\"verifiedAt\":1792203169662}"
+        },
+        {
+          "collection": "assets",
+          "id": "page",
+          "canonical": "{\"appId\":\"300\",\"clientId\":\"client\",\"id\":\"601\",\"key\":\"page\",\"parents\":[],\"provider\":\"META_MARKETING\",\"revision\":1,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"PAGE\",\"verifiedAt\":1792203169662}"
+        },
+        {
+          "collection": "assets",
+          "id": "image",
+          "canonical": "{\"appId\":\"300\",\"clientId\":\"client\",\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"key\":\"image\",\"parents\":[{\"id\":\"101\",\"type\":\"AD_ACCOUNT\"}],\"provider\":\"META_MARKETING\",\"revision\":1,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"AD_IMAGE\",\"verifiedAt\":1792203169662}"
+        },
+        {
+          "collection": "assets",
+          "id": "creative",
+          "canonical": "{\"appId\":\"300\",\"clientId\":\"client\",\"id\":\"501\",\"key\":\"creative\",\"parents\":[{\"id\":\"101\",\"type\":\"AD_ACCOUNT\"},{\"id\":\"601\",\"type\":\"PAGE\"},{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"AD_IMAGE\"}],\"provider\":\"META_MARKETING\",\"revision\":1,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"CREATIVE\",\"verifiedAt\":1792203169662}"
+        },
+        {
+          "collection": "assets",
+          "id": "ad",
+          "canonical": "{\"appId\":\"300\",\"clientId\":\"client\",\"creativeRepointClaim\":{\"claimedAt\":1792203170685,\"newCreativeId\":\"502\",\"oldCreativeId\":\"501\",\"operationId\":\"7cd369e0-8215-4bb4-b96b-412e13458878\"},\"id\":\"401\",\"key\":\"ad\",\"parents\":[{\"id\":\"301\",\"type\":\"AD_SET\"},{\"id\":\"501\",\"type\":\"CREATIVE\"},{\"id\":\"101\",\"type\":\"AD_ACCOUNT\"},{\"id\":\"601\",\"type\":\"PAGE\"}],\"provider\":\"META_MARKETING\",\"revision\":2,\"revokedAt\":null,\"tenantId\":\"tenant\",\"type\":\"AD\",\"verifiedAt\":1792203169662}"
+        },
+        {
+          "collection": "assets",
+          "id": "__SYNTHETIC_CREATED_CREATIVE_KEY__",
+          "canonical": "{\"appId\":\"300\",\"clientId\":\"client\",\"createdFromOperationId\":\"62f1878f-48a6-4827-878b-ed9f397711aa\",\"id\":\"502\",\"key\":\"__SYNTHETIC_CREATED_CREATIVE_KEY__\",\"parents\":[{\"id\":\"101\",\"type\":\"AD_ACCOUNT\"},{\"id\":\"601\",\"type\":\"PAGE\"},{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"AD_IMAGE\"}],\"provider\":\"META_MARKETING\",\"revision\":1,\"revokedAt\":null,\"sourceAssetKeys\":[\"ad\"],\"tenantId\":\"tenant\",\"type\":\"CREATIVE\",\"verifiedAt\":1792203170497}"
+        },
+        {
+          "collection": "grants",
+          "id": "877ebc30-577b-499d-87f9-46195ce13c38",
+          "canonical": "{\"actions\":[\"READ\",\"WRITE_AD_CONFIGURATION\",\"ACTIVATE_SPEND\",\"DELETE\"],\"assetKey\":\"account\",\"capabilities\":[\"legacy.ads_get_account_info\",\"marketing.activate.ad\",\"marketing.delete.paused.ad\",\"legacy.ads_get_ad_details\",\"legacy.ads_get_creative_details\",\"legacy.ads_get_ad_set_details\",\"legacy.ads_create_ad_creative\",\"legacy.ads_update_ad\"],\"clientId\":\"client\",\"connectionId\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"expiresAt\":1792206769000,\"id\":\"877ebc30-577b-499d-87f9-46195ce13c38\",\"revision\":1,\"revokedAt\":null,\"tasks\":[],\"tenantId\":\"tenant\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "grants",
+          "id": "29a51c54-746d-4039-bdf1-0b5bf14860a8",
+          "canonical": "{\"actions\":[\"READ\",\"WRITE_AD_CONFIGURATION\",\"ACTIVATE_SPEND\",\"DELETE\"],\"assetKey\":\"campaign\",\"capabilities\":[\"legacy.ads_get_account_info\",\"marketing.activate.ad\",\"marketing.delete.paused.ad\",\"legacy.ads_get_ad_details\",\"legacy.ads_get_creative_details\",\"legacy.ads_get_ad_set_details\",\"legacy.ads_create_ad_creative\",\"legacy.ads_update_ad\"],\"clientId\":\"client\",\"connectionId\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"expiresAt\":1792206769000,\"id\":\"29a51c54-746d-4039-bdf1-0b5bf14860a8\",\"revision\":1,\"revokedAt\":null,\"tasks\":[],\"tenantId\":\"tenant\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "grants",
+          "id": "52eda7d8-80c3-482a-a347-1d6cbdae8346",
+          "canonical": "{\"actions\":[\"READ\",\"WRITE_AD_CONFIGURATION\",\"ACTIVATE_SPEND\",\"DELETE\"],\"assetKey\":\"adset\",\"capabilities\":[\"legacy.ads_get_account_info\",\"marketing.activate.ad\",\"marketing.delete.paused.ad\",\"legacy.ads_get_ad_details\",\"legacy.ads_get_creative_details\",\"legacy.ads_get_ad_set_details\",\"legacy.ads_create_ad_creative\",\"legacy.ads_update_ad\"],\"clientId\":\"client\",\"connectionId\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"expiresAt\":1792206769000,\"id\":\"52eda7d8-80c3-482a-a347-1d6cbdae8346\",\"revision\":1,\"revokedAt\":null,\"tasks\":[],\"tenantId\":\"tenant\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "grants",
+          "id": "9713a82b-b547-4bdb-b56e-c5c182fe64c8",
+          "canonical": "{\"actions\":[\"READ\",\"WRITE_AD_CONFIGURATION\",\"ACTIVATE_SPEND\",\"DELETE\"],\"assetKey\":\"page\",\"capabilities\":[\"legacy.ads_get_account_info\",\"marketing.activate.ad\",\"marketing.delete.paused.ad\",\"legacy.ads_get_ad_details\",\"legacy.ads_get_creative_details\",\"legacy.ads_get_ad_set_details\",\"legacy.ads_create_ad_creative\",\"legacy.ads_update_ad\"],\"clientId\":\"client\",\"connectionId\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"expiresAt\":1792206769000,\"id\":\"9713a82b-b547-4bdb-b56e-c5c182fe64c8\",\"revision\":1,\"revokedAt\":null,\"tasks\":[\"ADVERTISE\"],\"tenantId\":\"tenant\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "grants",
+          "id": "77335482-b9db-4f50-ba94-501f24d0fbc0",
+          "canonical": "{\"actions\":[\"READ\",\"WRITE_AD_CONFIGURATION\",\"ACTIVATE_SPEND\",\"DELETE\"],\"assetKey\":\"image\",\"capabilities\":[\"legacy.ads_get_account_info\",\"marketing.activate.ad\",\"marketing.delete.paused.ad\",\"legacy.ads_get_ad_details\",\"legacy.ads_get_creative_details\",\"legacy.ads_get_ad_set_details\",\"legacy.ads_create_ad_creative\",\"legacy.ads_update_ad\"],\"clientId\":\"client\",\"connectionId\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"expiresAt\":1792206769000,\"id\":\"77335482-b9db-4f50-ba94-501f24d0fbc0\",\"revision\":1,\"revokedAt\":null,\"tasks\":[],\"tenantId\":\"tenant\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "grants",
+          "id": "f5593c57-056c-4b97-b717-a8cfc82e5ab6",
+          "canonical": "{\"actions\":[\"READ\",\"WRITE_AD_CONFIGURATION\",\"ACTIVATE_SPEND\",\"DELETE\"],\"assetKey\":\"creative\",\"capabilities\":[\"legacy.ads_get_account_info\",\"marketing.activate.ad\",\"marketing.delete.paused.ad\",\"legacy.ads_get_ad_details\",\"legacy.ads_get_creative_details\",\"legacy.ads_get_ad_set_details\",\"legacy.ads_create_ad_creative\",\"legacy.ads_update_ad\"],\"clientId\":\"client\",\"connectionId\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"expiresAt\":1792206769000,\"id\":\"f5593c57-056c-4b97-b717-a8cfc82e5ab6\",\"revision\":1,\"revokedAt\":null,\"tasks\":[],\"tenantId\":\"tenant\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "grants",
+          "id": "4cad1e79-7c7a-4574-b534-69924aed4c3e",
+          "canonical": "{\"actions\":[\"READ\",\"WRITE_AD_CONFIGURATION\",\"ACTIVATE_SPEND\",\"DELETE\"],\"assetKey\":\"ad\",\"capabilities\":[\"legacy.ads_get_account_info\",\"marketing.activate.ad\",\"marketing.delete.paused.ad\",\"legacy.ads_get_ad_details\",\"legacy.ads_get_creative_details\",\"legacy.ads_get_ad_set_details\",\"legacy.ads_create_ad_creative\",\"legacy.ads_update_ad\"],\"clientId\":\"client\",\"connectionId\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"expiresAt\":1792206769000,\"id\":\"4cad1e79-7c7a-4574-b534-69924aed4c3e\",\"revision\":1,\"revokedAt\":null,\"tasks\":[],\"tenantId\":\"tenant\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "grants",
+          "id": "62f1878f-48a6-4827-878b-ed9f397711aa:created",
+          "canonical": "{\"actions\":[\"READ\",\"WRITE_AD_CONFIGURATION\",\"ACTIVATE_SPEND\",\"DELETE\"],\"assetKey\":\"__SYNTHETIC_CREATED_CREATIVE_KEY__\",\"capabilities\":[\"legacy.ads_get_account_info\",\"marketing.activate.ad\",\"marketing.delete.paused.ad\",\"legacy.ads_get_ad_details\",\"legacy.ads_get_creative_details\",\"legacy.ads_get_ad_set_details\",\"legacy.ads_create_ad_creative\",\"legacy.ads_update_ad\"],\"clientId\":\"client\",\"connectionId\":\"bade7f45-1c4e-4376-8508-ea65f47edc1f\",\"expiresAt\":1792206769000,\"id\":\"62f1878f-48a6-4827-878b-ed9f397711aa:created\",\"revision\":1,\"revokedAt\":null,\"tasks\":[],\"tenantId\":\"tenant\",\"verifiedAt\":1792203169832}"
+        },
+        {
+          "collection": "ownerBillingAttestations",
+          "id": "93e8cfdb-3799-4b0a-a0b3-aa27f63152c2",
+          "canonical": "{\"accountId\":\"101\",\"accountKey\":\"account\",\"appId\":\"300\",\"approvedBy\":\"100\",\"businessId\":\"900\",\"checkedAt\":1792203169881,\"clientId\":\"client\",\"documentReferenceHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expiresAt\":1792289569878,\"id\":\"93e8cfdb-3799-4b0a-a0b3-aa27f63152c2\",\"revision\":1,\"revokedAt\":null,\"source\":\"CLIENT_OWNER_ATTESTATION\",\"tenantId\":\"tenant\"}"
+        },
+        {
+          "collection": "accountOwnershipObservations",
+          "id": "26beea86-c9c5-45f0-82b6-75012b29161b",
+          "canonical": "{\"accountId\":\"101\",\"accountKey\":\"account\",\"actorId\":\"100\",\"appId\":\"300\",\"attestationId\":\"93e8cfdb-3799-4b0a-a0b3-aa27f63152c2\",\"businessId\":\"900\",\"checkedAt\":1792203169920,\"clientId\":\"client\",\"connectionId\":\"ownership-bootstrap-00b6d448-9547-452f-87c8-60840a88a9ed\",\"encryptedProof\":{\"ciphertext\":\"h/X0WCipBr9cSDwu02LGuhi+v+oDluQvuCr2Sl76ytlWdK4XyZQIjGHT1JPpe46bCiae4Zy9qwu9sSM=\",\"iv\":\"w6y4Hy+2GK8ztBpv\",\"tag\":\"80rcMFl0hS2besDHshM/GA==\"},\"expiresAt\":1792203469920,\"id\":\"26beea86-c9c5-45f0-82b6-75012b29161b\",\"revision\":1,\"revokedAt\":null,\"source\":\"META_AD_ACCOUNT_BUSINESS\",\"sourceUrl\":\"https://developers.facebook.com/docs/marketing-api/reference/ad-account/\",\"tenantId\":\"tenant\"}"
+        }
+      ],
+      "authorizationExpiresAt": 1792203230685,
+      "oldCreativeId": "501",
+      "newCreativeId": "502",
+      "plan": {
+        "parameters": {
+          "status": "PAUSED",
+          "expected_original_creative_id": "501",
+          "marketing_source_ad_id": "401",
+          "legacy_write_step": {
+            "path": "/401",
+            "body": {
+              "status": "PAUSED",
+              "creative": {
+                "creative_id": "502"
+              }
+            }
+          }
+        },
+        "assets": [
+          {
+            "type": "AD",
+            "id": "401"
+          },
+          {
+            "type": "CREATIVE",
+            "id": "502"
+          },
+          {
+            "type": "PAGE",
+            "id": "601"
+          },
+          {
+            "type": "AD_SET",
+            "id": "301"
+          }
+        ],
+        "classes": [
+          "WRITE_AD_CONFIGURATION"
+        ],
+        "capability": "legacy.ads_update_ad",
+        "requiredScopes": [
+          "ads_read",
+          "ads_management",
+          "pages_read_engagement",
+          "pages_show_list"
+        ],
+        "tokenTypes": [
+          "user"
+        ],
+        "requiredAssetTasks": [
+          {
+            "asset": {
+              "type": "PAGE",
+              "id": "601"
+            },
+            "tasks": [
+              "ADVERTISE"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "allAssets": [
+    {
+      "key": "account",
+      "id": "101",
+      "type": "AD_ACCOUNT",
+      "parents": [],
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "verifiedAt": 1792203169662,
+      "revokedAt": null,
+      "revision": 3,
+      "billingOwnershipVerified": true,
+            "ownerBillingAttestationId": "93e8cfdb-3799-4b0a-a0b3-aa27f63152c2",
+      "ownershipObservationId": "26beea86-c9c5-45f0-82b6-75012b29161b",
+      "ownerBusinessId": "900",
+      "ownershipEvidenceVerifiedAt": 1792203169920,
+      "ownershipEvidenceSource": "https://developers.facebook.com/docs/marketing-api/reference/ad-account/"
+    },
+    {
+      "key": "page",
+      "id": "601",
+      "type": "PAGE",
+      "parents": [],
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "verifiedAt": 1792203169662,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "key": "campaign",
+      "id": "201",
+      "type": "CAMPAIGN",
+      "parents": [
+        {
+          "type": "AD_ACCOUNT",
+          "id": "101"
+        }
+      ],
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "verifiedAt": 1792203169662,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "key": "adset",
+      "id": "301",
+      "type": "AD_SET",
+      "parents": [
+        {
+          "type": "CAMPAIGN",
+          "id": "201"
+        },
+        {
+          "type": "AD_ACCOUNT",
+          "id": "101"
+        }
+      ],
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "verifiedAt": 1792203169662,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "key": "image",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "AD_IMAGE",
+      "parents": [
+        {
+          "type": "AD_ACCOUNT",
+          "id": "101"
+        }
+      ],
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "verifiedAt": 1792203169662,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "key": "creative",
+      "id": "501",
+      "type": "CREATIVE",
+      "parents": [
+        {
+          "type": "AD_ACCOUNT",
+          "id": "101"
+        },
+        {
+          "type": "PAGE",
+          "id": "601"
+        },
+        {
+          "type": "AD_IMAGE",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "verifiedAt": 1792203169662,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "key": "ad",
+      "id": "401",
+      "type": "AD",
+      "parents": [
+        {
+          "type": "AD_SET",
+          "id": "301"
+        },
+        {
+          "type": "CREATIVE",
+          "id": "501"
+        },
+        {
+          "type": "AD_ACCOUNT",
+          "id": "101"
+        },
+        {
+          "type": "PAGE",
+          "id": "601"
+        }
+      ],
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "verifiedAt": 1792203169662,
+      "revokedAt": null,
+      "revision": 2,
+      "creativeRepointClaim": {
+        "operationId": "7cd369e0-8215-4bb4-b96b-412e13458878",
+        "claimedAt": 1792203170685,
+        "oldCreativeId": "501",
+        "newCreativeId": "502"
+      }
+    },
+    {
+      "id": "502",
+      "type": "CREATIVE",
+      "key": "__SYNTHETIC_CREATED_CREATIVE_KEY__",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "parents": [
+        {
+          "id": "101",
+          "type": "AD_ACCOUNT"
+        },
+        {
+          "id": "601",
+          "type": "PAGE"
+        },
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "type": "AD_IMAGE"
+        }
+      ],
+      "verifiedAt": 1792203170497,
+      "revokedAt": null,
+      "revision": 1,
+      "createdFromOperationId": "62f1878f-48a6-4827-878b-ed9f397711aa",
+      "sourceAssetKeys": [
+        "ad"
+      ]
+    }
+  ],
+  "allGrants": [
+    {
+      "id": "877ebc30-577b-499d-87f9-46195ce13c38",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "account",
+      "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "capabilities": [
+        "legacy.ads_get_account_info",
+        "marketing.activate.ad",
+        "marketing.delete.paused.ad",
+        "legacy.ads_get_ad_details",
+        "legacy.ads_get_creative_details",
+        "legacy.ads_get_ad_set_details",
+        "legacy.ads_create_ad_creative",
+        "legacy.ads_update_ad"
+      ],
+      "actions": [
+        "READ",
+        "WRITE_AD_CONFIGURATION",
+        "ACTIVATE_SPEND",
+        "DELETE"
+      ],
+      "tasks": [],
+      "verifiedAt": 1792203169832,
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "id": "29a51c54-746d-4039-bdf1-0b5bf14860a8",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "campaign",
+      "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "capabilities": [
+        "legacy.ads_get_account_info",
+        "marketing.activate.ad",
+        "marketing.delete.paused.ad",
+        "legacy.ads_get_ad_details",
+        "legacy.ads_get_creative_details",
+        "legacy.ads_get_ad_set_details",
+        "legacy.ads_create_ad_creative",
+        "legacy.ads_update_ad"
+      ],
+      "actions": [
+        "READ",
+        "WRITE_AD_CONFIGURATION",
+        "ACTIVATE_SPEND",
+        "DELETE"
+      ],
+      "tasks": [],
+      "verifiedAt": 1792203169832,
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "id": "52eda7d8-80c3-482a-a347-1d6cbdae8346",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "adset",
+      "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "capabilities": [
+        "legacy.ads_get_account_info",
+        "marketing.activate.ad",
+        "marketing.delete.paused.ad",
+        "legacy.ads_get_ad_details",
+        "legacy.ads_get_creative_details",
+        "legacy.ads_get_ad_set_details",
+        "legacy.ads_create_ad_creative",
+        "legacy.ads_update_ad"
+      ],
+      "actions": [
+        "READ",
+        "WRITE_AD_CONFIGURATION",
+        "ACTIVATE_SPEND",
+        "DELETE"
+      ],
+      "tasks": [],
+      "verifiedAt": 1792203169832,
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "id": "9713a82b-b547-4bdb-b56e-c5c182fe64c8",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "page",
+      "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "capabilities": [
+        "legacy.ads_get_account_info",
+        "marketing.activate.ad",
+        "marketing.delete.paused.ad",
+        "legacy.ads_get_ad_details",
+        "legacy.ads_get_creative_details",
+        "legacy.ads_get_ad_set_details",
+        "legacy.ads_create_ad_creative",
+        "legacy.ads_update_ad"
+      ],
+      "actions": [
+        "READ",
+        "WRITE_AD_CONFIGURATION",
+        "ACTIVATE_SPEND",
+        "DELETE"
+      ],
+      "tasks": [
+        "ADVERTISE"
+      ],
+      "verifiedAt": 1792203169832,
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "id": "77335482-b9db-4f50-ba94-501f24d0fbc0",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "image",
+      "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "capabilities": [
+        "legacy.ads_get_account_info",
+        "marketing.activate.ad",
+        "marketing.delete.paused.ad",
+        "legacy.ads_get_ad_details",
+        "legacy.ads_get_creative_details",
+        "legacy.ads_get_ad_set_details",
+        "legacy.ads_create_ad_creative",
+        "legacy.ads_update_ad"
+      ],
+      "actions": [
+        "READ",
+        "WRITE_AD_CONFIGURATION",
+        "ACTIVATE_SPEND",
+        "DELETE"
+      ],
+      "tasks": [],
+      "verifiedAt": 1792203169832,
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "id": "f5593c57-056c-4b97-b717-a8cfc82e5ab6",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "creative",
+      "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "capabilities": [
+        "legacy.ads_get_account_info",
+        "marketing.activate.ad",
+        "marketing.delete.paused.ad",
+        "legacy.ads_get_ad_details",
+        "legacy.ads_get_creative_details",
+        "legacy.ads_get_ad_set_details",
+        "legacy.ads_create_ad_creative",
+        "legacy.ads_update_ad"
+      ],
+      "actions": [
+        "READ",
+        "WRITE_AD_CONFIGURATION",
+        "ACTIVATE_SPEND",
+        "DELETE"
+      ],
+      "tasks": [],
+      "verifiedAt": 1792203169832,
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "id": "4cad1e79-7c7a-4574-b534-69924aed4c3e",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "ad",
+      "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "capabilities": [
+        "legacy.ads_get_account_info",
+        "marketing.activate.ad",
+        "marketing.delete.paused.ad",
+        "legacy.ads_get_ad_details",
+        "legacy.ads_get_creative_details",
+        "legacy.ads_get_ad_set_details",
+        "legacy.ads_create_ad_creative",
+        "legacy.ads_update_ad"
+      ],
+      "actions": [
+        "READ",
+        "WRITE_AD_CONFIGURATION",
+        "ACTIVATE_SPEND",
+        "DELETE"
+      ],
+      "tasks": [],
+      "verifiedAt": 1792203169832,
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "revision": 1
+    },
+    {
+      "id": "ownership-grant-00b6d448-9547-452f-87c8-60840a88a9ed",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "account",
+      "connectionId": "ownership-bootstrap-00b6d448-9547-452f-87c8-60840a88a9ed",
+      "capabilities": [
+        "legacy.ads_get_account_info"
+      ],
+      "actions": [
+        "READ"
+      ],
+      "tasks": [],
+      "verifiedAt": 1792203169878,
+      "expiresAt": 1792206769878,
+      "revokedAt": 1792203169932,
+      "revision": 2
+    },
+    {
+      "id": "62f1878f-48a6-4827-878b-ed9f397711aa:created",
+      "tenantId": "tenant",
+      "clientId": "client",
+      "assetKey": "__SYNTHETIC_CREATED_CREATIVE_KEY__",
+      "connectionId": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "capabilities": [
+        "legacy.ads_get_account_info",
+        "marketing.activate.ad",
+        "marketing.delete.paused.ad",
+        "legacy.ads_get_ad_details",
+        "legacy.ads_get_creative_details",
+        "legacy.ads_get_ad_set_details",
+        "legacy.ads_create_ad_creative",
+        "legacy.ads_update_ad"
+      ],
+      "actions": [
+        "READ",
+        "WRITE_AD_CONFIGURATION",
+        "ACTIVATE_SPEND",
+        "DELETE"
+      ],
+      "tasks": [],
+      "verifiedAt": 1792203169832,
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "revision": 1
+    }
+  ],
+  "allConnections": [
+    {
+      "id": "bade7f45-1c4e-4376-8508-ea65f47edc1f",
+      "metaAppUserId": "100",
+      "tenantId": "tenant",
+      "operatorId": "100",
+      "provider": "META_MARKETING",
+      "authStrategy": "facebook_business",
+      "credentialId": "0942539b-3c42-42f5-95b2-fe5c984f12c6",
+      "appId": "300",
+      "tokenType": "user",
+      "subjectId": "100",
+      "scopes": [
+        "public_profile",
+        "ads_read",
+        "ads_management",
+        "pages_read_engagement",
+        "pages_show_list"
+      ],
+      "assetKeys": [
+        "account",
+        "campaign",
+        "adset",
+        "page",
+        "image",
+        "creative",
+        "ad",
+        "__SYNTHETIC_CREATED_CREATIVE_KEY__"
+      ],
+      "expiresAt": 1792206769000,
+      "revokedAt": null,
+      "verifiedAt": 1792203169832,
+      "revision": 5,
+      "eligibility": [
+        {
+          "requirement": "marketing_read_access:v26.0",
+          "source": "https://developers.facebook.com/docs/permissions",
+          "verified": true,
+          "checkedAt": 1792203169932,
+          "expiresAt": 1792203469932
+        },
+        {
+          "requirement": "marketing_write_access:v26.0",
+          "source": "https://developers.facebook.com/docs/permissions",
+          "verified": true,
+          "checkedAt": 1792203169932,
+          "expiresAt": 1792203469932
+        },
+        {
+          "requirement": "marketing_creative_destination:https://client.fixture.invalid",
+          "source": "https://developers.facebook.com/docs/permissions",
+          "verified": true,
+          "checkedAt": 1792203169932,
+          "expiresAt": 1792203469932
+        },
+        {
+          "requirement": "marketing_creative_page_advertise:601:101",
+          "source": "https://developers.facebook.com/documentation/ads-commerce/marketing-api/guides/lead-ads/create",
+          "bindingHash": "b2a098c1807b94966f49bf3010808ca0b9eac1c0d3f91e91b7bd4f92fb679648",
+          "checkedAt": 1792203170381,
+          "expiresAt": 1792203470381,
+          "verified": true
+        },
+        {
+          "requirement": "marketing_update_state:ads_update_ad:401",
+          "source": "https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/ad.py",
+          "bindingHash": "299e57a2b697d11f5a04c3cf423f0e773ae32cf230423cc6a0b900423a1f226e",
+          "checkedAt": 1792203170628,
+          "expiresAt": 1792203470628,
+          "verified": true
+        }
+      ]
+    },
+    {
+      "id": "ownership-bootstrap-00b6d448-9547-452f-87c8-60840a88a9ed",
+      "tenantId": "tenant",
+      "operatorId": "100",
+      "provider": "META_MARKETING",
+      "appId": "300",
+      "authStrategy": "synthetic-owner-bootstrap",
+      "credentialId": "ownership-credential-00b6d448-9547-452f-87c8-60840a88a9ed",
+      "tokenType": "user",
+      "scopes": [
+        "ads_read"
+      ],
+      "assetKeys": [
+        "account"
+      ],
+      "verifiedAt": 1792203169878,
+      "expiresAt": 1792206769878,
+      "revokedAt": 1792203169932,
+      "revision": 2,
+      "eligibility": [
+        {
+          "requirement": "marketing_read_access:v26.0",
+          "source": "https://developers.facebook.com/docs/permissions",
+          "verified": true,
+          "checkedAt": 1792203169878,
+          "expiresAt": 1792206769878
+        }
+      ]
+    }
+  ],
+  "operation": {
+    "appId": "300",
+    "metaAppUserId": "100",
+    "id": "7cd369e0-8215-4bb4-b96b-412e13458878",
+    "tenantId": "tenant",
+    "clientId": "client",
+    "actorId": "100",
+    "tool": "ads_update_ad",
+    "planHash": "d838545e07c483acba609014e4a714ea6104ef02458ce9d77c886caf33688066",
+    "state": "PREPARED",
+    "approvalId": "816f7669-2ada-43f1-b9d8-9134d1c39635",
+    "createdAt": 1792203170685,
+    "updatedAt": 1792203170685
+  }
+}

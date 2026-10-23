@@ -1,4 +1,5 @@
 import { logger } from "../utils/logger.js";
+import { createHash } from "node:crypto";
 
 /**
  * Context threaded with every Graph API request so rate-limit usage is tracked
@@ -95,10 +96,13 @@ export class RateLimiter {
     const buc = headers.get("x-business-use-case-usage");
     if (buc) {
       const parsed = safeParse<Record<string, BucUsageEntry[]>>(buc);
-      if (parsed) {
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         for (const [businessId, entries] of Object.entries(parsed)) {
+          if (!/^\d{1,32}$/.test(businessId) || !Array.isArray(entries)) continue;
           for (const entry of entries) {
-            const type = entry.type ?? "unknown";
+            if (!entry || typeof entry !== "object") continue;
+            const type = safeBucType(entry.type);
+            if (!type) continue;
             this.writeBucket({
               kind: "buc",
               key: bucketKey("buc", context.tokenHash, businessId, type),
@@ -270,7 +274,16 @@ export class RateLimiter {
   }
 
   private writeBucket(bucket: UsageBucket): void {
-    this.buckets.set(bucket.key, bucket);
+    const numeric = [bucket.callCount, bucket.cpuTime, bucket.totalTime, bucket.estimatedTimeToRegainAccessMs];
+    if (numeric.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0)) return;
+    this.buckets.set(bucket.key, {
+      ...bucket,
+      callCount: Math.min(bucket.callCount, 10_000),
+      cpuTime: Math.min(bucket.cpuTime, 10_000),
+      totalTime: Math.min(bucket.totalTime, 10_000),
+      estimatedTimeToRegainAccessMs: Math.min(bucket.estimatedTimeToRegainAccessMs, 7 * 24 * 60 * 60 * 1000),
+      adsApiAccessTier: safeTier(bucket.adsApiAccessTier),
+    });
   }
 
   private bucketAppliesTo(
@@ -302,6 +315,19 @@ export class RateLimiter {
     // filtering happens at error-handling time, not at pre-flight throttle.
     return true;
   }
+}
+
+function safeTier(value: unknown): UsageBucket["adsApiAccessTier"] {
+  return value === "development_access" || value === "standard_access" || value === "advanced_access" ? value : undefined;
+}
+
+function safeBucType(value: unknown): string | undefined {
+  if (value === undefined) return "unknown";
+  if (typeof value !== "string" || value.length > 128) return undefined;
+  if (["ads_insights", "ads_management", "custom_audience", "unknown"].includes(value)) return value;
+  // Preserve independent quota buckets without returning provider-controlled
+  // text through rate-status or logs.
+  return `other_${createHash("sha256").update(value).digest("hex").slice(0, 16)}`;
 }
 
 function staircaseDelay(usagePct: number): number {

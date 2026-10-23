@@ -1,0 +1,8 @@
+import {z} from "zod";
+import type {McpServer} from "@modelcontextprotocol/sdk/server/mcp.js";
+import {resolveOperationContext} from "./runtime.js";
+import {configuredAssetDiscoveryService} from "./discovery-runtime.js";
+import {PlatformDenied} from "./models.js";
+export function registerDiscoveryTools(server:McpServer):void{
+ server.registerTool("meta_discover_ad_assets",{description:"Read a bounded provider-proven asset list under one registered client-owned ad account and prepare an encrypted human-review proposal. Does not install grants, alter ads or activate spend. A human connection administrator must review the browser page. Page-token and form discovery requires the exact registered connection reference.",inputSchema:{client_id:z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),root_key:z.string().min(1).max(256),connection_id:z.string().min(1).max(128).optional(),kind:z.enum(["AD","CAMPAIGN","AUDIENCE","AD_IMAGE","AD_VIDEO","LEAD_FORM"])},annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false}},async({client_id,root_key,kind,connection_id})=>{try{const ctx=await resolveOperationContext(client_id,"meta_discover_ad_assets","META_MARKETING"),result=await configuredAssetDiscoveryService().prepare(ctx,root_key,kind,connection_id);return {content:[{type:"text" as const,text:JSON.stringify({...result,status:"HUMAN_REVIEW_REQUIRED",review_path:`/platform/discovery/${result.proposalId}`,provider_writes:0,assets_enrolled:0})}]};}catch(error){return {isError:true,content:[{type:"text" as const,text:JSON.stringify({status:"HOLD",reason:error instanceof PlatformDenied?error.reason:"DISCOVERY_UNAVAILABLE"})}]};}});
+}

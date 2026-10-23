@@ -1,3 +1,8 @@
+import { platformEnabled } from "./platform/runtime.js";
+import { installLegacyGuard } from "./platform/legacy-guard.js";
+import { LEGACY_MANIFEST } from "./platform/legacy-manifest.js";
+import { registerPlatformTools } from "./platform/tools.js";
+import { PLATFORM_SERVER_INSTRUCTIONS } from "./platform/instructions.js";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAllTools } from "./tools/index.js";
@@ -42,13 +47,19 @@ export function createServer(): McpServer {
       name: "meta-ads-mcp",
       version: serverVersion(),
     },
-    { instructions: SERVER_INSTRUCTIONS },
+    { instructions: platformEnabled()?PLATFORM_SERVER_INSTRUCTIONS:SERVER_INSTRUCTIONS },
   );
 
+  platformEnabled();
+  const finishLegacyRegistration = installLegacyGuard(server);
   registerAllTools(server);
+  finishLegacyRegistration();
+  if (platformEnabled()) registerPlatformTools(server,new Set(LEGACY_MANIFEST.map(t=>t.name)));
   if (process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true") {
     const tools = (server as unknown as { _registeredTools: Record<string, { annotations?: { readOnlyHint?: boolean }; disable(): void }> })._registeredTools;
     for (const [name, tool] of Object.entries(tools)) {
+      if(platformEnabled()&&name==="ads_update_ad_url_tags")continue;
+      if(name==="meta_discover_signal_assets"||name==="meta_prepare_app_promotion_access"||name==="meta_plan_ad_tracking_change"||name==="meta_plan_paused_ads"||name==="meta_prepare_action"||name==="meta_prepare_publication"||name==="meta_discover_ad_assets"||name==="meta_lookup_ad_targeting"||name==="meta_observe_ads_compatibility"||name==="meta_observe_account_owner")continue;
       if (tool.annotations?.readOnlyHint !== true || name === "ads_analyze_video" || name.startsWith("ads_library_")) tool.disable();
     }
   }

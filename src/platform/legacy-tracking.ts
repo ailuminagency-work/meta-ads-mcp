@@ -1,0 +1,7 @@
+import {z} from "zod";
+import {TrackingChangeService} from "./tracking-change-service.js";
+import {resolveOperationContext,getPlatformRepository} from "./runtime.js";
+export const LEGACY_TRACKING_WORKFLOW_TOOLS=Object.freeze(["ads_update_ad_url_tags"]);
+export const LEGACY_TRACKING_SCHEMA=z.object({client_id:z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),ad_ids:z.array(z.string().regex(/^\d{1,32}$/)).length(1),url_tags:z.string().max(2048),dry_run:z.literal(true),connection_id:z.string().min(1).max(128).optional()}).strict();
+/** Original name is an explicit single-ad review planner only. Actual mutations have two distinct normal human approvals. */
+export async function executeLegacyTrackingWorkflow(raw:unknown){const input=LEGACY_TRACKING_SCHEMA.parse(raw),ctx=await resolveOperationContext(input.client_id,"ads_update_ad_url_tags","META_MARKETING"),result=await new TrackingChangeService(getPlatformRepository()).plan(ctx.principal,input.client_id,{ad_id:input.ad_ids[0],name:"Tracking replacement for ad "+input.ad_ids[0],url_tags:input.url_tags,...(input.connection_id?{connection_id:input.connection_id}:{})});return {content:[{type:"text" as const,text:JSON.stringify({...result,implementation:"STRICT_LOCAL_REVIEW_WORKFLOW",provider_writes:0,reviewPath:"/platform/tracking/"+result.jobId,approvalMode:"SEPARATE_CREATIVE_AND_PAUSED_AD_APPROVALS",auto_chain:false,engagement_preservation:"NOT_ESTABLISHED"})}]};}

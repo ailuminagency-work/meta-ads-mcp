@@ -1,0 +1,21 @@
+# Rules and studies: verified endpoint facts and remaining engineering
+
+Research date: 2026-10-16. Read-only inspection of official Meta Python SDK source; no provider requests, credentials, mutations or live acceptance. Generated SDK presence establishes endpoint/parameter facts, not permission minima, App Review approval, nested specification semantics or safe end-to-end functionality.
+
+## Automated rules
+
+The [pinned official AdAccount source](https://github.com/facebook/facebook-python-business-sdk/blob/efd8423a2e595ea8d4c04eb824ce113f2f1d68cd/facebook_business/adobjects/adaccount.py) implements `create_ad_rules_library` as `POST /{ad-account}/adrules_library`. Declared inputs are `account_id`, `evaluation_spec`, `execution_spec`, `name`, `schedule_spec`, `status`, and `ui_creation_source`. The nested specifications are declared as generic objects: that alone is insufficient to approve opaque caller JSON.
+
+[AdRule](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adrule.py) defines `DISABLED`, `ENABLED`, `HAS_ISSUES`, and `DELETED` states. [AdRuleExecutionSpec](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adruleexecutionspec.py) includes `PAUSE`, `UNPAUSE`, `NOTIFICATION`, `PING_ENDPOINT`, and multiple budget/bid/creative changes. [AdRuleEvaluationSpec](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adruleevaluationspec.py) distinguishes `SCHEDULE` and `TRIGGER`, with filter and trigger subobjects.
+
+A bounded first implementation can target a **disabled, fixed PAUSE-only draft** with exact registered client entities, a typed bounded evaluation/filter schema, and a separately approved create. It must reject endpoint callbacks, notification recipients, budget/bid adjustments, unpause, and arbitrary execution options. Enabling a rule is a separate consequential action: the human approval must explicitly describe subsequent autonomous provider execution, rather than implying every provider execution receives a new Lumin approval.
+
+Remaining contract research: current primary nested filter/operator/value and schedule schemas, exact account association readback, current minimum permissions and rule access restrictions. Remaining engineering: typed contracts, guarded one-attempt transport, current entity/account closure, permanent UNKNOWN claim, exact RULE registration and immutable approved definition, human-reviewed enable/update/delete semantics, and native adversarial journeys. These are not replaced by an SDK method or a green fixture.
+
+## Studies
+
+The [official Business source](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/business.py) implements `create_ad_study` as `POST /{business}/ad_studies`, with cells, client business, confidence level, timing, objectives, type, and optional viewers. [AdStudy](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adstudy.py) delegates creation to Business and includes `SPLIT_TEST`, `LIFT`, and other distinct types. AdAccount exposes study reads; it does not establish an account-scoped create route.
+
+[AdStudyCell](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adstudycell.py) distinguishes existing ads/ad sets/campaigns/accounts and creation templates. A safe initial study must reference only existing registered client entities; it must not implicitly clone/create delivery entities, accept arbitrary viewers, or infer study eligibility from ordinary ad account access.
+
+Remaining research: current study-specific permissions/eligibility and authoritative creation cell/objective schemas. Remaining engineering: registered Business root plus exact owned client Business/account/entity closure, strict type-specific study inputs, actual current state/ownership proof, human approval, one provider attempt and UNKNOWN handling, exact STUDY registration, readback and native isolation/race tests. The legacy account-oriented wrapper needs an explicit reviewed Business parameter or a trusted registry-derived unique Business; guessing a Business ID is not an implementation.

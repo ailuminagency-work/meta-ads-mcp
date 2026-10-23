@@ -17,6 +17,27 @@ function walkLike(root: string): string[] {
 
 let tmp: string | undefined;
 
+function directoryLinkOrWindowsMetadata(target: string, link: string): void {
+  try {
+    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+    return;
+  } catch (error) {
+    if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+  }
+  // Some Windows runners do not grant SeCreateSymbolicLinkPrivilege. Keep the
+  // security assertion live by presenting the link path as lstat symlink
+  // metadata while retaining a real directory entry for path traversal.
+  mkdirSync(link);
+  const lstat = vi.mocked(fs.lstatSync).getMockImplementation() ?? fs.lstatSync;
+  vi.mocked(fs.lstatSync).mockImplementation(((file: fs.PathLike, options?: unknown) => {
+    const stat = lstat(file, options as undefined);
+    if (path.resolve(String(file)) === path.resolve(link)) {
+      return Object.assign(Object.create(stat), { isDirectory: () => false, isSymbolicLink: () => true });
+    }
+    return stat;
+  }) as typeof fs.lstatSync);
+}
+
 afterEach(async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
   vi.mocked(fs.lstatSync).mockImplementation(actual.lstatSync);
@@ -33,7 +54,7 @@ describe("skill loader rules", () => {
     writeFileSync(path.join(secrets, "SKILL.md"), "# private");
     const root = path.join(tmp, "skills");
     mkdirSync(root);
-    symlinkSync(secrets, path.join(root, "planted"), process.platform === "win32" ? "junction" : "dir");
+    directoryLinkOrWindowsMetadata(secrets, path.join(root, "planted"));
 
     expect(walkLike(root)).toEqual([]);
   });
@@ -47,7 +68,7 @@ describe("skill loader rules", () => {
     const skill = path.join(root, "real-skill");
     mkdirSync(skill, { recursive: true });
     writeFileSync(path.join(skill, "SKILL.md"), "# real");
-    symlinkSync(outside, path.join(skill, "references"), process.platform === "win32" ? "junction" : "dir");
+    directoryLinkOrWindowsMetadata(outside, path.join(skill, "references"));
 
     expect(walkLike(root)).toEqual(["real-skill/SKILL.md"]);
   });
@@ -140,7 +161,7 @@ describe("skillsRoot containment", () => {
     mkdirSync(path.join(outside, "planted"), { recursive: true });
     writeFileSync(path.join(outside, "planted", "SKILL.md"), "# private");
     const link = path.join(tmp, "skills");
-    symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+    directoryLinkOrWindowsMetadata(outside, link);
 
     expect(isRealDirectory(link)).toBe(false);
     expect(isRealDirectory(`${link}/`)).toBe(false);

@@ -1,3 +1,4 @@
+import {commitLegacyPersonalWrite} from "./legacy-privacy-write.js";
 import type { Firestore } from "@google-cloud/firestore";
 import { decryptToken, encryptToken, type EncryptedPayload } from "../auth/crypto.js";
 import { getFirestore, isFirestoreEnabled } from "./firestore.js";
@@ -28,6 +29,7 @@ function aadFor(fbUserId: string): string {
 
 export interface ApifyTokenDoc {
   encryptedToken: EncryptedPayload;
+  keyVersion?: string;
   apifyUserId: string | null;
   apifyUsername: string | null;
   createdAt: number;
@@ -67,8 +69,10 @@ function buildDoc(
   createdAt: number,
 ): ApifyTokenDoc {
   const now = Math.floor(Date.now() / 1000);
+  const encryptedToken = encryptToken(token, aadFor(fbUserId));
   return {
-    encryptedToken: encryptToken(token, aadFor(fbUserId)),
+    encryptedToken,
+    keyVersion: encryptedToken.keyVersion,
     apifyUserId: user?.id ?? null,
     apifyUsername: user?.username ?? null,
     createdAt,
@@ -134,7 +138,7 @@ export class FirestoreApifyTokenRepo implements ApifyTokenRepo {
     const snap = await ref.get();
     const existing = snap.exists ? (snap.data() as ApifyTokenDoc) : undefined;
     const createdAt = existing?.createdAt ?? Math.floor(Date.now() / 1000);
-    await ref.set(buildDoc(fbUserId, token, user, createdAt));
+    await commitLegacyPersonalWrite(this.db,fbUserId,ref,buildDoc(fbUserId, token, user, createdAt));
   }
 
   async getDecryptedToken(fbUserId: string): Promise<string | null> {

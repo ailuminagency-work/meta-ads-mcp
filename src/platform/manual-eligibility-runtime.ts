@@ -1,0 +1,7 @@
+import type express from 'express';
+import {getSession} from '../auth/session.js';
+import {PlatformDenied,type PlatformPrincipal,type Provider} from './models.js';
+import type {PlatformRepository} from './repository.js';
+import {getPlatformRepository} from './runtime.js';
+import {createManualEligibilityRouter} from './manual-eligibility-router.js';
+export function environmentManualEligibilityRouter(origin:string,options:{env?:Record<string,string|undefined>;repository?:PlatformRepository;resolveSession?:(req:express.Request)=>Promise<PlatformPrincipal|null>}={}):express.Router|null{const env=options.env??process.env,flag=env.LUMIN_ELIGIBILITY_REVIEW_ENABLED;if(flag!==undefined&&!['true','false'].includes(flag))throw new PlatformDenied('INVALID_ELIGIBILITY_REVIEW_FLAG');if(flag!=='true'||env.LUMIN_PLATFORM_ENABLED!=='true')return null;if(!/^\d{1,100}$/.test(env.META_APP_ID??'')||(env.SESSION_COOKIE_SECRET??'').length<32||!/^[a-f0-9]{64}$/i.test(env.TOKEN_ENCRYPTION_KEY??''))throw new PlatformDenied('ELIGIBILITY_SESSION_APP_AND_ENCRYPTION_CONFIGURATION_REQUIRED');const repo=options.repository??getPlatformRepository(),appIdForProvider=(provider:Provider)=>provider==='META_THREADS'?env.THREADS_APP_ID:provider==='META_INSTAGRAM_LOGIN'?env.INSTAGRAM_APP_ID:env.META_APP_ID;return createManualEligibilityRouter({origin,csrfSecret:env.SESSION_COOKIE_SECRET!,repo,appIdForProvider,resolveSession:options.resolveSession??(async req=>{const session=await getSession(req);return session?repo.resolvePrincipal(session.fbUserId):null;})});}

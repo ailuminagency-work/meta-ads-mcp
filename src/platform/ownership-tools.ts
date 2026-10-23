@@ -1,0 +1,9 @@
+import {z} from "zod";
+import type {McpServer} from "@modelcontextprotocol/sdk/server/mcp.js";
+import {discoveryEnabled} from "./discovery-runtime.js";
+import {getPlatformRepository,resolveOperationContext} from "./runtime.js";
+import {OwnershipEvidenceService} from "./ownership-service.js";
+import {PlatformDenied} from "./models.js";
+export function registerOwnershipTools(server:McpServer):void{
+ server.registerTool("meta_observe_account_owner",{description:"Read the selected client ad account's current Meta business owner and store an encrypted five-minute ownership observation. Requires the separate client-owner billing attestation from the human review page. This never verifies a payment method or changes Meta ads, billing or permissions.",inputSchema:{client_id:z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),account_key:z.string().regex(/^[A-Za-z0-9_:.=$-]{1,200}$/),connection_id:z.string().min(1).max(128)},annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false}},async({client_id,account_key,connection_id})=>{try{if(!discoveryEnabled())throw new PlatformDenied("OWNERSHIP_OBSERVATION_DISABLED_BY_DEPLOYMENT");const ctx=await resolveOperationContext(client_id,"meta_observe_account_owner","META_MARKETING"),result=await new OwnershipEvidenceService(getPlatformRepository()).observe(ctx,account_key,connection_id);return {content:[{type:"text" as const,text:JSON.stringify({...result,provider_writes:0,billing_verification:"SEPARATE_CLIENT_OWNER_ATTESTATION"})}]};}catch(error){return {isError:true,content:[{type:"text" as const,text:JSON.stringify({status:"HOLD",reason:error instanceof PlatformDenied?error.reason:"ACCOUNT_OWNER_OBSERVATION_UNAVAILABLE"})}]};}});
+}

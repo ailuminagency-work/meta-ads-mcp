@@ -1,0 +1,46 @@
+import {pageVideoEnabled} from "./video-flags.js";
+import {randomUUID,createHash} from "node:crypto";
+import {PlatformDenied,type MetaAsset,type AssetGrant,type PlatformPrincipal} from "./models.js";
+import type {PlatformRepository,ControlCommit} from "./repository.js";
+import {canonicalJson} from "./policy.js";
+import {resolveAuthorizedAssets,assetKey} from "./assets.js";
+import {selectConnection} from "./connections.js";
+import {PAGE_VIDEO_CONTRACT} from "./page-video-contract.js";
+import {prepareApprovedMp4Video} from "./page-video.js";
+import {encryptVideoPlan,decryptVideoPlan} from "./video-proposal.js";
+import type {VideoIngressBinding,TrustedMp4Source,VideoProposal} from "./video-types.js";
+export async function videoAuthorization(repo:PlatformRepository,binding:VideoIngressBinding,now=Date.now()):Promise<ControlCommit["expected"]>{
+ const principal=await repo.resolvePrincipal(binding.operatorId),[tenant,member,client]=await Promise.all([repo.get("tenants",binding.tenantId,binding.tenantId),repo.get("members",binding.tenantId,binding.operatorId),repo.get("clients",binding.tenantId,binding.clientId)]);
+ if(!principal||principal.tenantId!==binding.tenantId||principal.operatorId!==binding.operatorId||!tenant||tenant.status!=="ACTIVE"||tenant.migrationState!=="READY"||!member||member.tenantId!==binding.tenantId||member.operatorId!==binding.operatorId||member.disabledAt!==null||!member.allowedClientIds.includes(binding.clientId)||!member.roles.some(r=>["admin","connection_admin"].includes(r))||!client||client.tenantId!==binding.tenantId||client.id!==binding.clientId||client.status!=="ACTIVE"||binding.provider!=="META_FACEBOOK_PAGES")throw new PlatformDenied("VIDEO_CONNECTION_ADMIN_REQUIRED");
+ const ctx={principal,clientId:binding.clientId,provider:binding.provider,tool:"internal_video_enrollment",requestId:"signed-video"},assets=await resolveAuthorizedAssets(repo,ctx,[{type:"PAGE",id:binding.accountId}],now,300000);
+ if(assets.length!==1||assets[0].type!=="PAGE"||assets[0].appId!==binding.appId)throw new PlatformDenied("VIDEO_EXACT_PAGE_ROOT_REQUIRED");
+ const plan={parameters:{},assets:[{type:"PAGE" as const,id:binding.accountId}],classes:["READ" as const],capability:PAGE_VIDEO_CONTRACT.id,requiredScopes:PAGE_VIDEO_CONTRACT.requiredScopes,tokenTypes:PAGE_VIDEO_CONTRACT.tokenTypes,requiredAssetTasks:[{asset:{type:"PAGE" as const,id:binding.accountId},tasks:["CREATE_CONTENT"]}]},connection=await selectConnection(repo,ctx,plan,assets,now,binding.connectionId);
+ if(connection.appId!==binding.appId||connection.subjectId!==binding.accountId||connection.expiresAt===null||connection.expiresAt<=now||connection.verifiedAt<=0||connection.verifiedAt>now||now-connection.verifiedAt>300000)throw new PlatformDenied("VIDEO_CURRENT_PAGE_CONNECTION_REQUIRED");
+ const grants=(await repo.list("grants",binding.tenantId)).filter(g=>g.connectionId===connection.id&&g.assetKey===assets[0].key&&g.clientId===client.id&&g.revokedAt===null&&g.verifiedAt>0&&g.verifiedAt<=now&&now-g.verifiedAt<=300000&&g.expiresAt>now);
+ if(!grants.length||grants.some(g=>!g.capabilities.includes(PAGE_VIDEO_CONTRACT.id)||!g.actions.includes("READ")||!g.actions.includes("WRITE_CONTENT")||!g.tasks.includes("CREATE_CONTENT")))throw new PlatformDenied("VIDEO_CURRENT_PAGE_GRANTS_REQUIRED");
+ return [{collection:"tenants",id:tenant.id,canonical:canonicalJson(tenant)},{collection:"members",id:member.operatorId,canonical:canonicalJson(member)},{collection:"clients",id:client.id,canonical:canonicalJson(client)},{collection:"connections",id:connection.id,canonical:canonicalJson(connection)},{collection:"assets",id:assets[0].key,canonical:canonicalJson(assets[0])},...grants.map(g=>({collection:"grants" as const,id:g.id,canonical:canonicalJson(g)}))];
+}
+export class VideoEnrollmentService {
+ constructor(private readonly repo:PlatformRepository){}
+ async stage(binding:VideoIngressBinding,delivery:string,source:TrustedMp4Source){
+  if(!pageVideoEnabled())throw new PlatformDenied("PAGE_VIDEO_DISABLED_BY_DEPLOYMENT");
+  if(!/^[A-Za-z0-9_.:-]{1,128}$/.test(delivery))throw new PlatformDenied("VIDEO_DELIVERY_REQUIRED");const now=Date.now(),expected=await videoAuthorization(this.repo,binding,now),evidence=await prepareApprovedMp4Video(binding,source,now),root=expected.filter(e=>e.collection==="assets").map(e=>JSON.parse(e.canonical) as MetaAsset)[0];
+  const deadline=Math.min(evidence.expiresAt,...expected.filter(e=>e.collection==="connections"||e.collection==="grants").map(e=>(JSON.parse(e.canonical) as {expiresAt:number}).expiresAt));evidence.expiresAt=deadline;
+  const id=createHash("sha256").update(canonicalJson([binding,delivery])).digest("hex"),identity={id,tenantId:binding.tenantId,clientId:binding.clientId,actorId:binding.operatorId,connectionId:binding.connectionId,rootKey:root.key,appId:binding.appId,provider:binding.provider,checkedAt:evidence.checkedAt,expiresAt:evidence.expiresAt,consumedAt:null,approvedBy:null},proposal:VideoProposal={...identity,...encryptVideoPlan(identity,{version:1,url:source.url,evidence,expected})};
+  await this.repo.commitControlPlane({tenantId:binding.tenantId,expected,writes:[{collection:"videoProposals",id,value:proposal,createOnly:true}],audit:{id:randomUUID(),tenantId:binding.tenantId,clientId:binding.clientId,actorId:binding.operatorId,event:"VIDEO_PREPARED",timestamp:Date.now(),subjectId:id,planHash:proposal.planHash}});return {proposalId:id,expiresAt:proposal.expiresAt,planHash:proposal.planHash,status:"AWAITING_HUMAN_REVIEW" as const};
+ }
+ async review(principal:PlatformPrincipal,id:string){
+  const proposal=await this.repo.get("videoProposals",principal.tenantId,id);if(!proposal||proposal.provider!=="META_FACEBOOK_PAGES"||proposal.tenantId!==principal.tenantId||proposal.consumedAt!==null||proposal.expiresAt<=Date.now())throw new PlatformDenied("VIDEO_REVIEW_UNAVAILABLE");const plan=decryptVideoPlan(proposal),root=JSON.parse(plan.expected.find(e=>e.collection==="assets"&&e.id===proposal.rootKey)!.canonical) as MetaAsset;
+  // The enrolled connection belongs to the original operator; another human approver gets independently checked membership below.
+  await videoAuthorization(this.repo,{id:"review",tenantId:proposal.tenantId,clientId:proposal.clientId,operatorId:proposal.actorId,accountId:root.id,connectionId:proposal.connectionId,appId:proposal.appId,provider:proposal.provider});
+  const trusted=await this.repo.resolvePrincipal(principal.operatorId),member=await this.repo.get("members",principal.tenantId,principal.operatorId);if(!trusted||canonicalJson(trusted)!==canonicalJson(principal)||!member||member.disabledAt!==null||!member.allowedClientIds.includes(proposal.clientId)||!member.roles.some(r=>["admin","connection_admin"].includes(r)))throw new PlatformDenied("VIDEO_HUMAN_REVIEW_REQUIRED");
+  for(const e of plan.expected)if(canonicalJson(await this.repo.get(e.collection,proposal.tenantId,e.id))!==e.canonical)throw new PlatformDenied("VIDEO_AUTHORIZATION_CHANGED");return {proposal,plan,accountId:root.id};
+ }
+ async enroll(principal:PlatformPrincipal,id:string,planHash:string){
+  if(!pageVideoEnabled())throw new PlatformDenied("PAGE_VIDEO_DISABLED_BY_DEPLOYMENT");
+  const {proposal:p,plan,accountId}=await this.review(principal,id);if(p.planHash!==planHash)throw new PlatformDenied("VIDEO_REVIEW_HASH_REQUIRED");const connection=(await this.repo.get("connections",p.tenantId,p.connectionId))!,approver=(await this.repo.get("members",p.tenantId,principal.operatorId))!,now=Date.now(),roots=plan.expected.filter(e=>e.collection==="grants").map(e=>JSON.parse(e.canonical) as AssetGrant);
+  const asset:MetaAsset={id:`mp4_${p.id}`,key:"",type:"MEDIA",tenantId:p.tenantId,clientId:p.clientId,provider:p.provider,appId:p.appId,parents:[{type:"PAGE",id:accountId}],videoEvidence:plan.evidence,verifiedAt:p.checkedAt,revokedAt:null,revision:1};asset.key=assetKey(asset.provider,asset.appId,asset);
+  const grant:AssetGrant={id:`${p.id}:${asset.key}`,tenantId:p.tenantId,clientId:p.clientId,assetKey:asset.key,connectionId:p.connectionId,capabilities:[PAGE_VIDEO_CONTRACT.id],actions:["READ","WRITE_CONTENT"],tasks:[],verifiedAt:Math.min(...roots.map(g=>g.verifiedAt)),expiresAt:Math.min(p.expiresAt,...roots.map(g=>g.expiresAt)),revokedAt:null,revision:1};
+  await this.repo.commitControlPlane({tenantId:p.tenantId,expected:[...plan.expected,{collection:"videoProposals",id:p.id,canonical:canonicalJson(p)},...(!plan.expected.some(e=>e.collection==="members"&&e.id===approver.operatorId)?[{collection:"members" as const,id:approver.operatorId,canonical:canonicalJson(approver)}]:[])],writes:[{collection:"videoProposals",id:p.id,value:{...p,consumedAt:now,approvedBy:principal.operatorId},createOnly:false},{collection:"assets",id:asset.key,value:asset,createOnly:true},{collection:"grants",id:grant.id,value:grant,createOnly:true},{collection:"connections",id:connection.id,value:{...connection,assetKeys:[...connection.assetKeys,asset.key],revision:connection.revision+1},createOnly:false}],audit:{id:randomUUID(),tenantId:p.tenantId,clientId:p.clientId,actorId:principal.operatorId,event:"VIDEO_ENROLLED",timestamp:now,subjectId:p.id,planHash:p.planHash}});return {assetId:asset.id,assetKey:asset.key,videoUrl:plan.url,status:"ENROLLED" as const};
+ }
+}

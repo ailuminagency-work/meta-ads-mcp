@@ -1,0 +1,7 @@
+# Threads publication quota
+
+Before a human-approved `threads_publish_container` reaches the provider POST, the guarded client reads the exact selected account's `GET /v1.0/{account}/threads_publishing_limit?fields=quota_usage,config` on graph.threads.com with the selected Threads credential. The current [Meta overview](https://developers.facebook.com/documentation/threads/overview) documents 250 API-published posts per moving 24 hours, counting a carousel as one post.
+
+The response must contain exactly one quota record, safe nonnegative integer usage, a positive safe integer quota total and duration 86400. The client uses the lower of the returned total and 250, rejects malformed or exhausted responses, rechecks current authorization and limits the observation to 60 seconds. The separately exposed reply-limit read retains its distinct reply quota fields and does not establish publication capacity.
+
+This read is an observation, not an atomic Meta reservation or a cross-app lock. A different app may consume capacity afterward. The local one-shot container claim is already reserved before this preflight; exhaustion produces no publication POST but retains the claim and consumed approval for reconciliation. It does not authorize automatic retries or reuse of the container under a new approval. Provider acceptance still does not prove public visibility or publication success beyond its actual receipt.

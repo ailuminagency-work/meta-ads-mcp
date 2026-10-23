@@ -1,0 +1,29 @@
+import {describe,it,expect} from "vitest";
+import type {Firestore} from "@google-cloud/firestore";
+import {createFirestoreWebhookIndexRefresher,type WebhookIndexRefreshBinding} from "../../src/platform/webhook-index-refresh.js";
+import {operationalHash} from "../../src/platform/operational-store.js";
+import {webhookAssetIndexKey} from "../../src/platform/events/environment.js";
+import {lifecycleAppUserLockKey} from "../../src/platform/lifecycle.js";
+function fixture(){
+  const rows=new Map<string,Record<string,unknown>>();let fail=false;
+  const ref=(path:string)=>({path,collection:(name:string)=>collection(path+"/"+name)});
+  const collection=(path:string)=>({doc:(id:string)=>ref(path+"/"+id),limit:()=>({path,query:true})});
+  const db={collection,runTransaction:async(run:(tx:unknown)=>Promise<unknown>)=>{const writes:Array<{path:string;value:Record<string,unknown>}>=[];const result=await run({get:async(r:{path:string;query?:boolean})=>{if(writes.length)throw new Error("read-after-write");if(r.query){const docs=[...rows].filter(([p])=>p.startsWith(r.path+"/")).map(([,value])=>({data:()=>structuredClone(value)}));return {docs,size:docs.length};}return {exists:rows.has(r.path),data:()=>structuredClone(rows.get(r.path))};},set:(r:{path:string},value:Record<string,unknown>)=>writes.push({path:r.path,value:structuredClone(value)})});if(fail)throw new Error("storage-failed");for(const w of writes)rows.set(w.path,w.value);return result;}} as unknown as Firestore;
+  const now=1000000,id="a".repeat(64),binding:WebhookIndexRefreshBinding={tenantId:"tenant",clientId:"client",assetKey:"page",appId:"300",product:"leads",assetId:"400",provider:"META_MARKETING"};
+  const path=(c:string,key:string)=>`platform_v1/${operationalHash(JSON.stringify(["tenants","tenant","tenant"]))}/${c}/${operationalHash(JSON.stringify([c,"tenant",key]))}`;
+  rows.set("platform_lifecycle_commands/"+id,{id,tenantId:"tenant",clientId:"client",actorId:"200",connectionId:"connection",action:"REFRESH_GRANTS",state:"SUCCEEDED",updatedAt:now,retentionExpiresAt:now+86400000});
+  rows.set(path("tenants","tenant"),{id:"tenant",status:"ACTIVE",migrationState:"READY"});rows.set(path("clients","client"),{id:"client",tenantId:"tenant",status:"ACTIVE"});rows.set(path("members","200"),{operatorId:"200",tenantId:"tenant",disabledAt:null,allowedClientIds:["client"],roles:["connection_admin"]});
+  rows.set(path("connections","connection"),{id:"connection",tenantId:"tenant",operatorId:"200",appId:"300",provider:"META_MARKETING",revokedAt:null,verifiedAt:now,expiresAt:now+3600000,assetKeys:["page"]});
+  rows.set(path("assets","page"),{key:"page",id:"400",type:"PAGE",tenantId:"tenant",clientId:"client",appId:"300",provider:"META_MARKETING",revokedAt:null,verifiedAt:now,ownershipEvidenceVerifiedAt:10});
+  rows.set(path("grants","grant"),{id:"grant",connectionId:"connection",tenantId:"tenant",clientId:"client",assetKey:"page",revokedAt:null,verifiedAt:now,expiresAt:now+2000000,actions:["READ"]});
+  const indexPath="platform_webhook_asset_index/"+webhookAssetIndexKey("300","leads","400");rows.set(indexPath,{...binding,verifiedAt:10,expiresAt:20,revokedAt:null});
+  return {rows,db,now,id,binding,path,indexPath,setFail:(v:boolean)=>{fail=v;},run:()=>createFirestoreWebhookIndexRefresher(db,[binding],()=>now+100).refresh(id)};
+}
+describe("existing exact webhook lease refresh",()=>{
+  it("never renews webhook authority while a global app-user revocation lock is present",async()=>{const f=fixture();f.rows.set("platform_lifecycle_locks/"+lifecycleAppUserLockKey("300","200"),{state:"locked"});await expect(f.run()).rejects.toThrow("LIFECYCLE_LOCK_HOLD");expect(f.rows.get(f.indexPath)?.verifiedAt).toBe(10);});
+  it("renews expired existing mapping from completed verified access, atomically with metadata receipt",async()=>{const f=fixture();expect(await f.run()).toBe(1);expect(f.rows.get(f.indexPath)).toMatchObject({verifiedAt:f.now,expiresAt:f.now+2000000});expect(f.rows.get(f.path("assets","page"))?.ownershipEvidenceVerifiedAt).toBe(10);expect([...f.rows.keys()].filter(k=>k.startsWith("platform_operational_audit/"))).toHaveLength(1);expect(await f.run()).toBe(1);});
+  it.each(["foreign-index","revoked-index","stale-proof","foreign-grant","revoked-connection","disabled-actor"])("rejects %s without any write",async mode=>{const f=fixture();if(mode==="foreign-index")f.rows.get(f.indexPath)!.clientId="foreign";if(mode==="revoked-index")f.rows.get(f.indexPath)!.revokedAt=1;if(mode==="stale-proof")f.rows.get(f.path("assets","page"))!.verifiedAt=100;if(mode==="foreign-grant")f.rows.get(f.path("grants","grant"))!.clientId="foreign";if(mode==="revoked-connection")f.rows.get(f.path("connections","connection"))!.revokedAt=1;if(mode==="disabled-actor")f.rows.get(f.path("members","200"))!.disabledAt=1;const before=structuredClone([...f.rows]);await expect(f.run()).rejects.toThrow("WEBHOOK_REFRESH");expect([...f.rows]).toEqual(before);});
+  it("never creates a missing mapping or scans for unconfigured mappings",async()=>{const f=fixture();f.rows.delete(f.indexPath);await expect(f.run()).rejects.toThrow("EXISTING_INDEX_REQUIRED");expect(f.rows.has(f.indexPath)).toBe(false);expect(await createFirestoreWebhookIndexRefresher(f.db,[],()=>f.now).refresh(f.id)).toBe(0);});
+  it("storage failure cannot return renewal success or partially renew",async()=>{const f=fixture(),before=structuredClone([...f.rows]);f.setFail(true);await expect(f.run()).rejects.toThrow("storage-failed");expect([...f.rows]).toEqual(before);});
+  it("does not accept token refresh, UNKNOWN, or old completed proof",async()=>{for(const change of [{action:"REFRESH"},{state:"UNKNOWN"},{updatedAt:1}]){const f=fixture();Object.assign(f.rows.get("platform_lifecycle_commands/"+f.id)!,change);await expect(f.run()).rejects.toThrow("VERIFIED_GRANTS_REQUIRED");}});
+});

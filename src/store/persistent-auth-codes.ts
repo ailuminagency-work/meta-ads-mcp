@@ -1,3 +1,4 @@
+import {commitLegacyPersonalWrite} from "./legacy-privacy-write.js";
 import { getFirestore } from "./firestore.js";
 
 const COLLECTION = "mcp_auth_codes";
@@ -6,6 +7,7 @@ export interface AuthCodeEntry {
   clientId: string;
   codeChallenge: string;
   redirectUri: string;
+  redirectUriRequired?: boolean;
   resource?: string;
   fbUserId?: string;
   expiresAt: number;
@@ -30,7 +32,7 @@ export class FirestoreAuthCodesStore implements AuthCodesStore {
   }
 
   async set(code: string, entry: AuthCodeEntry): Promise<void> {
-    await this.collection.doc(code).set(entry);
+    if(entry.fbUserId)await commitLegacyPersonalWrite(getFirestore(),entry.fbUserId,this.collection.doc(code),entry);else await this.collection.doc(code).set(entry);
   }
 
   async get(code: string): Promise<AuthCodeEntry | undefined> {
