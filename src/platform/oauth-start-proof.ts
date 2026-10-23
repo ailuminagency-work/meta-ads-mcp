@@ -20,9 +20,11 @@ export function verifyOAuthStartProof(secret: string, proof: unknown, operatorId
   if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]+$/.test(parts[1])) return false;
   try {
     const supplied = Buffer.from(parts[1], "base64url");
+    const payloadBytes = Buffer.from(parts[0], "base64url");
+    if (supplied.toString("base64url") !== parts[1] || payloadBytes.toString("base64url") !== parts[0]) return false;
     const expected = signature(secret, parts[0]);
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return false;
-    const value: unknown = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+    const value: unknown = JSON.parse(payloadBytes.toString("utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const parsed = value as Record<string, unknown>;
     return Object.keys(parsed).length === 4 && parsed.operatorId === operatorId && parsed.profileId === profileId &&

@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import { z } from "zod";
 import { PlatformOAuthService } from "./oauth.js";
 import { verifyOAuthStartProof } from "./oauth-start-proof.js";
+import { logger } from "../utils/logger.js";
 
 export interface PlatformOAuthRouterDependencies {
   service: PlatformOAuthService;
@@ -39,10 +40,11 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
       const suppliedOrigin = req.get("origin");
       const fetchSite = req.get("sec-fetch-site");
       const proofValid = body.data.start_proof !== undefined && verifyOAuthStartProof(process.env.OAUTH_SECRET ?? "", body.data.start_proof, operator, req.params.profileId);
-      if ((suppliedOrigin && suppliedOrigin !== deps.publicOrigin) ||
-          fetchSite === "cross-site" ||
-          (body.data.start_proof !== undefined && !proofValid) ||
-          (!proofValid && !isSameOriginBrowserPost(req, deps.publicOrigin))) { res.sendStatus(403); return; }
+      const denial = suppliedOrigin && suppliedOrigin !== deps.publicOrigin ? "ORIGIN_MISMATCH" :
+        fetchSite === "cross-site" ? "CROSS_SITE_REQUEST" :
+        body.data.start_proof !== undefined && !proofValid ? "INVALID_START_PROOF" :
+        !proofValid && !isSameOriginBrowserPost(req, deps.publicOrigin) ? "BROWSER_ORIGIN_UNVERIFIED" : null;
+      if (denial) { logger.warn({ reason: denial }, "Platform OAuth start rejected"); res.sendStatus(403); return; }
       const started = await deps.service.start(operator, body.data.client_id, req.params.profileId);
       res.cookie(cookieName(started.state), Buffer.from(JSON.stringify({ clientId: body.data.client_id, nonce: started.browserNonce })).toString("base64url"), { ...cookieOptions, maxAge: 600000 });
       res.redirect(303, started.authorizeUrl);

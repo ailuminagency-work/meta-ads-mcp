@@ -14,6 +14,12 @@ describe("operator-bound OAuth start form proof", () => {
   });
   it("rejects modification, malformed inputs, and weak secrets", () => {
     const proof = createOAuthStartProof(secret, "operator-one", "meta-readonly");
+    const [payload, mac] = proof.split(".");
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const last = alphabet.indexOf(mac.at(-1)!);
+    const alternateSpelling = `${payload}.${mac.slice(0, -1)}${alphabet[last ^ 1]}`;
+    expect(Buffer.from(alternateSpelling.split(".")[1], "base64url")).toEqual(Buffer.from(mac, "base64url"));
+    expect(verifyOAuthStartProof(secret, alternateSpelling, "operator-one", "meta-readonly")).toBe(false);
     expect(verifyOAuthStartProof(secret, `${proof}x`, "operator-one", "meta-readonly")).toBe(false);
     expect(verifyOAuthStartProof(secret, `${proof}.extra`, "operator-one", "meta-readonly")).toBe(false);
     expect(verifyOAuthStartProof(secret, "a".repeat(513), "operator-one", "meta-readonly")).toBe(false);
