@@ -59,7 +59,7 @@ export function registerAccountTools(server: McpServer): void {
         : accounts
             .map(
               (a) =>
-                `• ${a.name} (${a.account_id}) — Status: ${a.account_status === 1 ? "ACTIVE" : "DISABLED"} — Currency: ${a.currency} — Spent: ${a.amount_spent ?? "N/A"}`,
+                `• ${a.name ?? "N/A"} (${a.account_id ?? a.id ?? "N/A"}) — Status: ${a.account_status === undefined ? "NOT_RETURNED" : a.account_status === 1 ? "ACTIVE" : `META_STATUS_${a.account_status}`} — Currency: ${a.currency ?? "N/A"} — Spent: ${a.amount_spent ?? "N/A"}`,
             )
             .join("\n");
 

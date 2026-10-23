@@ -22,7 +22,7 @@ import {validateContractParameters} from "./clients.js";
 import {resolveAuthorizedAssets} from "./assets.js";
 import {assertProductAssetRelationships} from "./product-inputs.js";
 
-export const WORKFLOW_TOOL_NAMES=["meta_discover_signal_assets",...APP_PROMOTION_WORKFLOW_TOOLS,...HEALTH_TOOL_NAMES,"meta_manual_actions","meta_signal_status","meta_capabilities","meta_capability_status","meta_connection_status","meta_permissions_status","meta_assets_overview","meta_audit_presence","meta_prepare_publication","meta_list_prepared_actions","meta_list_events","meta_discover_ad_assets","meta_lookup_ad_targeting","meta_observe_ads_compatibility","meta_observe_account_owner"] as const;
+export const WORKFLOW_TOOL_NAMES=["meta_discover_signal_assets",...APP_PROMOTION_WORKFLOW_TOOLS,...HEALTH_TOOL_NAMES,"meta_manual_actions","meta_signal_status","meta_capabilities","meta_capability_status","meta_connection_status","meta_permissions_status","meta_assets_overview","meta_audit_presence","meta_prepare_publication","meta_list_prepared_actions","meta_list_events","meta_discover_ad_assets","meta_lookup_ad_targeting","meta_observe_ads_compatibility","meta_observe_account_owner","meta_inspect_billing_configuration"] as const;
 const client=z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),id=z.string().regex(/^[A-Za-z0-9_:.=$-]{1,200}$/);
 const output=(value:unknown)=>({content:[{type:"text" as const,text:JSON.stringify(value)}]});
 const fail=(error:unknown)=>({...output({status:"HOLD",reason:error instanceof PlatformDenied?error.reason:"WORKFLOW_UNAVAILABLE"}),isError:true});

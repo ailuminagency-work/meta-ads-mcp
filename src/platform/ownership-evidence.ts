@@ -18,21 +18,25 @@ export async function loadOwnershipEvidence(repo:PlatformRepository,ctx:Operatio
  const attestations:OwnerBillingAttestation[]=[],observations:AccountOwnershipObservation[]=[];for(const account of assets.filter(a=>a.type==="AD_ACCOUNT"&&a.tenantId===ctx.principal.tenantId&&a.clientId===ctx.clientId)){const refs=account as MetaAsset&{ownerBillingAttestationId?:string;ownershipObservationId?:string};if(refs.ownerBillingAttestationId){const row=await repo.get("ownerBillingAttestations",ctx.principal.tenantId,refs.ownerBillingAttestationId);if(row)attestations.push(row);}if(refs.ownershipObservationId){const row=await repo.get("accountOwnershipObservations",ctx.principal.tenantId,refs.ownershipObservationId);if(row)observations.push(row);}}
  return {attestations,observations};
 }
+export function agencyOwnershipBound(tenantId:string,clientId:string,businessId:string):boolean {
+ const tenant=process.env.LUMIN_AGENCY_TENANT_ID,client=process.env.LUMIN_AGENCY_INTERNAL_CLIENT_ID,business=process.env.LUMIN_AGENCY_META_BUSINESS_ID;
+ return !!tenant && !!client && !!business && tenantId===tenant && clientId===client && businessId===business;
+}
 export function classifyAccountOwnership(snapshot: AuthorizationSnapshot, account: MetaAsset, now=Date.now()): AccountClassification {
   if (account.type!=="AD_ACCOUNT" || account.provider!=="META_MARKETING" || account.revokedAt!==null) return "UNVERIFIED";
   const evidence=snapshot.financialEvidence;
   const refs=account as MetaAsset & {ownerBillingAttestationId?:string; ownershipObservationId?:string};
   const att=evidence?.attestations.find(r=>r.id===refs.ownerBillingAttestationId);
   const obs=evidence?.observations.find(r=>r.id===refs.ownershipObservationId);
-  if (!att || !obs) return "UNVERIFIED";
+  if (!att || !obs || evidence!.attestations.filter(r=>r.id===att.id).length!==1 || evidence!.observations.filter(r=>r.id===obs.id).length!==1) return "UNVERIFIED";
+  if(account.tenantId!==snapshot.tenant.id || account.clientId!==snapshot.client.id || snapshot.client.tenantId!==snapshot.tenant.id || [att,obs].some(r=>r.tenantId!==account.tenantId || r.clientId!==account.clientId || r.appId!==account.appId || r.accountKey!==account.key) || obs.attestationId!==att.id || obs.expiresAt>att.expiresAt || account.ownershipEvidenceSource!==ACCOUNT_OWNERSHIP_SOURCE) return "UNVERIFIED";
   try { validateOwnerAttestation(att,now); ownershipObservationProof(obs,now); } catch { return "UNVERIFIED"; }
   if (att.accountId!==account.id.replace(/^act_/,'') || obs.accountId!==att.accountId || obs.businessId!==att.businessId || account.ownerBusinessId!==att.businessId || account.ownershipEvidenceVerifiedAt!==obs.checkedAt) return "UNVERIFIED";
   if (att.source==="AGENCY_OWNER_ATTESTATION") {
-    const agencyBusiness=process.env.LUMIN_AGENCY_META_BUSINESS_ID;
-    if (!agencyBusiness || agencyBusiness!==att.businessId || account.billingOwnershipVerified!==true) return "UNVERIFIED";
+    if (!agencyOwnershipBound(account.tenantId,account.clientId,att.businessId) || !clientBusinessBound(snapshot.client,att.businessId,now,snapshot.businessOwnerEvidence,account.appId) || account.billingOwnershipVerified!==true) return "UNVERIFIED";
     return "AGENCY_OWNED";
   }
-  if (!clientBusinessBound(snapshot.client,att.businessId,now,snapshot.businessOwnerEvidence,account.appId) || account.billingOwnershipVerified!==true) return "UNVERIFIED";
+  if (att.businessId===process.env.LUMIN_AGENCY_META_BUSINESS_ID || !clientBusinessBound(snapshot.client,att.businessId,now,snapshot.businessOwnerEvidence,account.appId) || account.billingOwnershipVerified!==true) return "UNVERIFIED";
   return "CLIENT_OWNED";
 }
 export function ownershipExpectedRecords(evidence:FinancialEvidence):ControlCommit["expected"] {return [...evidence.attestations.map(r=>({collection:"ownerBillingAttestations" as const,id:r.id,canonical:canonicalJson(r)})),...evidence.observations.map(r=>({collection:"accountOwnershipObservations" as const,id:r.id,canonical:canonicalJson(r)}))];}
