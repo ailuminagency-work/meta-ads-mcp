@@ -7,7 +7,7 @@ const now=1792180000000;
 const profile:TrustedOAuthProfile={id:"marketing",provider:"META_MARKETING",appId:"3001",strategy:"facebook_business",scopes:["public_profile","ads_read"],tokenTypes:["user"],redirectUri:"https://fixture.invalid/platform/oauth/marketing/callback",authorizeUrl:"https://www.facebook.com/v26.0/dialog/oauth",configurationId:"4001",verified:true,secretReference:"fixture-reference",capabilities:["legacy.ads_get_account_info"],actions:["READ"],requiredTasks:[]};
 const secret="synthetic-private-app-secret",code="synthetic-private-code",short="synthetic-short-token",long="synthetic-long-token";
 const baseInput={code,profile,appSecret:secret,requestedAssets:[{type:"AD_ACCOUNT" as const,id:"101"}]};
-interface Changes {debug?:Record<string,unknown>;me?:Record<string,unknown>;permissions?:unknown;asset?:Record<string,unknown>;businessPages?:unknown[];failure?:string;oversized?:boolean;exchange?:Record<string,unknown>}
+interface Changes {debug?:Record<string,unknown>;me?:Record<string,unknown>;permissions?:unknown;asset?:Record<string,unknown>;businessPages?:unknown[];failure?:string;oversized?:boolean;exchange?:Record<string,unknown>;longExchange?:Record<string,unknown>}
 function fixture(changes:Changes={},provider:"META_MARKETING"|"META_BUSINESS"="META_MARKETING"){
   let exchange=0,businessPage=0;
   const fetcher=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -20,7 +20,7 @@ function fixture(changes:Changes={},provider:"META_MARKETING"|"META_BUSINESS"="M
     if(path==="/oauth/access_token"){
       expect(url.searchParams.get("client_secret")).toBe(secret);
       if(exchange++===0){expect(url.searchParams.get("code")).toBe(code);expect(url.searchParams.get("redirect_uri")).toBe(profile.redirectUri);body={access_token:short,expires_in:3600,token_type:"bearer",...changes.exchange};}
-      else {expect(url.searchParams.get("grant_type")).toBe("fb_exchange_token");expect(url.searchParams.get("fb_exchange_token")).toBe(short);body={access_token:long,expires_in:5184000,token_type:"bearer"};}
+      else {expect(url.searchParams.get("grant_type")).toBe("fb_exchange_token");expect(url.searchParams.get("fb_exchange_token")).toBe(short);body={access_token:long,expires_in:5184000,token_type:"bearer",...changes.longExchange};}
     } else if(path==="/debug_token"){
       expect(url.searchParams.get("input_token")).toBe(long);expect(url.searchParams.has("access_token")).toBe(false);expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer 3001|${secret}`);
       body={data:{app_id:"3001",type:"USER",user_id:"2001",is_valid:true,scopes:provider==="META_BUSINESS"?expandVerifiedPermissionDependencies(["public_profile","business_management"]):profile.scopes,expires_at:Math.floor(now/1000)+5184000,data_access_expires_at:Math.floor(now/1000)+3600,...changes.debug}};
@@ -41,9 +41,14 @@ describe("concrete Facebook business user OAuth adapter",()=>{
   it.each([{actions:["WRITE_CONTENT"],capabilities:["marketing.upload.image"]},{actions:["READ"]},{capabilities:["legacy.ads_get_account_info","pages.create.photos"]},{actions:["READ","WRITE_CONTENT","WRITE_BUDGET"]},{scopes:["public_profile","ads_read"]}])("rejects media profile privilege or scope mismatch before exchange %j",async change=>{const scopes=expandVerifiedPermissionDependencies(["public_profile","ads_read","ads_management"]),mediaProfile={...profile,scopes,actions:["READ","WRITE_CONTENT"],capabilities:["legacy.ads_get_account_info","marketing.upload.image"],...change} as TrustedOAuthProfile,{adapter,fetcher}=fixture();await expect(adapter.exchangeAndInspect({...baseInput,profile:mediaProfile})).rejects.toThrow();expect(fetcher).not.toHaveBeenCalled();});
   it("exchanges code and long-lived token then proves actual app subject grants expiry and requested account",async()=>{const {adapter,fetcher}=fixture();expect(adapter.verified).toBe(true);const result=await adapter.exchangeAndInspect(baseInput);expect(result).toEqual({accessToken:long,provider:"META_MARKETING",appId:"3001",subjectId:"2001",tokenType:"user",grantedScopes:profile.scopes,expiresAt:now+3600000,assets:[{type:"AD_ACCOUNT",id:"101",tasks:[]}]});expect(fetcher).toHaveBeenCalledTimes(6);});
   it.each([
-    ["FACEBOOK_OAUTH_TOKEN_EXCHANGE_RESPONSE_INVALID",{exchange:{expires_in:undefined}}],
+    ["FACEBOOK_OAUTH_TOKEN_EXCHANGE_RESPONSE_INVALID",{exchange:{access_token:undefined}}],
     ["FACEBOOK_OAUTH_DEBUG_TOKEN_RESPONSE_INVALID",{debug:{type:"SYSTEM_USER"}}],
   ] as const)("classifies malformed OAuth response %s without exposing its body",async(reason,change)=>{await expect(fixture(change).adapter.exchangeAndInspect(baseInput)).rejects.toThrow(reason);});
+  it("accepts Facebook Login for Business exchanges that omit expires_in and uses debug expiry",async()=>{
+    const {adapter}=fixture({exchange:{expires_in:undefined},longExchange:{expires_in:undefined}});
+    const result=await adapter.exchangeAndInspect(baseInput);
+    expect(result.expiresAt).toBe(now+3600000);
+  });
   it("proves Business membership and returns only requested roots without inventing tasks",async()=>{const {adapter}=fixture({},"META_BUSINESS");const businessProfile:TrustedOAuthProfile={...profile,provider:"META_BUSINESS",scopes:expandVerifiedPermissionDependencies(["public_profile","business_management"]),capabilities:["business.get"]};const result=await adapter.exchangeAndInspect({...baseInput,profile:businessProfile,requestedAssets:[{type:"BUSINESS",id:"101"}]});expect(result.assets).toEqual([{type:"BUSINESS",id:"101",tasks:[]}]);expect(JSON.stringify(result)).not.toContain("999");});
   it.each([{app_id:"foreign"},{type:"PAGE"},{type:"SYSTEM_USER"},{is_valid:false},{expires_at:1},{expires_at:0},{scopes:["public_profile","ads_read","ads_management"]},{scopes:["public_profile"]},{scopes:["public_profile","ads_read","ads_read"]}])("rejects independently inspected token mismatch %j",async debug=>{const {adapter}=fixture({debug});await expect(adapter.exchangeAndInspect(baseInput)).rejects.toThrow();});
   it("rejects mismatched /me subject",async()=>{await expect(fixture({me:{id:"other"}}).adapter.exchangeAndInspect(baseInput)).rejects.toThrow();});
@@ -68,3 +73,4 @@ describe("concrete Facebook business user OAuth adapter",()=>{
 });
 
 it.each(["marketing.create.empty.custom.audience","marketing.create.lookalike.audience"])("enrolls exact typed audience capability with READ consent and no budget authority: %s",async capability=>{const scopes=expandVerifiedPermissionDependencies(["public_profile","ads_read","ads_management"]),selected:TrustedOAuthProfile={...profile,scopes,actions:["READ","WRITE_AD_CONFIGURATION"],capabilities:["legacy.ads_get_account_info",capability]},{adapter}=fixture({debug:{scopes},permissions:{data:scopes.map(permission=>({permission,status:"granted"}))}});expect((await adapter.exchangeAndInspect({...baseInput,profile:selected})).grantedScopes).toEqual(scopes);expect(()=>adapter.validateProfile({...selected,actions:["READ","WRITE_AD_CONFIGURATION","WRITE_BUDGET"]})).toThrow();expect(()=>adapter.validateProfile({...selected,actions:["WRITE_AD_CONFIGURATION"],capabilities:[capability]})).toThrow();});
+
