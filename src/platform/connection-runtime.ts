@@ -74,6 +74,10 @@ export function platformConnectionRouters(origin:string):{oauth:express.Router;c
         res.status(403).type("html").send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Platform access not provisioned · Lumin</title><style>body{margin:0;background:#0b1020;color:#e8edf7;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;display:grid;place-items:center;min-height:100vh;padding:20px}.card{max-width:620px;border:1px solid #263a5c;border-radius:18px;background:#111a2d;padding:28px;box-shadow:0 8px 24px #05091455}h1{margin:0 0 10px;font-size:26px}p{color:#a9b8d0}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#b9d2ff;font-size:13px}a{color:#8db7ff}</style></head><body><main class="card"><h1>Platform access is not provisioned</h1><p>Meta authentication succeeded, but this operator is not yet assigned to an approved Lumin platform tenant. No credentials, client permissions, or advertising settings were changed.</p><p class="code">Reference: ${escape(denialReason)}</p><p>Complete the owner-reviewed platform registry bootstrap, then sign in again.</p><form method="post" action="/auth/logout"><button type="submit">Return to sign-in</button></form></main></body></html>`);
         return;
       }
+      // The denial branch above returns for every nullable or invalid state.
+      // Keep this explicit guard so the authorization invariant is visible to
+      // both TypeScript and future maintainers before tenant-scoped reads.
+      if(!principal||!member)throw new Error("PLATFORM_CONNECTION_AUTHORIZATION_STATE_INVALID");
       const clients=(await repo.list("clients",principal.tenantId)).filter(c=>c.tenantId===principal.tenantId && c.status==="ACTIVE" && member.allowedClientIds.includes(c.id));
       const options=clients.map(c=>`<option value="${escape(c.id)}">${escape(c.id.replace(/[_-]/g," "))}</option>`).join("");
       const cards=profiles.map(p=>{
