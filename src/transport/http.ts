@@ -38,7 +38,10 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import {
+  getOAuthProtectedResourceMetadataUrl,
+  mcpAuthRouter,
+} from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { oauthProvider } from "../auth/oauth-provider.js";
 import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
@@ -331,12 +334,16 @@ function extractApiKey(req: express.Request): string | undefined {
   return undefined;
 }
 
+export function getMcpProtectedResourceMetadataUrl(serverUrl: URL): string {
+  return getOAuthProtectedResourceMetadataUrl(new URL("/mcp", serverUrl));
+}
+
 function sendMcpAuthRequired(
   res: express.Response,
   serverUrl: URL,
   message: string,
 ): void {
-  const metadataUrl = new URL("/.well-known/oauth-protected-resource", serverUrl).href;
+  const metadataUrl = getMcpProtectedResourceMetadataUrl(serverUrl);
   res.setHeader(
     "WWW-Authenticate",
     `Bearer realm="mcp", resource_metadata="${metadataUrl}"`,
@@ -849,7 +856,14 @@ export async function startHttpTransport(
     }),
   );
 
-  const oauthBearerAuth = requireBearerAuth({ verifier: oauthProvider });
+  const oauthBearerAuth = requireBearerAuth({
+    verifier: oauthProvider,
+    // The first unauthenticated /mcp request is the OAuth discovery trigger.
+    // Advertise the path-specific RFC 9728 metadata URL so MCP clients can
+    // discover /register, /authorize, and /token instead of stopping at the
+    // expected fail-closed 401 "Missing Authorization header" response.
+    resourceMetadataUrl: getMcpProtectedResourceMetadataUrl(serverUrl),
+  });
   const auth = createCombinedAuthMiddleware(oauthBearerAuth);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
