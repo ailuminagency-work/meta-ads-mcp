@@ -148,6 +148,49 @@ describe("MetaApiClient", () => {
       const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
       expect(url.searchParams.has("limit")).toBe(false);
     });
+
+    it("resolves and uses the Page Access Token for Page lead-form reads", async () => {
+      const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v26.0/me/accounts") {
+          expect(url.searchParams.get("access_token")).toBe("test-access-token");
+          expect(url.searchParams.get("fields")).toBe("id,access_token,tasks");
+          return mockFetchResponse({
+            data: [{ id: "456", access_token: "page-token-456", tasks: ["ADVERTISE"] }],
+          });
+        }
+        if (url.pathname === "/v26.0/456") {
+          expect(url.searchParams.get("access_token")).toBe("page-token-456");
+          return mockFetchResponse({ id: "456" });
+        }
+        expect(url.pathname).toBe("/v26.0/456/leadgen_forms");
+        expect(url.searchParams.get("access_token")).toBe("page-token-456");
+        return mockFetchResponse({ data: [{ id: "form-1", status: "ACTIVE" }] });
+      });
+      vi.stubGlobal("fetch", fetcher);
+
+      const result = await client.getPageLeadForms<{ data: Array<{ id: string }> }>(
+        "456",
+        { fields: "id,status", limit: 5 },
+      );
+
+      expect(result).toEqual({ data: [{ id: "form-1", status: "ACTIVE" }] });
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    });
+
+    it("fails closed when Meta does not issue a unique Page Access Token", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          mockFetchResponse({ data: [{ id: "456", tasks: ["ADVERTISE"] }] }),
+        ),
+      );
+
+      await expect(client.getPageLeadForms("456")).rejects.toThrow(
+        "META_PAGE_ACCESS_TOKEN_UNAVAILABLE",
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("post", () => {
