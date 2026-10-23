@@ -25,8 +25,8 @@ export function registerLeadTools(server: McpServer): void {
       const id = validateMetaId(page_id, "page");
       const fieldsParam = buildFieldsParam(fields, [...LEAD_FORM_DEFAULT_FIELDS]);
 
-      const response = await metaApiClient.get<MetaApiResponse<LeadForm>>(
-        `/${id}/leadgen_forms`,
+      const response = await metaApiClient.getPageLeadForms<MetaApiResponse<LeadForm>>(
+        id,
         { fields: fieldsParam, limit },
       );
       const forms = response.data ?? [];
