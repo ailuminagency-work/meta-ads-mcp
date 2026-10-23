@@ -34,7 +34,11 @@ export const FACEBOOK_OAUTH_DOCUMENTATION=Object.freeze([
 const TOKEN=z.string().min(1).max(16384).regex(/^[^\s\x00-\x1f\x7f]+$/);
 const ID=z.string().regex(/^\d{1,100}$/);
 const SCOPE=z.string().regex(/^[a-z][a-z0-9_]{0,100}$/);
-const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(),expires_in:z.number().int().positive().max(31536000)});
+// Meta's Business Login token exchange has returned expiry metadata in more
+// than one valid shape. Keep the response bounded and require a finite expiry
+// later, but do not reject a valid exchange merely because one endpoint omits
+// expires_in while /debug_token supplies expires_at or data_access_expires_at.
+const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(),expires_in:z.number().int().positive().max(31536000).optional(),expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional(),data_access_expiration_time:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()});
 const debugResponse=z.object({data:z.object({app_id:z.union([ID,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),type:z.literal("USER"),user_id:ID,is_valid:z.literal(true),scopes:z.array(SCOPE).min(1).max(100),expires_at:z.number().int().positive().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)),data_access_expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()})});
 const permissionResponse=z.object({data:z.array(z.object({permission:SCOPE,status:z.enum(["granted","declined","expired"])})).max(100),paging:z.object({next:z.unknown().optional()}).optional()});
 const scopeKey=(scopes:string[])=>canonicalJson([...scopes].sort());
@@ -208,8 +212,18 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     const debug=parse(debugResponse,await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`)).data;
     if(String(debug.app_id)!==profile.appId||new Set(debug.scopes).size!==debug.scopes.length||scopeKey(debug.scopes)!==scopeKey(profile.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
     const inspectedAt=this.now();
-    const expiry=Math.min(issuedAt+long.expires_in*1000,debug.expires_at*1000,...(debug.data_access_expires_at?[debug.data_access_expires_at*1000]:[]));
-    if(!Number.isSafeInteger(expiry)||expiry<=inspectedAt)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRED");
+    const expiryCandidates=[
+      ...(short.expires_in!==undefined?[issuedAt+short.expires_in*1000]:[]),
+      ...(long.expires_in!==undefined?[issuedAt+long.expires_in*1000]:[]),
+      ...(short.expires_at!==undefined&&short.expires_at>0?[short.expires_at*1000]:[]),
+      ...(long.expires_at!==undefined&&long.expires_at>0?[long.expires_at*1000]:[]),
+      ...(short.data_access_expiration_time!==undefined&&short.data_access_expiration_time>0?[short.data_access_expiration_time*1000]:[]),
+      ...(long.data_access_expiration_time!==undefined&&long.data_access_expiration_time>0?[long.data_access_expiration_time*1000]:[]),
+      ...(debug.expires_at>0?[debug.expires_at*1000]:[]),
+      ...(debug.data_access_expires_at!==undefined&&debug.data_access_expires_at>0?[debug.data_access_expires_at*1000]:[]),
+    ].filter(Number.isSafeInteger);
+    const expiry=expiryCandidates.length?Math.min(...expiryCandidates):0;
+    if(!Number.isSafeInteger(expiry)||expiry<=inspectedAt)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRY_REQUIRED");
     const me=parse(z.object({id:ID}),await this.get("/me",{fields:"id"},token));
     if(me.id!==debug.user_id)throw new PlatformDenied("FACEBOOK_ACTUAL_USER_SUBJECT_REQUIRED");
     const permissions=parse(permissionResponse,await this.get("/me/permissions",{},token));
