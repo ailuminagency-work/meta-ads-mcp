@@ -28,6 +28,20 @@ async function mount(){const routers=platformConnectionRouters(origin)!;const ap
 beforeEach(()=>{vi.stubGlobal("fetch",async(input:RequestInfo|URL,init?:RequestInit)=>{const url=new URL(input instanceof Request?input.url:String(input));if(url.hostname!=="127.0.0.1")throw new Error("EXTERNAL_NETWORK_DISABLED_IN_RUNTIME_FIXTURE");return localFetch(input,init);});state.session=null;state.firestoreCalls=0;vi.stubEnv("LUMIN_PLATFORM_ENABLED","true");vi.stubEnv("LUMIN_PLATFORM_OAUTH_ENABLED","true");vi.stubEnv("LUMIN_PLATFORM_OAUTH_PROFILES_JSON",JSON.stringify([profile]));vi.stubEnv("META_APP_SECRET","synthetic-private-secret");vi.stubEnv("META_APP_ID",profile.appId);vi.stubEnv("META_API_VERSION","v26.0");vi.stubEnv("OAUTH_SECRET","synthetic-test-only-oauth-secret-123456789");});
 afterEach(async()=>{configurePlatformRepository(undefined);configurePlatformWebhooks(undefined);configureMessagingIngress(undefined);vi.unstubAllEnvs();vi.unstubAllGlobals();if(server)await new Promise<void>(r=>server!.close(()=>r()));server=undefined;});
 describe("independent deployed-runtime composition using fake storage only",()=>{
+  it("permits only validated OAuth provider origins for form redirects",async()=>{
+    await fixture();const base=await mount();state.session={fbUserId:"100"};
+    const response=await fetch(base+"/platform/connections/");
+    const csp=response.headers.get("content-security-policy");
+    expect(csp).toContain("form-action 'self' https://www.facebook.com;");
+    expect(csp).not.toContain("attacker.invalid");
+    expect(csp).not.toContain("form-action *");
+    const html=await response.text();
+    expect(html).toContain('method="post" action="/platform/oauth/marketing/start"');
+  });
+  it("rejects an untrusted OAuth origin before constructing the connection page",()=>{
+    vi.stubEnv("LUMIN_PLATFORM_OAUTH_PROFILES_JSON",JSON.stringify([{...profile,authorizeUrl:"https://attacker.invalid/v26.0/dialog/oauth"}]));
+    expect(()=>platformConnectionRouters(origin)).toThrow("VERIFIED_PROVIDER_HTTPS_ENDPOINT_REQUIRED");
+  });
   it("service rejects unsupported Marketing consent before challenge creation or provider network",async()=>{const repo=await fixture(),create=vi.fn(),fetcher=vi.fn();const service=new PlatformOAuthService({repository:repo,profiles:new ImmutableOAuthProfileRegistry([{...profile,actions:["ACTIVATE_SPEND"]} as TrustedOAuthProfile]),challenges:{create,consume:vi.fn()},adapters:{get:()=>new FacebookBusinessOAuthAdapter("META_MARKETING",{fetcher,apiVersion:"v26.0"})},secrets:{get:async()=>"synthetic-secret"},commitVerifiedConnection:vi.fn()});await expect(service.start("100","allowed","marketing")).rejects.toThrow("PRIVILEGE_EXPANSION_HOLD");expect(create).not.toHaveBeenCalled();expect(fetcher).not.toHaveBeenCalled();});
   it("factory refuses an unsupported deployment consent profile before offering the connection UI",async()=>{await fixture();vi.stubEnv("LUMIN_PLATFORM_OAUTH_PROFILES_JSON",JSON.stringify([{...profile,actions:["ACTIVATE_SPEND"]}]));expect(()=>platformConnectionRouters(origin)).toThrow("PRIVILEGE_EXPANSION_HOLD");});
   it("keeps disabled factories inert and rejects malformed switches",()=>{vi.stubEnv("LUMIN_PLATFORM_OAUTH_ENABLED","false");expect(platformConnectionRouters(origin)).toBeNull();expect(state.firestoreCalls).toBe(0);vi.stubEnv("LUMIN_PLATFORM_OAUTH_ENABLED","TRUE");expect(()=>platformConnectionRouters(origin)).toThrow("INVALID_PLATFORM_OAUTH_FLAG");});
