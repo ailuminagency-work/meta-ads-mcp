@@ -38,7 +38,7 @@ const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(
 const debugResponse=z.object({data:z.object({app_id:z.union([ID,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),type:z.literal("USER"),user_id:ID,is_valid:z.literal(true),scopes:z.array(SCOPE).min(1).max(100),expires_at:z.number().int().positive().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)),data_access_expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()})});
 const permissionResponse=z.object({data:z.array(z.object({permission:SCOPE,status:z.enum(["granted","declined","expired"])})).max(100),paging:z.object({next:z.unknown().optional()}).optional()});
 const scopeKey=(scopes:string[])=>canonicalJson([...scopes].sort());
-function parse<T>(schema:z.ZodType<T>,value:unknown):T{const parsed=schema.safeParse(value);if(!parsed.success)throw new PlatformDenied("FACEBOOK_OAUTH_RESPONSE_SCHEMA_INVALID");return parsed.data;}
+function parse<T>(schema:z.ZodType<T>,value:unknown,reason="FACEBOOK_OAUTH_RESPONSE_SCHEMA_INVALID"):T{const parsed=schema.safeParse(value);if(!parsed.success)throw new PlatformDenied(reason);return parsed.data;}
 interface FacebookAdapterOptions { fetcher?:typeof fetch; apiVersion?:string; now?:()=>number; timeoutMs?:number }
 
 const facebookProviderErrorEnvelope=z.object({
@@ -200,19 +200,19 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     const issuedAt=this.now();
     // Current manual-flow contract requires GET query credentials. These URLs
     // stay server-side and are never logged or attached to thrown errors.
-    const short=parse(tokenResponse,await this.get("/oauth/access_token",{client_id:profile.appId,client_secret:appSecret,redirect_uri:profile.redirectUri,code:input.code}));
+    const short=parse(tokenResponse,await this.get("/oauth/access_token",{client_id:profile.appId,client_secret:appSecret,redirect_uri:profile.redirectUri,code:input.code}),"FACEBOOK_OAUTH_TOKEN_EXCHANGE_RESPONSE_INVALID");
     if(short.token_type&&short.token_type.toLowerCase()!=="bearer")throw new PlatformDenied("FACEBOOK_TOKEN_TYPE_MISMATCH");
-    const long=parse(tokenResponse,await this.get("/oauth/access_token",{grant_type:"fb_exchange_token",client_id:profile.appId,client_secret:appSecret,fb_exchange_token:short.access_token}));
+    const long=parse(tokenResponse,await this.get("/oauth/access_token",{grant_type:"fb_exchange_token",client_id:profile.appId,client_secret:appSecret,fb_exchange_token:short.access_token}),"FACEBOOK_OAUTH_LONG_TOKEN_RESPONSE_INVALID");
     if(long.token_type&&long.token_type.toLowerCase()!=="bearer")throw new PlatformDenied("FACEBOOK_TOKEN_TYPE_MISMATCH");
     const token=long.access_token;
-    const debug=parse(debugResponse,await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`)).data;
+    const debug=parse(debugResponse,await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`),"FACEBOOK_OAUTH_DEBUG_TOKEN_RESPONSE_INVALID").data;
     if(String(debug.app_id)!==profile.appId||new Set(debug.scopes).size!==debug.scopes.length||scopeKey(debug.scopes)!==scopeKey(profile.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
     const inspectedAt=this.now();
     const expiry=Math.min(issuedAt+long.expires_in*1000,debug.expires_at*1000,...(debug.data_access_expires_at?[debug.data_access_expires_at*1000]:[]));
     if(!Number.isSafeInteger(expiry)||expiry<=inspectedAt)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRED");
-    const me=parse(z.object({id:ID}),await this.get("/me",{fields:"id"},token));
+    const me=parse(z.object({id:ID}),await this.get("/me",{fields:"id"},token),"FACEBOOK_OAUTH_USER_RESPONSE_INVALID");
     if(me.id!==debug.user_id)throw new PlatformDenied("FACEBOOK_ACTUAL_USER_SUBJECT_REQUIRED");
-    const permissions=parse(permissionResponse,await this.get("/me/permissions",{},token));
+    const permissions=parse(permissionResponse,await this.get("/me/permissions",{},token),"FACEBOOK_OAUTH_PERMISSION_RESPONSE_INVALID");
     if(permissions.paging?.next||new Set(permissions.data.map(p=>p.permission)).size!==permissions.data.length)throw new PlatformDenied("FACEBOOK_PERMISSION_INSPECTION_INCOMPLETE");
     const granted=permissions.data.filter(p=>p.status==="granted").map(p=>p.permission);
     if(scopeKey(granted)!==scopeKey(debug.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_GRANTED_PERMISSIONS_REQUIRED");
