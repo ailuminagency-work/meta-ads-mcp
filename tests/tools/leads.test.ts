@@ -46,7 +46,21 @@ describe("registerLeadTools", () => {
         ],
       };
 
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse(mockData)));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          const url = new URL(String(input));
+          if (url.pathname.endsWith("/me/accounts")) {
+            return mockFetchResponse({
+              data: [{ id: "60123", access_token: "synthetic-page-token", tasks: ["ADVERTISE"] }],
+            });
+          }
+          if (url.pathname.endsWith("/60123")) {
+            return mockFetchResponse({ id: "60123" });
+          }
+          return mockFetchResponse(mockData);
+        }),
+      );
 
       const handler = server._registeredTools[0].handler;
       const result = await handler({
