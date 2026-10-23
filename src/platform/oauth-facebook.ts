@@ -34,7 +34,7 @@ export const FACEBOOK_OAUTH_DOCUMENTATION=Object.freeze([
 const TOKEN=z.string().min(1).max(16384).regex(/^[^\s\x00-\x1f\x7f]+$/);
 const ID=z.string().regex(/^\d{1,100}$/);
 const SCOPE=z.string().regex(/^[a-z][a-z0-9_]{0,100}$/);
-const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(),expires_in:z.number().int().positive().max(31536000)});
+// Meta Business Login may omit expires_in on one exchange response; expiry is required and validated after debug_token.\nconst tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(),expires_in:z.number().int().positive().max(31536000).optional(),expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional(),data_access_expiration_time:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()});
 const debugResponse=z.object({data:z.object({app_id:z.union([ID,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),type:z.literal("USER"),user_id:ID,is_valid:z.literal(true),scopes:z.array(SCOPE).min(1).max(100),expires_at:z.number().int().positive().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)),data_access_expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()})});
 const permissionResponse=z.object({data:z.array(z.object({permission:SCOPE,status:z.enum(["granted","declined","expired"])})).max(100),paging:z.object({next:z.unknown().optional()}).optional()});
 const scopeKey=(scopes:string[])=>canonicalJson([...scopes].sort());
@@ -205,11 +205,7 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     const long=parse(tokenResponse,await this.get("/oauth/access_token",{grant_type:"fb_exchange_token",client_id:profile.appId,client_secret:appSecret,fb_exchange_token:short.access_token}),"FACEBOOK_OAUTH_LONG_TOKEN_RESPONSE_INVALID");
     if(long.token_type&&long.token_type.toLowerCase()!=="bearer")throw new PlatformDenied("FACEBOOK_TOKEN_TYPE_MISMATCH");
     const token=long.access_token;
-    const debug=parse(debugResponse,await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`),"FACEBOOK_OAUTH_DEBUG_TOKEN_RESPONSE_INVALID").data;
-    if(String(debug.app_id)!==profile.appId||new Set(debug.scopes).size!==debug.scopes.length||scopeKey(debug.scopes)!==scopeKey(profile.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
-    const inspectedAt=this.now();
-    const expiry=Math.min(issuedAt+long.expires_in*1000,debug.expires_at*1000,...(debug.data_access_expires_at?[debug.data_access_expires_at*1000]:[]));
-    if(!Number.isSafeInteger(expiry)||expiry<=inspectedAt)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRED");
+    const debug=parse(debugResponse,await this.get("/debug_token",{input_tok
     const me=parse(z.object({id:ID}),await this.get("/me",{fields:"id"},token),"FACEBOOK_OAUTH_USER_RESPONSE_INVALID");
     if(me.id!==debug.user_id)throw new PlatformDenied("FACEBOOK_ACTUAL_USER_SUBJECT_REQUIRED");
     const permissions=parse(permissionResponse,await this.get("/me/permissions",{},token),"FACEBOOK_OAUTH_PERMISSION_RESPONSE_INVALID");
