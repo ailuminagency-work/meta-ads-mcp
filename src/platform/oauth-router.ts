@@ -34,10 +34,7 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
   router.post("/:profileId/start", async (req, res) => {
     try {
       const operator = await deps.getSessionOperator(req);
-      if (!operator) {
-        res.redirect(302, `/auth/meta?return=${encodeURIComponent("/platform/connections/")}`);
-        return;
-      }
+      if (!operator) { res.sendStatus(401); return; }
       if (!sameOriginRequest(req, deps.publicOrigin)) {
         res.status(403).json({ status: "HOLD", reason: "OAUTH_ORIGIN_MISMATCH" });
         return;
