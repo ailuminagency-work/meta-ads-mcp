@@ -22,6 +22,7 @@ import type { InspectedOAuthToken, TrustedOAuthProfile, VerifiedProviderAdapter 
 import { LEGACY_CORE_READ_TOOLS } from "./legacy-read.js";
 import { LEGACY_CORE_WRITE_TOOLS } from "./legacy-write.js";
 import { expandVerifiedPermissionDependencies } from "./products/permission-dependencies.js";
+import { logger } from "../utils/logger.js";
 
 export const FACEBOOK_OAUTH_DOCUMENTATION=Object.freeze([
   "https://developers.facebook.com/documentation/facebook-login/guides/advanced/manual-flow",
@@ -39,6 +40,30 @@ const permissionResponse=z.object({data:z.array(z.object({permission:SCOPE,statu
 const scopeKey=(scopes:string[])=>canonicalJson([...scopes].sort());
 function parse<T>(schema:z.ZodType<T>,value:unknown):T{const parsed=schema.safeParse(value);if(!parsed.success)throw new PlatformDenied("FACEBOOK_OAUTH_RESPONSE_SCHEMA_INVALID");return parsed.data;}
 interface FacebookAdapterOptions { fetcher?:typeof fetch; apiVersion?:string; now?:()=>number; timeoutMs?:number }
+
+const facebookProviderErrorEnvelope=z.object({
+  error:z.object({
+    code:z.number().int().optional(),
+    error_subcode:z.number().int().optional(),
+    fbtrace_id:z.string().max(128).optional(),
+  }).passthrough(),
+});
+function facebookProviderDenialReason(status:number,body:unknown):string{
+  const parsed=facebookProviderErrorEnvelope.safeParse(body);
+  const code=parsed.success?parsed.data.error.code:undefined;
+  if(code===10||code===200)return "FACEBOOK_GRAPH_PERMISSION_DENIED";
+  if(code===102||code===190||status===401)return "FACEBOOK_GRAPH_TOKEN_INVALID";
+  return "FACEBOOK_OAUTH_PROVIDER_REJECTED";
+}
+function logFacebookProviderError(status:number,body:unknown,path:string):void{
+  const parsed=facebookProviderErrorEnvelope.safeParse(body);
+  if(!parsed.success){
+    logger.warn({event:"facebook_graph_provider_error",status,path},"Meta Graph rejected an OAuth request without a safe error envelope");
+    return;
+  }
+  const {code,error_subcode}=parsed.data.error;
+  logger.warn({event:"facebook_graph_provider_error",status,path,code,subcode:error_subcode},"Meta Graph rejected an OAuth request");
+}
 export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
   readonly verified:boolean;
   private readonly version:string;
@@ -58,11 +83,24 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     for(const [key,value] of Object.entries(parameters))url.searchParams.set(key,value);
     try {
       const response=await this.fetcher(url,{method:"GET",redirect:"error",signal:AbortSignal.timeout(this.timeoutMs),headers:{Accept:"application/json",...(bearer?{Authorization:`Bearer ${bearer}`}:{})}});
-      if(!response.ok)throw new PlatformDenied("FACEBOOK_OAUTH_PROVIDER_REJECTED");
-      const body:unknown=JSON.parse(await readBodyWithLimit(response,131072));
-      if(!body||typeof body!=="object"||Array.isArray(body)||"error" in body)throw new PlatformDenied("FACEBOOK_OAUTH_PROVIDER_REJECTED");
+      const raw=await readBodyWithLimit(response,131072);
+      let body:unknown;
+      try { body=JSON.parse(raw); } catch {
+        throw new PlatformDenied("FACEBOOK_OAUTH_PROVIDER_REJECTED");
+      }
+      if(!response.ok||!body||typeof body!=="object"||Array.isArray(body)||"error" in body){
+        logFacebookProviderError(response.status,body,path);
+        throw new PlatformDenied(facebookProviderDenialReason(response.status,body));
+      }
       return body;
-    } catch {throw new PlatformDenied("FACEBOOK_OAUTH_TRANSPORT_OR_RESPONSE_FAILED");}
+    } catch(error) {
+      // Preserve deliberate provider classifications. The old catch block
+      // converted permission denials into transport failures, making a real
+      // Meta scope/app-access problem look like a network outage.
+      if(error instanceof PlatformDenied)throw error;
+      logger.warn({event:"facebook_oauth_transport_failure",path,category:"TRANSPORT_OR_RESPONSE_FAILED"},"Meta OAuth provider request failed");
+      throw new PlatformDenied("FACEBOOK_OAUTH_TRANSPORT_OR_RESPONSE_FAILED");
+    }
   }
   validateProfile(profile:TrustedOAuthProfile):void {
     if(!this.verified)throw new PlatformDenied("FACEBOOK_OAUTH_VERSION_CONTRACT_UNVERIFIED_HOLD");
