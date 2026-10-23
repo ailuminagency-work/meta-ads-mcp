@@ -124,7 +124,8 @@ describe("resolveMetaVideoSources", () => {
 
     const sources = await resolveMetaVideoSources({ creative_id: "7001" });
     expect(sources).toHaveLength(1);
-    expect(sources[0].error).toMatch(/Unsupported get request/);
+    expect(sources[0].error).toMatch(/Invalid parameter/);
+    expect(sources[0].error).not.toContain("Unsupported get request");
     expect(sources[0].source_url).toBeUndefined();
     expect(sources[0].thumbnail_url).toBe("https://scontent.xx.fbcdn.net/t.jpg");
   });

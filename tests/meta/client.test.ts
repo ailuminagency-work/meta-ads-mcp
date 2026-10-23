@@ -77,7 +77,7 @@ describe("MetaApiClient", () => {
       },
     });
 
-    it("logs the configured version and Meta's notice, without the tenant's request path", async () => {
+    it("logs the configured version without repeating provider-controlled warning text", async () => {
       const warn = vi.spyOn(logger, "warn");
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(autoUpgraded()));
 
@@ -90,7 +90,8 @@ describe("MetaApiClient", () => {
         event: "meta_api_version_auto_upgraded",
         apiVersion: "v26.0",
       });
-      expect(versionWarning?.[1]).toContain("auto-upgraded to v27.0");
+      expect(versionWarning?.[1]).toContain("API version warning");
+      expect(versionWarning?.[1]).not.toContain("auto-upgraded to v27.0");
       expect(versionWarning?.[1]).not.toContain("123456789012345");
     });
 
@@ -118,6 +119,15 @@ describe("MetaApiClient", () => {
       );
       expect(versionWarnings).toHaveLength(0);
     });
+  });
+
+  it("does not log an unrecognized provider access tier from usage headers", async () => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] }, {
+      headers: { "x-ad-account-usage": JSON.stringify({ acc_id_util_pct: 1, ads_api_access_tier: "access_token=SECRET123" }) },
+    })));
+    await client.get("/act_123/campaigns");
+    expect(JSON.stringify(info.mock.calls)).not.toContain("SECRET123");
   });
 
   describe("get", () => {
@@ -200,6 +210,49 @@ describe("MetaApiClient", () => {
   });
 
   describe("error handling", () => {
+    it.each([
+      { code: 100, subcode: undefined, level: "warn", category: "invalid_params" },
+      { code: 613, subcode: 1996, level: "fatal", category: "abuse_signal" },
+    ] as const)("keeps a token quoted by Meta out of $category logs and MCP errors", async ({ code, subcode, level, category }) => {
+      const log = vi.spyOn(logger, level).mockImplementation(() => undefined);
+      const providerText = "Bad https://graph.facebook.com/v26.0/me?access_token=SECRET123";
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        error: {
+          message: providerText,
+          error_user_title: providerText,
+          error_user_msg: providerText,
+          type: "OAuthException",
+          code,
+          ...(subcode === undefined ? {} : { error_subcode: subcode }),
+        },
+      }, { status: 400 })));
+
+      let thrown: Error | undefined;
+      try { await client.get("/me"); } catch (error) { thrown = error as Error; }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown?.message).not.toContain("SECRET123");
+      expect(log).toHaveBeenCalled();
+      expect(JSON.stringify(log.mock.calls)).not.toContain("SECRET123");
+      expect((log.mock.calls.at(-1)?.[0] as { category?: string }).category).toBe(category);
+    });
+
+    it("rejects malformed Graph codes and does not log a token-bearing caller path", async () => {
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse({
+        error: { message: "bad", type: "OAuthException", code: "access_token=SECRET123" },
+      }, { status: 400 })).mockResolvedValueOnce(mockFetchResponse({
+        error: { message: "bad", type: "OAuthException", code: 100, error_subcode: "access_token=SECRET123" },
+      }, { status: 400 })).mockResolvedValueOnce(mockFetchResponse({
+        error: { message: "bad", type: "OAuthException", code: 100 },
+      }, { status: 400 })));
+      for (let i = 0; i < 2; i++) {
+        await expect(client.get("/me?access_token=SECRET123")).rejects.toThrow("META_PROVIDER_ERROR_SCHEMA_INVALID");
+      }
+      await expect(client.get("/me?access_token=SECRET123")).rejects.toThrow("Invalid parameter");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("SECRET123");
+    });
+
     it("throws McpError on Meta API auth errors", async () => {
       const mockResponse = mockFetchResponse({
         error: {
@@ -235,7 +288,25 @@ describe("MetaApiClient", () => {
       );
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse));
 
-      await expect(client.get("/me")).rejects.toThrow("HTTP 400");
+      await expect(client.get("/me")).rejects.toThrow("META_PROVIDER_ERROR_SCHEMA_INVALID");
+    });
+
+    it("does not echo non-Graph response bodies or transport errors", async () => {
+      const providerText = "Bad https://graph.facebook.com/me?access_token=SECRET123";
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse({ detail: providerText }, { status: 502 }))
+        .mockRejectedValueOnce(new Error(providerText)));
+      const first = (await client.get("/me").catch((error: Error) => error)) as Error;
+      const second = (await client.get("/me").catch((error: Error) => error)) as Error;
+      expect(first.message).toContain("Meta provider HTTP 502");
+      expect(second.message).toContain("META_PROVIDER_TRANSPORT_FAILED");
+      expect(first.message + second.message).not.toContain("SECRET123");
+    });
+
+    it.each(["access_token=SECRET123", null])("rejects malformed success-body error envelopes", async (embeddedError) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ error: embeddedError })));
+      const result = (await client.get("/me").catch((error: Error) => error)) as Error;
+      expect(result.message).toContain("META_PROVIDER_ERROR_SCHEMA_INVALID");
+      expect(result.message).not.toContain("SECRET123");
     });
 
     it("throws on missing access token", async () => {

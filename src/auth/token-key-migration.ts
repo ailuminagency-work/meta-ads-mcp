@@ -29,6 +29,8 @@ export interface MigrationOptions {
 }
 
 export interface MigrationReport {
+  /** This migration does not inspect platform/tenant credential records. */
+  scope: "legacy-user-token-collections-only";
   operationId: string | null;
   dryRun: boolean;
   activeKeyId: string;
@@ -112,6 +114,7 @@ function decryptForMigration(
 function emptyReport(dryRun: boolean, operationId: string | null, keyring: EncryptionKeyring): MigrationReport {
   const status = getKeyringStatus(keyring);
   return {
+    scope: "legacy-user-token-collections-only",
     operationId,
     dryRun,
     activeKeyId: status.activeKeyId,
@@ -128,9 +131,11 @@ function emptyReport(dryRun: boolean, operationId: string | null, keyring: Encry
   };
 }
 
-async function discover(db: Firestore): Promise<{ records: DiscoveredRecord[]; skipped: number }> {
+interface InvalidRecord { recordId: string; collection: string; reason: string }
+
+async function discover(db: Firestore): Promise<{ records: DiscoveredRecord[]; invalid: InvalidRecord[] }> {
   const records: DiscoveredRecord[] = [];
-  let skipped = 0;
+  const invalid: InvalidRecord[] = [];
   for (const target of TARGETS) {
     const snapshot = await db.collectionGroup(target.collection).get();
     for (const doc of snapshot.docs) {
@@ -138,7 +143,11 @@ async function discover(db: Firestore): Promise<{ records: DiscoveredRecord[]; s
       const data = doc.data() as Record<string, unknown>;
       const payload = payloadFrom(data, target);
       if (!identity || !payload) {
-        skipped++;
+        invalid.push({
+          recordId: recordIdFor(doc.ref.path),
+          collection: target.collection,
+          reason: !identity ? "unexpected_document_path" : "invalid_encrypted_payload",
+        });
         continue;
       }
       records.push({
@@ -152,7 +161,16 @@ async function discover(db: Firestore): Promise<{ records: DiscoveredRecord[]; s
       });
     }
   }
-  return { records, skipped };
+  return { records, invalid };
+}
+
+function recordDiscoveryFailures(report: MigrationReport, invalid: InvalidRecord[]): void {
+  for (const record of invalid) {
+    report.failed++;
+    report.byCollection[record.collection].total++;
+    report.byCollection[record.collection].failed++;
+    report.failures.push({ recordId: record.recordId, reason: record.reason });
+  }
 }
 
 function operationRef(db: Firestore, operationId: string) {
@@ -164,9 +182,23 @@ async function initializeOperation(db: Firestore, operationId: string, keyring: 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (snap.exists) {
-      const status = snap.data()?.status;
+      const existing = snap.data();
+      const status = existing?.status;
       if (status === "completed") throw new Error(`Migration operation ${operationId} is already completed`);
-      if (status === "running" && !resume) throw new Error(`Migration operation ${operationId} is already running`);
+      if (!resume || (status !== "running" && status !== "failed")) {
+        throw new Error(`Migration operation ${operationId} cannot be resumed`);
+      }
+      const keyStatus = getKeyringStatus(keyring);
+      const originalFingerprints = existing?.keyFingerprints;
+      const fingerprintsMatch = typeof originalFingerprints === "object" && originalFingerprints !== null &&
+        !Array.isArray(originalFingerprints) &&
+        Object.keys(originalFingerprints).length === keyStatus.keyIds.length &&
+        keyStatus.keyIds.every((keyId) => (originalFingerprints as Record<string, unknown>)[keyId] === keyStatus.fingerprints[keyId]);
+      if (
+        existing?.activeKeyId !== keyStatus.activeKeyId ||
+        JSON.stringify(existing?.keyIds) !== JSON.stringify(keyStatus.keyIds) ||
+        !fingerprintsMatch
+      ) throw new Error("Migration operation keyring does not match the original operation");
       tx.update(ref, { status: "running", resumedAt: Date.now() });
       return;
     }
@@ -191,13 +223,18 @@ async function migrateRecord(
   const ledgerRef = operationRef(db, operationId).collection("records").doc(record.recordId);
   const result = await db.runTransaction(async (tx) => {
     const ledger = await tx.get(ledgerRef);
-    if (ledger.exists && ledger.data()?.status === "completed") return "skipped" as const;
-
     const snap = await tx.get(record.ref);
-    if (!snap.exists) return "skipped" as const;
+    if (!snap.exists) throw new Error("record disappeared during migration");
     const data = snap.data() as Record<string, unknown>;
     const payload = payloadFrom(data, record.target);
-    if (!payload) return "skipped" as const;
+    if (!payload) throw new Error("encrypted payload disappeared during migration");
+    if (ledger.exists && ledger.data()?.status === "completed") {
+      if (ledger.data()?.keyVersion !== keyring.activeKeyId || !isCurrent(data, payload, keyring.activeKeyId)) {
+        throw new Error("completed ledger no longer matches active-key record");
+      }
+      decryptTokenDetailed(payload, record.aad, keyring.activeKeyId, keyring);
+      return "skipped" as const;
+    }
     const declared = declaredVersion(data, payload);
     const now = Date.now();
 
@@ -231,7 +268,6 @@ async function migrateRecord(
     return "rotated" as const;
   });
 
-  if (result === "skipped") return result;
   const after = await record.ref.get();
   const data = after.data() as Record<string, unknown> | undefined;
   const payload = data ? payloadFrom(data, record.target) : null;
@@ -246,8 +282,8 @@ export async function runTokenKeyMigration(options: MigrationOptions): Promise<M
   const operationId = dryRun ? null : options.operationId ?? crypto.randomUUID();
   const report = emptyReport(dryRun, operationId, keyring);
   const discovered = await discover(options.db);
-  report.skipped = discovered.skipped;
-  report.total = discovered.records.length + discovered.skipped;
+  report.total = discovered.records.length + discovered.invalid.length;
+  recordDiscoveryFailures(report, discovered.invalid);
   for (const record of discovered.records) {
     const bucket = report.byCollection[record.target.collection];
     bucket.total++;
@@ -262,14 +298,20 @@ export async function runTokenKeyMigration(options: MigrationOptions): Promise<M
       try {
         const data = (await record.ref.get()).data() as Record<string, unknown>;
         const payload = payloadFrom(data, record.target);
-        if (!payload) continue;
+        if (!payload) throw new Error("encrypted payload disappeared during dry-run");
         decryptForMigration(payload, record.aad, declaredVersion(data, payload), keyring);
         report.verified++;
       } catch {
         report.failed++;
+        report.byCollection[record.target.collection].failed++;
         report.failures.push({ recordId: record.recordId, reason: "decrypt_failed" });
       }
     }
+    return report;
+  }
+
+  if (discovered.invalid.length > 0) {
+    // Do not create a ledger or change any credential when discovery is incomplete.
     return report;
   }
 
@@ -317,8 +359,8 @@ export async function verifyTokenKeyMigration(
 ): Promise<MigrationReport> {
   const report = emptyReport(true, null, keyring);
   const discovered = await discover(db);
-  report.total = discovered.records.length + discovered.skipped;
-  report.skipped = discovered.skipped;
+  report.total = discovered.records.length + discovered.invalid.length;
+  recordDiscoveryFailures(report, discovered.invalid);
   for (const record of discovered.records) {
     report.byCollection[record.target.collection].total++;
     try {

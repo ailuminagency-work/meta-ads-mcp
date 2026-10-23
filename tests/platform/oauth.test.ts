@@ -1,5 +1,5 @@
 import express from "express";
-import type { Server } from "node:http";
+import { request as httpRequest, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryPlatformRepository } from "../../src/platform/repository.js";
 import { InMemoryConnectionChallengeStore } from "../../src/platform/connection-challenge-store.js";
@@ -106,6 +106,18 @@ it("authenticates from verified session only, guards start origin and binds secu
   expect((await fetch(base + "/start", request)).status).toBe(401);
   operator = "1001";
   expect((await fetch(base + "/start", { ...request, headers: { ...request.headers, origin: "https://foreign.invalid" } })).status).toBe(403);
+  const browserHeaders = { "content-type": "application/x-www-form-urlencoded", "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+  const browserBody = "client_id=client-fixture";
+  expect((await fetch(base + "/start", { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded" }, body: browserBody })).status).toBe(403);
+  expect((await fetch(base + "/start", { method: "POST", redirect: "manual", headers: { ...browserHeaders, "sec-fetch-site": "cross-site" }, body: browserBody })).status).toBe(403);
+  expect((await fetch(base + "/start", { method: "POST", redirect: "manual", headers: { ...browserHeaders, origin: "https://foreign.invalid" }, body: browserBody })).status).toBe(403);
+  expect((await fetch(base + "/start", { method: "POST", redirect: "manual", headers: { ...browserHeaders, origin: "https://fixture.invalid", "sec-fetch-site": "cross-site" }, body: browserBody })).status).toBe(403);
+  const browserStatus = await new Promise<number>((resolve, reject) => {
+    const req = httpRequest(base + "/start", { method: "POST", headers: browserHeaders }, res => { res.resume(); res.on("end", () => resolve(res.statusCode ?? 0)); });
+    req.on("error", reject);
+    req.end(browserBody);
+  });
+  expect(browserStatus).toBe(303);
   const started = await fetch(base + "/start", request);
   expect(started.status).toBe(303);
   const cookie = started.headers.get("set-cookie")!;

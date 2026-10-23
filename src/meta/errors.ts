@@ -51,6 +51,10 @@ const SUBCODE_DATA_PER_CALL = 1487534;
 const SUBCODE_GLOBAL_INSIGHTS_RATE = 1504022;
 const SUBCODE_TEMPORARY_BLOCK = 1487742;
 
+function isSafeMetaCode(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 /**
  * Maps a Meta Graph API error to an MCP error AND a structured classification
  * the HTTP client uses to drive retry / circuit-breaker behavior.
@@ -60,20 +64,25 @@ const SUBCODE_TEMPORARY_BLOCK = 1487742;
  *   https://developers.facebook.com/docs/marketing-api/insights/error-codes
  */
 export function classifyMetaError(error: MetaApiError): MetaErrorClassification {
-  const { code, error_subcode, message, error_user_title, error_user_msg } = error;
-
-  const metaDetails = [
-    error_user_title ? `[${error_user_title}]` : "",
-    error_user_msg ?? "",
-  ].filter(Boolean).join(" ");
-  const detailSuffix = metaDetails ? ` — ${metaDetails}` : "";
+  if (!isSafeMetaCode(error?.code) || (error.error_subcode !== undefined && !isSafeMetaCode(error.error_subcode))) {
+    return {
+      category: "unknown", retryable: false, throttled: false, critical: false,
+      mcpError: new McpError(ErrorCode.InternalError, "Meta provider error schema invalid"),
+    };
+  }
+  const { code, error_subcode } = error;
+  // Graph error text is provider-controlled and can quote request URLs, bearer
+  // tokens, or arbitrary user input. Keep the numeric code and classification,
+  // but never place those free-form fields in MCP errors or structured logs.
+  const message = "Provider detail withheld";
+  const detailSuffix = "";
 
   // ─── Abuse signal (subcode 1996) ─────────────────────────────
   // "Inconsistent request volume detected" — this is how Meta flags
   // suspicious traffic and it's a direct precursor to suspensions.
   if (error_subcode === SUBCODE_ABUSE) {
     logger.fatal(
-      { event: "META_ABUSE_SIGNAL", code, subcode: error_subcode, message },
+      { event: "META_ABUSE_SIGNAL", code, subcode: error_subcode },
       "Meta detected inconsistent request volume — treating as abuse signal",
     );
     return {
@@ -268,7 +277,10 @@ export function classifyMetaError(error: MetaApiError): MetaErrorClassification 
  * Back-compat thin wrapper used by legacy call-sites.
  */
 export function mapMetaErrorToMcp(error: MetaApiError): McpError {
-  logger.debug({ metaError: error }, "Mapping Meta API error to MCP error");
+  logger.debug({
+    code: isSafeMetaCode(error?.code) ? error.code : undefined,
+    subcode: isSafeMetaCode(error?.error_subcode) ? error.error_subcode : undefined,
+  }, "Mapping Meta API error to MCP error");
   return classifyMetaError(error).mcpError;
 }
 
@@ -278,10 +290,12 @@ export function mapMetaErrorToMcp(error: MetaApiError): McpError {
 export function isMetaApiError(
   body: unknown,
 ): body is { error: MetaApiError } {
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    "error" in body &&
-    typeof (body as Record<string, unknown>).error === "object"
-  );
+  if (typeof body !== "object" || body === null || !("error" in body)) return false;
+  const error = (body as { error: unknown }).error;
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as Record<string, unknown>;
+  return typeof candidate.message === "string"
+    && (candidate.type === undefined || typeof candidate.type === "string")
+    && isSafeMetaCode(candidate.code)
+    && (candidate.error_subcode === undefined || isSafeMetaCode(candidate.error_subcode));
 }

@@ -63,7 +63,7 @@ describe("RateLimiter", () => {
       limiter.updateFromHeaders(
         new Headers({
           "x-business-use-case-usage": JSON.stringify({
-            biz1: [
+            "101": [
               {
                 type: "ads_insights",
                 call_count: 99,
@@ -116,11 +116,28 @@ describe("RateLimiter", () => {
   });
 
   describe("updateFromHeaders", () => {
+    it("does not expose provider-controlled BUC IDs, types, tiers, or invalid numerics in snapshots", () => {
+      limiter.updateFromHeaders(new Headers({
+        "x-business-use-case-usage": JSON.stringify({
+          "access_token=SECRET123": [{ type: "ads_insights", call_count: 90 }],
+          "101": [
+            { type: "access_token=SECRET123", call_count: 90, ads_api_access_tier: "access_token=SECRET123" },
+            { type: "ads_management", call_count: "access_token=SECRET123" },
+          ],
+        }),
+      }), ctx);
+      const snap = limiter.snapshot();
+      expect(snap).toHaveLength(1);
+      expect(JSON.stringify(snap)).not.toContain("SECRET123");
+      expect(snap[0].adsApiAccessTier).toBeUndefined();
+      expect(limiter.getThrottleDelay(ctx)).toBeGreaterThan(0);
+    });
+
     it("reads x-business-use-case-usage across multiple businesses and types", () => {
       limiter.updateFromHeaders(
         new Headers({
           "x-business-use-case-usage": JSON.stringify({
-            biz_a: [
+            "101": [
               {
                 type: "ads_insights",
                 call_count: 40,
@@ -128,7 +145,7 @@ describe("RateLimiter", () => {
                 total_time: 10,
               },
             ],
-            biz_b: [
+            "202": [
               {
                 type: "ads_management",
                 call_count: 92,
@@ -166,7 +183,7 @@ describe("RateLimiter", () => {
             total_time: 0,
           }),
           "x-business-use-case-usage": JSON.stringify({
-            biz: [{ call_count: 80, total_cputime: 0, total_time: 0 }],
+            "101": [{ call_count: 80, total_cputime: 0, total_time: 0 }],
           }),
         }),
         ctx,
@@ -227,7 +244,7 @@ describe("RateLimiter", () => {
       limiter.updateFromHeaders(
         new Headers({
           "x-business-use-case-usage": JSON.stringify({
-            biz: [
+            "101": [
               {
                 type: "ads_management",
                 call_count: 10,

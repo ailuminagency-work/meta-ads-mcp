@@ -25,6 +25,8 @@ const RETRY_BASE_DELAY = 1000;
 const USAGE_LOG_INTERVAL_MS = 60_000;
 const VERSION_WARNING_LOG_INTERVAL_MS = 60 * 60_000;
 
+class ProviderHttpError extends Error {}
+
 export interface MetaApiClientConfig {
   apiVersion?: string;
   baseUrl?: string;
@@ -278,6 +280,10 @@ export class MetaApiClient {
         try { body=platformEnabled()?JSON.parse(await readBodyWithLimit(response,2_000_000)):await response.json(); }
         finally { clearTimeout(timeoutId); }
 
+        if (typeof body === "object" && body !== null && Object.hasOwn(body, "error") && !isMetaApiError(body)) {
+          if (platformEnabled()) throw new PlatformDenied("LEGACY_PROVIDER_ERROR_SCHEMA_INVALID");
+          throw new ProviderHttpError("META_PROVIDER_ERROR_SCHEMA_INVALID");
+        }
         if (isMetaApiError(body)) {
           if(platformEnabled()) {
             if(!body.error || !Number.isSafeInteger(body.error.code))throw new PlatformDenied("LEGACY_PROVIDER_ERROR_SCHEMA_INVALID");
@@ -287,7 +293,7 @@ export class MetaApiClient {
             if(typeof body.error.error_subcode !== "number" || !Number.isFinite(body.error.error_subcode))delete body.error.error_subcode;
           }
           const classification = classifyMetaError(body.error);
-          this.logMetaError(body.error, classification, context, path);
+          this.logMetaError(body.error, classification, context);
 
           if (classification.throttled) {
             // Seed the rate-limiter with the retry-after hint so sibling
@@ -314,9 +320,8 @@ export class MetaApiClient {
         }
 
         if (!response.ok) {
-          lastError = new Error(
-            platformEnabled()?`Strict provider HTTP ${response.status}`:`HTTP ${response.status}: ${JSON.stringify(body)}`,
-          );
+          // Non-Graph error bodies are just as untrusted as Graph error text.
+          lastError = new ProviderHttpError(`Meta provider HTTP ${response.status}`);
           if (response.status >= 500 && canRetryTransport && attempt < this.maxRetries) {
             await this.backoff(attempt);
             continue;
@@ -338,11 +343,11 @@ export class MetaApiClient {
         }
 
         // Already-classified errors bubble up unchanged.
-        if (error instanceof Error && "code" in error && (!platformEnabled() || error instanceof McpError)) {
+        if (error instanceof McpError || error instanceof ProviderHttpError) {
           throw error;
         }
 
-        lastError = platformEnabled() ? new Error("STRICT_PROVIDER_TRANSPORT_FAILED") : error instanceof Error ? error : new Error(String(error));
+        lastError = new Error(platformEnabled() ? "STRICT_PROVIDER_TRANSPORT_FAILED" : "META_PROVIDER_TRANSPORT_FAILED");
         if (canRetryTransport && attempt < this.maxRetries) {
           await this.backoff(attempt);
           continue;
@@ -351,7 +356,7 @@ export class MetaApiClient {
       }
     }
 
-    logger.error({ error: lastError, path }, "All retries exhausted");
+    logger.error({ error: lastError }, "All retries exhausted");
     throw lastError ?? new Error("Request failed after retries");
   }
 
@@ -398,17 +403,14 @@ export class MetaApiClient {
   }
 
   private logMetaError(
-    error: { code: number; error_subcode?: number; message: string; fbtrace_id?: string },
+    error: { code: number; error_subcode?: number },
     classification: MetaErrorClassification,
     context: RequestContext,
-    path: string,
   ): void {
     const payload = {
       event: "meta_error",
-      path,
       meta_error_code: error.code,
       meta_subcode: error.error_subcode,
-      fbtrace_id: error.fbtrace_id,
       category: classification.category,
       throttled: classification.throttled,
       retryAfterMs: classification.retryAfterMs,
@@ -416,16 +418,16 @@ export class MetaApiClient {
       accountId: context.accountId,
     };
     if (classification.critical) {
-      logger.fatal(payload, error.message);
+      logger.fatal(payload, classification.mcpError.message);
     } else if (
       classification.category === "invalid_params" ||
       classification.category === "duplicate"
     ) {
       // 4xx user-side — count as user_errors signal (Insights formula subtracts
       // 0.001 × user_errors from hourly quota).
-      logger.warn({ ...payload, event: "meta_user_error" }, error.message);
+      logger.warn({ ...payload, event: "meta_user_error" }, classification.mcpError.message);
     } else {
-      logger.error(payload, error.message);
+      logger.error(payload, classification.mcpError.message);
     }
   }
 
@@ -441,9 +443,7 @@ export class MetaApiClient {
     this.lastVersionWarningAt = now;
     logger.warn(
       { event: "meta_api_version_auto_upgraded", apiVersion: this.apiVersion },
-      platformEnabled()
-        ? "Meta reported an API version warning; review the configured supported version."
-        : `Meta auto-upgraded a call because ${this.apiVersion} is deprecated: bump DEFAULT_META_API_VERSION in src/meta/api-version.ts. Meta said: ${warning}`,
+      "Meta reported an API version warning; review the configured supported version.",
     );
   }
 
@@ -454,7 +454,7 @@ export class MetaApiClient {
     const snapshot = this.rateLimiter.snapshot();
     if (snapshot.length === 0) return;
     const rawTier = snapshot.find((b) => b.adsApiAccessTier)?.adsApiAccessTier;
-    const tier = platformEnabled() && !["development_access","standard_access","advanced_access"].includes(rawTier ?? "") ? undefined : rawTier;
+    const tier = ["development_access", "standard_access", "advanced_access"].includes(rawTier ?? "") ? rawTier : undefined;
     logger.info(
       {
         event: "meta_rate_usage",

@@ -1,4 +1,5 @@
-import { getFirestore } from "../store/firestore.js";
+import { assertMigrationFirestoreBinding, createBoundMigrationFirestore } from "./migration-firestore-binding.js";
+import { assertMigrationKeyringSource } from "./migration-keyring-source.js";
 import {
   getMigrationKeyringStatus,
   runTokenKeyMigration,
@@ -15,6 +16,8 @@ function valueAfter(name: string): string | undefined {
 }
 
 async function main(): Promise<void> {
+  assertMigrationFirestoreBinding();
+  assertMigrationKeyringSource();
   const verify = hasFlag("--verify");
   const apply = hasFlag("--apply");
   const dryRun = !apply && !verify;
@@ -31,7 +34,7 @@ async function main(): Promise<void> {
     operationId: operationId ?? null,
   }));
 
-  const db = getFirestore();
+  const db = createBoundMigrationFirestore();
   try {
     const report = verify
       ? await verifyTokenKeyMigration(db)
@@ -49,7 +52,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : "migration failed");
+main().catch(() => {
+  // Provider and credential-loader errors can contain sensitive metadata.
+  // The report carries bounded record-level diagnostic categories instead.
+  console.error("TOKEN_KEY_MIGRATION_FAILED");
   process.exitCode = 1;
 });

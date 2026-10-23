@@ -13,6 +13,16 @@ const cookieOptions = { httpOnly: true, secure: true, sameSite: "lax" as const, 
 const cookieName = (state: string): string => `__Host-lumin-connect-${state}`;
 const cookieSchema = z.object({ clientId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), nonce: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 
+function isSameOriginBrowserPost(req: express.Request, publicOrigin: string): boolean {
+  const fetchSite = req.get("sec-fetch-site");
+  const fetchMode = req.get("sec-fetch-mode");
+  const fetchDest = req.get("sec-fetch-dest");
+  if (fetchSite && fetchSite !== "same-origin") return false;
+  const suppliedOrigin = req.get("origin");
+  if (suppliedOrigin) return suppliedOrigin === publicOrigin;
+  return fetchSite === "same-origin" && fetchMode === "navigate" && fetchDest === "document";
+}
+
 export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies): express.Router {
   const origin = new URL(deps.publicOrigin);
   if (origin.protocol !== "https:" || origin.origin !== deps.publicOrigin) throw new Error("OAuth publicOrigin must be an HTTPS origin");
@@ -23,7 +33,7 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
     try {
       const operator = await deps.getSessionOperator(req);
       if (!operator) { res.sendStatus(401); return; }
-      if (req.get("origin") !== deps.publicOrigin) { res.sendStatus(403); return; }
+      if (!isSameOriginBrowserPost(req, deps.publicOrigin)) { res.sendStatus(403); return; }
       const body = z.object({ client_id: cookieSchema.shape.clientId }).strict().safeParse(req.body);
       if (!body.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) { res.sendStatus(400); return; }
       const started = await deps.service.start(operator, body.data.client_id, req.params.profileId);

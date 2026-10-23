@@ -191,11 +191,33 @@ describe("controlled token encryption migration", () => {
     const report = await runTokenKeyMigration({ db: asFirestore(db), keyring: dualKeyring });
     const after = await ref.get();
 
+    expect(report.scope).toBe("legacy-user-token-collections-only");
     expect(report.dryRun).toBe(true);
     expect(report.candidates).toBe(1);
     expect(report.failed).toBe(0);
     expect(after.data()).toEqual(before.data());
     expect([...db.docs.keys()].some((path) => path.startsWith("_lumin_migrations/"))).toBe(false);
+  });
+
+  it("fails dry-run when a discovered credential disappears before verification", async () => {
+    const db = new FakeFirestore();
+    const ref = seedMeta(db, "vanishing", {
+      encryptedToken: encryptToken("legacy-token", undefined, oldKeyring),
+      kind: "system_user",
+    });
+    const original = db.collectionGroup.bind(db);
+    db.collectionGroup = (name: string) => ({
+      get: async () => {
+        const snapshot = await original(name).get();
+        if (name === "meta_tokens") db.docs.delete(ref.path);
+        return snapshot;
+      },
+    });
+    const report = await runTokenKeyMigration({ db: asFirestore(db), keyring: dualKeyring });
+    expect(report.total).toBe(1);
+    expect(report.verified).toBe(0);
+    expect(report.failed).toBe(1);
+    expect(report.byCollection.meta_tokens.failed).toBe(1);
   });
 
   it("migrates all supported credential collections and verifies with the active key", async () => {
@@ -277,5 +299,66 @@ describe("controlled token encryption migration", () => {
     expect(report.failed).toBe(0);
     const after = (await ref.get()).data()!;
     expect(decryptToken(after.encryptedToken as never, "mcp_token:user-a:concurrent", "next", dualKeyring)).toBe("latest-writer");
+  });
+
+  it("fails verification and prevents apply when collection-group records have invalid paths or payloads", async () => {
+    const db = new FakeFirestore();
+    const valid = seedMeta(db, "valid", { encryptedToken: encryptToken("token", undefined, oldKeyring) });
+    db.write("other/client/meta_tokens/foreign", {
+      encryptedToken: encryptToken("foreign", undefined, oldKeyring),
+    }, false);
+    db.write("users/user-a/meta_tokens/malformed", { encryptedToken: "not-encrypted" }, false);
+
+    const verification = await verifyTokenKeyMigration(asFirestore(db), dualKeyring);
+    expect(verification.failed).toBe(3);
+    expect(verification.failures.map((failure) => failure.reason)).toContain("unexpected_document_path");
+    expect(verification.failures.map((failure) => failure.reason)).toContain("invalid_encrypted_payload");
+
+    const result = await runTokenKeyMigration({
+      db: asFirestore(db), keyring: dualKeyring, dryRun: false, operationId: "op-invalid-discovery",
+    });
+    expect(result.failed).toBe(2);
+    expect(result.rotated).toBe(0);
+    expect((await valid.get()).data()?.keyVersion).toBeUndefined();
+    expect([...db.docs.keys()].some((path) => path.startsWith("_lumin_migrations/"))).toBe(false);
+  });
+
+  it("rejects resume with a changed active key or changed key material", async () => {
+    const db = new FakeFirestore();
+    seedMeta(db, "bad", { encryptedToken: { ciphertext: "bad", iv: "bad", tag: "bad" } });
+    const first = await runTokenKeyMigration({
+      db: asFirestore(db), keyring: dualKeyring, dryRun: false, operationId: "op-bound-keyring",
+    });
+    expect(first.failed).toBe(1);
+
+    const alteredMaterial: EncryptionKeyring = {
+      activeKeyId: "next",
+      keys: new Map([["primary", Buffer.alloc(32, 1)], ["next", Buffer.alloc(32, 3)]]),
+    };
+    await expect(runTokenKeyMigration({
+      db: asFirestore(db), keyring: alteredMaterial, dryRun: false,
+      operationId: "op-bound-keyring", resume: true,
+    })).rejects.toThrow("keyring does not match");
+    await expect(runTokenKeyMigration({
+      db: asFirestore(db), keyring: oldKeyring, dryRun: false,
+      operationId: "op-bound-keyring", resume: true,
+    })).rejects.toThrow("keyring does not match");
+  });
+
+  it("does not count a completed ledger entry as verified when its record changed", async () => {
+    const db = new FakeFirestore();
+    const good = seedMeta(db, "good", { encryptedToken: encryptToken("good", undefined, oldKeyring) });
+    seedMeta(db, "bad", { encryptedToken: { ciphertext: "bad", iv: "bad", tag: "bad" } });
+    const first = await runTokenKeyMigration({
+      db: asFirestore(db), keyring: dualKeyring, dryRun: false, operationId: "op-ledger-change",
+    });
+    expect(first.rotated).toBe(1);
+    await good.set({ encryptedToken: encryptToken("new-old-key", undefined, oldKeyring), keyVersion: "primary" });
+    const second = await runTokenKeyMigration({
+      db: asFirestore(db), keyring: dualKeyring, dryRun: false,
+      operationId: "op-ledger-change", resume: true,
+    });
+    expect(second.failed).toBe(2);
+    expect(second.verified).toBe(0);
   });
 });

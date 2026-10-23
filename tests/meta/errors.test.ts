@@ -6,6 +6,8 @@ import {
   isMetaApiError,
 } from "../../src/meta/errors.js";
 import type { MetaApiError } from "../../src/meta/types/common.js";
+import { logger } from "../../src/utils/logger.js";
+import { vi } from "vitest";
 
 describe("isMetaApiError", () => {
   it("returns true for valid Meta API error response", () => {
@@ -14,6 +16,10 @@ describe("isMetaApiError", () => {
         error: { message: "test", type: "OAuthException", code: 190 },
       }),
     ).toBe(true);
+  });
+
+  it("accepts Graph errors that omit the optional type field", () => {
+    expect(isMetaApiError({ error: { message: "Invalid parameter", code: 100 } })).toBe(true);
   });
 
   it("returns false for null", () => {
@@ -32,8 +38,10 @@ describe("isMetaApiError", () => {
     expect(isMetaApiError({ error: "string" })).toBe(false);
   });
 
-  it("returns true even with minimal error object", () => {
-    expect(isMetaApiError({ error: {} })).toBe(true);
+  it("rejects malformed and credential-shaped error codes", () => {
+    expect(isMetaApiError({ error: {} })).toBe(false);
+    expect(isMetaApiError({ error: { message: "bad", type: "OAuthException", code: "access_token=SECRET123" } })).toBe(false);
+    expect(isMetaApiError({ error: { message: "bad", type: "OAuthException", code: 100, error_subcode: "access_token=SECRET123" } })).toBe(false);
   });
 });
 
@@ -108,11 +116,25 @@ describe("mapMetaErrorToMcp (legacy)", () => {
     expect(err.message).toContain("code 9999");
   });
 
-  it("includes original Meta error message", () => {
+  it("does not surface provider-controlled Meta error text", () => {
     const err = mapMetaErrorToMcp(
-      makeError({ code: 190, message: "Token expired at 2024-01-01" }),
+      makeError({ code: 190, message: "Bad https://graph.facebook.com/me?access_token=SECRET123" }),
     );
-    expect(err.message).toContain("Token expired at 2024-01-01");
+    expect(err.message).toContain("Invalid or expired access token");
+    expect(err.message).not.toContain("SECRET123");
+  });
+
+  it("does not log or return a runtime-invalid code or subcode through the exported wrapper", () => {
+    const debug = vi.spyOn(logger, "debug").mockImplementation(() => undefined);
+    try {
+      const malformed = { code: "access_token=SECRET123", error_subcode: "access_token=SECRET123", message: "unsafe", type: "OAuthException" } as unknown as MetaApiError;
+      const result = mapMetaErrorToMcp(malformed);
+      expect(result.message).toContain("provider error schema invalid");
+      expect(result.message).not.toContain("SECRET123");
+      expect(JSON.stringify(debug.mock.calls)).not.toContain("SECRET123");
+    } finally {
+      debug.mockRestore();
+    }
   });
 });
 

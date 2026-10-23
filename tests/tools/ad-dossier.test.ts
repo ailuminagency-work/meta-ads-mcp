@@ -217,7 +217,7 @@ describe("ads_get_ad_dossier", () => {
   it("fails the whole call only when the ad itself cannot be read", async () => {
     vi.stubGlobal("fetch", routeFetch({ "/8001": graphError("ad not found") }));
     const { call } = setup();
-    await expect(call({})).rejects.toThrow(/ad not found/);
+    await expect(call({})).rejects.toThrow(/Invalid parameter/);
   });
 
   it("survives an ad whose creative was deleted", async () => {
@@ -677,7 +677,8 @@ describe("round-5 review fixes", () => {
     const { call } = setup();
     const error = (await call({}).catch((e: Error) => e)) as Error;
     expect(error.message).not.toContain("SECRET123");
-    expect(error.message).toMatch(/graph\.facebook\.com/);
+    expect(error.message).toContain("Invalid parameter");
+    expect(error.message).not.toContain("graph.facebook.com");
   });
 
   it("claims thumbnail delivery only when a poster actually became a block", async () => {
