@@ -19,6 +19,7 @@ import { ImmutableOAuthProfileRegistry, PlatformOAuthService, atomicConnectionEn
 import { FacebookBusinessOAuthAdapter } from "./oauth-facebook.js";
 import { createThreadsOAuthAdapter } from "./oauth-threads.js";
 import { createPlatformOAuthRouter } from "./oauth-router.js";
+import { createOAuthStartProof } from "./oauth-start-proof.js";
 import { FirestoreConnectionChallengeStore } from "./connection-challenge-store.js";
 import { PlatformDenied } from "./models.js";
 
@@ -65,7 +66,7 @@ export function platformConnectionRouters(origin:string):{oauth:express.Router;c
         const label=escape(p.id.replace(/[_-]/g," "));const action=p.provider==="META_WHATSAPP"?"embedded-signup":"start";
         const note=p.provider==="META_MARKETING"&&p.tokenTypes.length===1&&p.tokenTypes[0]==="page"?"We use the approved Page access only to verify the Page role. It remains encrypted, scoped to this client, and expires with the connection.":"Meta will show the exact permissions before you approve.";
         const form=adapters.get(p.provider).verified
-          ? `<form method="post" action="/platform/oauth/${escape(p.id)}/${action}"><label for="client-${escape(p.id)}">Authorized client</label><select id="client-${escape(p.id)}" name="client_id" required>${options}</select><button type="submit">Continue to secure consent <span aria-hidden="true">→</span></button><small>Read-only onboarding is enabled. No ads, messages, budgets, or spend are changed.</small></form>`
+          ? `<form method="post" action="/platform/oauth/${escape(p.id)}/${action}">${action==="start"?`<input type="hidden" name="start_proof" value="${escape(createOAuthStartProof(process.env.OAUTH_SECRET??"",principal.operatorId,p.id))}">`:""}<label for="client-${escape(p.id)}">Authorized client</label><select id="client-${escape(p.id)}" name="client_id" required>${options}</select><button type="submit">Continue to secure consent <span aria-hidden="true">→</span></button><small>Read-only onboarding is enabled. No ads, messages, budgets, or spend are changed.</small></form>`
           : `<p class="muted">Additional owner-reviewed setup is required before this product can connect.</p>`;
         return `<article class="product-card"><div class="product-icon" aria-hidden="true">${p.provider==="META_MARKETING"?"M":"•"}</div><div class="product-copy"><div class="eyebrow">Product connection</div><h2>${label}</h2><p>${note}</p>${form}</div></article>`;
       }).join("");
