@@ -331,6 +331,25 @@ function extractApiKey(req: express.Request): string | undefined {
   return undefined;
 }
 
+function sendMcpAuthRequired(
+  res: express.Response,
+  serverUrl: URL,
+  message: string,
+): void {
+  const metadataUrl = new URL("/.well-known/oauth-protected-resource", serverUrl).href;
+  res.setHeader(
+    "WWW-Authenticate",
+    `Bearer realm="mcp", resource_metadata="${metadataUrl}"`,
+  );
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Vary", "Authorization, X-API-Key");
+  res.status(401).json({
+    jsonrpc: "2.0",
+    error: { code: -32001, message },
+    id: null,
+  });
+}
+
 function createCombinedAuthMiddleware(
   oauthMiddleware: express.RequestHandler,
 ): express.RequestHandler {
@@ -407,22 +426,22 @@ export function buildMetaTokenMiddleware(
           },
           "Failed to resolve user Meta token",
         );
-        res.status(401).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32001,
-            message:
-              "No Meta token connected for this user. Please re-authenticate via /authorize.",
-          },
-          id: null,
-        });
+        sendMcpAuthRequired(
+          res,
+          serverUrl,
+          "No Meta token connected for this user. Reconnect via /authorize.",
+        );
         return;
       }
     }
 
     const managerToken = tokenManager.getActiveToken();
     if (process.env.DEPLOYMENT_MODE === "agency") {
-      res.status(401).json({ error: "A connected agency user is required" });
+      sendMcpAuthRequired(
+        res,
+        serverUrl,
+        "A connected agency user is required. Reconnect via /authorize.",
+      );
       return;
     }
     if (managerToken) {
@@ -436,6 +455,14 @@ export function buildMetaTokenMiddleware(
       return;
     }
 
+    if (multiTenantEnabled) {
+      sendMcpAuthRequired(
+        res,
+        serverUrl,
+        "No Meta connection is linked to this MCP authorization. Reconnect via /authorize.",
+      );
+      return;
+    }
     logger.error("No Meta access token available for this request");
     res.status(500).json({
       jsonrpc: "2.0",
