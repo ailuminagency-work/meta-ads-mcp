@@ -814,6 +814,8 @@ export async function startHttpTransport(
   app.use("/register", createRateLimiter(20, 15 * 60 * 1000));
   app.use("/token", createRateLimiter(60, 15 * 60 * 1000));
 
+  oauthProvider.configure({ defaultResource: new URL("/mcp", serverUrl), requireRedirectUri: true });
+
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
@@ -822,7 +824,11 @@ export async function startHttpTransport(
     }),
   );
 
-  const oauthBearerAuth = requireBearerAuth({ verifier: oauthProvider });
+  const oauthBearerAuth = requireBearerAuth({
+    verifier: oauthProvider,
+    resourceMetadataUrl: new URL("/.well-known/oauth-protected-resource/mcp", serverUrl).href,
+    expectedResource: new URL("/mcp", serverUrl),
+  });
   const auth = createCombinedAuthMiddleware(oauthBearerAuth);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
