@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerLeadTools } from "../../src/tools/leads.js";
+import { requestContext } from "../../src/auth/token-store.js";
 import { createMockMcpServer, setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
 
 describe("registerLeadTools", () => {
@@ -46,14 +47,17 @@ describe("registerLeadTools", () => {
         ],
       };
 
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse(mockData)));
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "60123", access_token: "synthetic-page-token" }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "60123" }))
+        .mockResolvedValueOnce(mockFetchResponse(mockData)));
 
       const handler = server._registeredTools[0].handler;
-      const result = await handler({
+      const result = await requestContext.run({ fbUserId: "100", accessToken: "synthetic-user-token" }, () => handler({
         page_id: "60123",
         limit: 25,
         fields: undefined,
-      }) as { content: Array<{ type: string; text: string }> };
+      })) as { content: Array<{ type: string; text: string }> };
 
       expect(result.content[0].text).toContain("Found 1 lead form(s)");
       expect(result.content[0].text).toContain("Contact Form");
