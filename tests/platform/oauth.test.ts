@@ -1,3 +1,5 @@
+import {logger} from "../../src/utils/logger.js";
+import {PlatformDenied} from "../../src/platform/models.js";
 import express from "express";
 import { request as httpRequest, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -131,3 +133,12 @@ it("authenticates from verified session only, guards start origin and binds secu
 });
 
 it.each(["valid","unsafe-link","unavailable-link"])("renders safe browser completion without changing successful OAuth when next step is %s",async mode=>{const {service}=await fixture(),app=express();app.use("/platform/oauth",createPlatformOAuthRouter({service,publicOrigin:"https://fixture.invalid",getSessionOperator:async()=>"1001",getNextSteps:async()=>{if(mode==="unavailable-link")throw Error("internal dependency unavailable");return [{label:"Review client business ownership",path:mode==="unsafe-link"?"https://foreign.invalid/":"/platform/business-owner/client-fixture/700/source-connection"}];}}));server=app.listen(0,"127.0.0.1");await new Promise<void>(r=>server!.once("listening",r));const base=`http://127.0.0.1:${(server.address() as {port:number}).port}/platform/oauth/${profile.id}`,started=await fetch(base+"/start",{method:"POST",redirect:"manual",headers:{origin:"https://fixture.invalid","content-type":"application/json"},body:JSON.stringify({client_id:"client-fixture"})}),state=new URL(started.headers.get("location")!).searchParams.get("state")!,response=await fetch(`${base}/callback?state=${state}&code=fixture`,{headers:{cookie:started.headers.get("set-cookie")!.split(";")[0],accept:"text/html"}}),html=await response.text();expect(response.status).toBe(200);expect(response.headers.get("content-type")).toContain("text/html");expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");expect(html).toContain("Client product connected");expect(html).toContain("does not verify client ownership or billing");expect(html).not.toContain("foreign.invalid");expect(html).not.toContain("internal dependency");expect(html.includes('href="/platform/business-owner/')).toBe(mode==="valid");});
+
+it.each(["FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED","synthetic-private-provider-secret"])("logs safe provider category before generic callback wrapping: %s",async reason=>{
+ const warn=vi.spyOn(logger,"warn").mockImplementation(()=>{});
+ try{const {service,exchange,callback,repo}=await fixture();exchange.mockRejectedValue(new PlatformDenied(reason));const started=await service.start("1001","client-fixture",profile.id);
+ await expect(callback(started.state,started.browserNonce)).rejects.toThrow("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");
+ expect(warn).toHaveBeenCalledWith({event:"platform_oauth_failure",stage:"provider_exchange",reason:reason==="FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED"?reason:"UNEXPECTED_INTERNAL_FAILURE"},"Platform OAuth failed");
+ expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private");expect(await repo.list("connections","tenant-fixture")).toHaveLength(0);
+ }finally{warn.mockRestore();}
+});

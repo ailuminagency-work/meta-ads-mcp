@@ -1,3 +1,4 @@
+import {logOAuthFailure} from "./oauth-diagnostics.js";
 import {isCrmOAuthProfile,crmOAuthRoots} from "./crm-oauth.js";
 import {isSignalDatasetOAuthProfile,signalDatasetOAuthRoots} from "./dataset-oauth.js";
 import {isAppPromotionOAuthProfile,appPromotionOAuthRoots} from "./app-promotion-oauth.js";
@@ -191,7 +192,7 @@ export class PlatformOAuthService {
       const exchange={code:input.code,profile,appSecret,requestedAssets,...(crmRoots?{registeredAssets:structuredClone(crmRoots)}:signalDatasetRoots?{registeredAssets:structuredClone(signalDatasetRoots)}:appPromotionRoots?{registeredAssets:structuredClone(appPromotionRoots)}:invoiceProof?{registeredAssets:structuredClone([invoiceProof.business,...invoiceProof.accounts])}:studyProof?{registeredAssets:structuredClone([studyProof.business,studyProof.account,...studyProof.campaigns])}:controlProof?{registeredAssets:structuredClone(controlProof.assets)}:{}),expectedOperatorId:input.operatorId};
       const raw=adapter.exchangeAndInspectMany?await adapter.exchangeAndInspectMany(exchange):[await adapter.exchangeAndInspect(exchange)];
       inspectedTokens=z.array(inspectedTokenSchema).min(1).max(32).parse(raw);
-    }catch{throw new PlatformDenied("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");}
+    }catch(error){logOAuthFailure("provider_exchange",error);throw new PlatformDenied("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");}
     const enrollments:ConnectionEnrollment[]=[];
     for(const inspected of inspectedTokens){
     const now = this.now();
