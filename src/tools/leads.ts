@@ -6,6 +6,8 @@ import { truncateResponse, validateMetaId } from "../utils/format.js";
 import { LEAD_FORM_DEFAULT_FIELDS, LEAD_DEFAULT_FIELDS } from "../meta/types/lead.js";
 import type { LeadForm, Lead, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, WRITE_WARNING } from "./_register.js";
+import { readPageLeadForms } from "../meta/page-lead-forms.js";
+import { platformEnabled } from "../platform/runtime.js";
 
 export function registerLeadTools(server: McpServer): void {
   // ─── Get Lead Forms ───────────────────────────────────────────
@@ -25,10 +27,10 @@ export function registerLeadTools(server: McpServer): void {
       const id = validateMetaId(page_id, "page");
       const fieldsParam = buildFieldsParam(fields, [...LEAD_FORM_DEFAULT_FIELDS]);
 
-      const response = await metaApiClient.get<MetaApiResponse<LeadForm>>(
+      const response = platformEnabled() ? await metaApiClient.get<MetaApiResponse<LeadForm>>(
         `/${id}/leadgen_forms`,
         { fields: fieldsParam, limit },
-      );
+      ) : await readPageLeadForms(id, limit, fieldsParam.split(","));
       const forms = response.data ?? [];
 
       const text =
