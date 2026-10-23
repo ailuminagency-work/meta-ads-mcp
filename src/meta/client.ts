@@ -79,6 +79,62 @@ export class MetaApiClient {
     return this.execute<T>("GET", url, path);
   }
 
+  /**
+   * Read the lead forms for one Page with the Page Access Token issued for
+   * that exact Page. Meta rejects this edge when the user token is sent
+   * directly (error 190 / "must be called with a Page Access Token").
+   *
+   * The token is resolved and used only in memory. It is never returned,
+   * logged, or placed in a response. The strict platform path has its own
+   * page-token proof and must not be bypassed by this legacy helper.
+   */
+  async getPageLeadForms<T>(
+    pageId: string,
+    params?: Record<string, string | number | boolean | undefined>,
+  ): Promise<T> {
+    if (platformEnabled()) {
+      throw new PlatformDenied("PAGE_TOKEN_CERTIFICATION_REQUIRED");
+    }
+    if (!/^\d{1,32}$/.test(pageId)) {
+      throw new PlatformDenied("PAGE_TOKEN_PAGE_ID_INVALID");
+    }
+
+    const userToken = getAccessToken();
+    const accounts = await this.getWithBearerToken<{
+      data?: Array<{ id?: string; access_token?: string; tasks?: string[] }>;
+    }>(
+      "/me/accounts",
+      { fields: "id,access_token,tasks", limit: 100 },
+      userToken,
+    );
+    const matches = (accounts.data ?? []).filter((row) => row.id === pageId);
+    if (
+      matches.length !== 1 ||
+      typeof matches[0].access_token !== "string" ||
+      !matches[0].access_token ||
+      !Array.isArray(matches[0].tasks) ||
+      new Set(matches[0].tasks).size !== matches[0].tasks.length
+    ) {
+      throw new PlatformDenied("META_PAGE_ACCESS_TOKEN_UNAVAILABLE");
+    }
+
+    const pageToken = matches[0].access_token;
+    const identity = await this.getWithBearerToken<{ id?: string }>(
+      `/${pageId}`,
+      { fields: "id" },
+      pageToken,
+    );
+    if (identity.id !== pageId) {
+      throw new PlatformDenied("META_PAGE_TOKEN_IDENTITY_MISMATCH");
+    }
+
+    return this.getWithBearerToken<T>(
+      `/${pageId}/leadgen_forms`,
+      params,
+      pageToken,
+    );
+  }
+
   async post<T>(
     path: string,
     body?: Record<string, unknown>,
@@ -187,11 +243,15 @@ export class MetaApiClient {
     options?: RequestInit,
     skipTokenParam = false,
     scope?: RequestScope,
+    tokenOverride?: string,
   ): Promise<T> {
     await assertLegacyReadEgress(method,path,url);
-    const token = platformEnabled()
+    if (platformEnabled() && tokenOverride !== undefined) {
+      throw new PlatformDenied("STRICT_PAGE_TOKEN_OVERRIDE_DENIED");
+    }
+    const token = tokenOverride ?? (platformEnabled()
       ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),async selected=>selected)
-      : getAccessToken();
+      : getAccessToken());
     const tokenHash = hashToken(token);
     const accountId = scope?.accountId ?? extractAccountId(path);
     const context: RequestContext = { tokenHash, accountId };
@@ -353,6 +413,18 @@ export class MetaApiClient {
 
     logger.error({ error: lastError, path }, "All retries exhausted");
     throw lastError ?? new Error("Request failed after retries");
+  }
+
+  private async getWithBearerToken<T>(
+    path: string,
+    params: Record<string, string | number | boolean | undefined> | undefined,
+    token: string,
+  ): Promise<T> {
+    if (!token || /[\s\x00-\x1f\x7f]/.test(token)) {
+      throw new PlatformDenied("META_PAGE_TOKEN_INVALID");
+    }
+    const url = this.buildUrl(path, params);
+    return this.execute<T>("GET", url, path, undefined, false, undefined, token);
   }
 
   private appendToken(url: string, token: string): string {
