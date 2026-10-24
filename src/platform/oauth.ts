@@ -228,12 +228,13 @@ export class PlatformOAuthService {
     const registeredDuringDiscovery=(await this.deps.repository.list("assets",fresh.principal.tenantId)).some(a=>a.tenantId===fresh.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
     if(registeredDuringDiscovery)throw new PlatformDenied("OAUTH_REGISTERED_ASSET_PATH_REQUIRED");
     const transactionId=randomUUID(),expiresAt=Math.min(inspected.expiresAt,now+300000),inspection:OAuthDiscoveryInspection={provider:inspected.provider,appId:inspected.appId,subjectId:inspected.subjectId,tokenType:inspected.tokenType,grantedScopes:[...inspected.grantedScopes],...(observed?{grantedPermissionProfiles:observed}:{}),expiresAt:inspected.expiresAt};
-    await store.create({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,token:inspected.accessToken,inspection,candidates,expiresAt});
+    const expectedCandidates=structuredClone(candidates), expectedInspection=structuredClone(inspection);
+    await store.create({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,token:inspected.accessToken,inspection:structuredClone(expectedInspection),candidates:structuredClone(expectedCandidates),expiresAt});
     let started;
-    try { started=oauthDiscoveryHandoffSchema.parse(await registration.begin({transactionId,tenantId:fresh.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,inspection,candidates,expiresAt,expectedRevisions:{tenant:fresh.tenant.registryRevision,member:fresh.member.revision,client:fresh.client.revision}})); }
+    try { started=oauthDiscoveryHandoffSchema.parse(await registration.begin({transactionId,tenantId:fresh.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,inspection:structuredClone(expectedInspection),candidates:structuredClone(expectedCandidates),expiresAt,expectedRevisions:{tenant:fresh.tenant.registryRevision,member:fresh.member.revision,client:fresh.client.revision}})); }
     catch { throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID"); }
-    if(started.transactionId!==transactionId||started.expiresAt<=now||started.expiresAt>expiresAt||canonicalJson(started.candidates)!==canonicalJson(candidates))throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID");
-    return {status:"DISCOVERY_REQUIRED",transactionId,expiresAt:started.expiresAt,candidates:structuredClone(candidates)};
+    if(started.transactionId!==transactionId||started.expiresAt<=this.now()||started.expiresAt>expiresAt||canonicalJson(started.candidates)!==canonicalJson(expectedCandidates))throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID");
+    return {status:"DISCOVERY_REQUIRED",transactionId,expiresAt:started.expiresAt,candidates:structuredClone(expectedCandidates)};
   }
   async callback(input: { operatorId: string; clientId: string; profileId: string; state: string; browserNonce: string; code: string }): Promise<{ connectionId: string; connectionIds:string[];connectionCount:number;provider: Connection["provider"]; assetCount: number }> {
     if (!input.code || input.code.length > 4096) throw new PlatformDenied("INVALID_OAUTH_CALLBACK");
