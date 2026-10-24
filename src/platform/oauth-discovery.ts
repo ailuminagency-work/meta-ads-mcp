@@ -36,12 +36,14 @@ export interface OAuthAssetRegistrationBridge {
     candidates: OAuthAssetDiscoveryCandidate[];
     expiresAt: number;
     expectedRevisions: { tenant: number; member: number; client: number };
-  }): Promise<{ transactionId: string; expiresAt: number; candidates: OAuthAssetDiscoveryCandidate[] }>;
+  }): Promise<{ transactionId: string; expiresAt: number; candidates: OAuthAssetDiscoveryCandidate[]; registrationId: string; revision: number }>;
   commit(input: {
     transactionId: string;
     tenantId: string;
     clientId: string;
     operatorId: string;
+    provider: OAuthDiscoveryInspection["provider"];
+    appId: string;
     selectedAssets: AssetRef[];
     registrationId: string;
     expectedRevision: number;
@@ -52,6 +54,8 @@ export interface OAuthAssetRegistrationBridge {
 export const oauthDiscoveryHandoffSchema = z.object({
   transactionId: z.string().uuid(),
   expiresAt: z.number().int().positive().finite(),
+  registrationId: z.string().uuid(),
+  revision: z.number().int().positive().finite(),
   candidates: z.array(z.object({
     type: z.literal("AD_ACCOUNT"),
     id: z.string().regex(/^\d{1,100}$/),
@@ -78,6 +82,16 @@ export interface OAuthDiscoveryTransactionStore {
     candidates: OAuthAssetDiscoveryCandidate[];
     expiresAt: number;
   }): Promise<void>;
+  read(input: { transactionId: string; tenantId: string; clientId: string; operatorId: string; now: number }): Promise<{
+    profileId: string;
+    appId: string;
+    inspection: OAuthDiscoveryInspection;
+    candidates: OAuthAssetDiscoveryCandidate[];
+    expiresAt: number;
+  } | null>;
+  readSecret(input: { transactionId: string; tenantId: string; clientId: string; operatorId: string; now: number }): Promise<{
+    token: string; inspection: OAuthDiscoveryInspection; candidates: OAuthAssetDiscoveryCandidate[]; expiresAt: number;
+  } | null>;
   consume(input: {
     transactionId: string;
     tenantId: string;
@@ -97,4 +111,7 @@ export interface OAuthDiscoveryRequired {
   transactionId: string;
   expiresAt: number;
   candidates: OAuthAssetDiscoveryCandidate[];
+  registrationId: string;
+  revision: number;
 }
+

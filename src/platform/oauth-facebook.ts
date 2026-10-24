@@ -285,6 +285,24 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
   async discoverAssets(input:{code:string;profile:TrustedOAuthProfile;appSecret:string}):Promise<InspectedOAuthToken> {
     return this.exchangeAndInspect({ ...input, requestedAssets:[], discoveryOnly:true });
   }
+  async inspectAccessToken(input:{accessToken:string;profile:TrustedOAuthProfile;appSecret:string;requestedAssets:AssetRef[];registeredAssets?:MetaAsset[];expectedOperatorId?:string}):Promise<InspectedOAuthToken> {
+    this.validateProfile(input.profile);
+    if(!TOKEN.safeParse(input.accessToken).success||!TOKEN.safeParse(input.appSecret).success)throw new PlatformDenied("FACEBOOK_OAUTH_INPUT_INVALID");
+    const debug=parseDebugTokenResponse(await this.get("/debug_token",{input_token:input.accessToken},`${input.profile.appId}|${input.appSecret}`));
+    if(String(debug.app_id)!==input.profile.appId)throw new PlatformDenied("FACEBOOK_ACTUAL_APP_ID_REQUIRED");
+    const permissionProfiles=classifyMetaPermissionProfiles(input.profile.scopes,debug.scopes);
+    if(permissionProfiles===null||new Set(debug.scopes).size!==debug.scopes.length)throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
+    const checkedAt=this.now(), expiry=debug.expires_at>0?debug.expires_at*1000:0;
+    if(!Number.isSafeInteger(expiry)||expiry<=checkedAt)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRED");
+    const me=parse(z.object({id:ID}),await this.get("/me",{fields:"id"},input.accessToken),"FACEBOOK_OAUTH_USER_RESPONSE_INVALID");
+    if(me.id!==debug.user_id||input.expectedOperatorId&&me.id!==input.expectedOperatorId)throw new PlatformDenied("FACEBOOK_ACTUAL_USER_SUBJECT_REQUIRED");
+    const permissions=parse(permissionResponse,await this.get("/me/permissions",{},input.accessToken),"FACEBOOK_OAUTH_PERMISSION_RESPONSE_INVALID");
+    if(permissions.paging?.next||new Set(permissions.data.map(p=>p.permission)).size!==permissions.data.length)throw new PlatformDenied("FACEBOOK_PERMISSION_INSPECTION_INCOMPLETE");
+    const granted=permissions.data.filter(p=>p.status==="granted").map(p=>p.permission);
+    if(scopeKey(granted)!==scopeKey(debug.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_GRANTED_PERMISSIONS_REQUIRED");
+    const assets=await this.proveAssets(input.accessToken,input.requestedAssets,input.registeredAssets,input.profile.marketingControlMode,input.profile.capabilities.includes(INVOICE_METADATA_CAPABILITY));
+    return {accessToken:input.accessToken,provider:this.provider,appId:input.profile.appId,subjectId:me.id,tokenType:"user",grantedScopes:granted,expiresAt:expiry,assets,...(scopeKey(granted)!==scopeKey(input.profile.scopes)?{grantedPermissionProfiles:permissionProfiles!}:{})};
+  }
   async exchangeAndInspect(input:{code:string;profile:TrustedOAuthProfile;appSecret:string;requestedAssets:AssetRef[];registeredAssets?:MetaAsset[];discoveryOnly?:boolean}):Promise<InspectedOAuthToken> {
     this.validate(input.profile,input.appSecret,input.requestedAssets,input.code,input.registeredAssets,input.discoveryOnly===true);
     const {profile,appSecret}=input;
@@ -324,3 +342,4 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
   }
 
 }
+

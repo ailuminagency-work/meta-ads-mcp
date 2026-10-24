@@ -39,7 +39,7 @@ describe("protected incremental OAuth service", () => {
     await repo.put("clients","tenant-discovery","client-discovery",{id:"client-discovery",tenantId:"tenant-discovery",status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
     const token="synthetic-discovery-token";
     const store={create:vi.fn(async()=>{}),consume:vi.fn(async()=>null)};
-    const bridge:OAuthAssetRegistrationBridge={begin:vi.fn(async(input)=>({transactionId:input.transactionId,expiresAt:input.expiresAt,candidates:input.candidates})),commit:vi.fn()};
+    const bridge:OAuthAssetRegistrationBridge={begin:vi.fn(async(input)=>({transactionId:input.transactionId,expiresAt:input.expiresAt,candidates:input.candidates,registrationId:"00000000-0000-4000-8000-000000000001",revision:input.expectedRevisions.client})),commit:vi.fn()};
     const adapter:VerifiedProviderAdapter={provider:"META_MARKETING",verified:true,validateProfile:()=>{},validateEnrollmentContext:()=>{},exchangeAndInspect:async()=>{throw new Error("not reached")},discoverAssets:async()=>({accessToken:token,provider:"META_MARKETING",appId:marketing.appId,subjectId:"1003",tokenType:"user",grantedScopes:[...marketing.scopes],expiresAt:now+3600000,assets:[{type:"AD_ACCOUNT",id:"101",tasks:[]},{type:"AD_ACCOUNT",id:"102",tasks:[]}]})};
     const service=new PlatformOAuthService({repository:repo,challenges:new InMemoryConnectionChallengeStore(),profiles:new ImmutableOAuthProfileRegistry([marketing]),secrets:{get:async()=>"synthetic-secret"},adapters:{get:()=>adapter},discoveryStore:store,assetRegistration:bridge});
     const start=await service.start("1003","client-discovery",marketing.id);
@@ -63,7 +63,7 @@ describe("protected incremental OAuth service", () => {
     await repo.put("clients","tenant-discovery-substitution","client-discovery-substitution",{id:"client-discovery-substitution",tenantId:"tenant-discovery-substitution",status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
     const adapter:VerifiedProviderAdapter={provider:"META_MARKETING",verified:true,validateProfile:()=>{},validateEnrollmentContext:()=>{},exchangeAndInspect:async()=>{throw new Error("not reached")},discoverAssets:async()=>({accessToken:"synthetic-discovery-token",provider:"META_MARKETING",appId:marketing.appId,subjectId:"1004",tokenType:"user",grantedScopes:[...marketing.scopes],expiresAt:now+3600000,assets:[{type:"AD_ACCOUNT",id:"101",tasks:[]}]})};
     const store={create:vi.fn(async()=>{}),consume:vi.fn(async()=>null)};
-    const bridge:OAuthAssetRegistrationBridge={begin:vi.fn(async(input)=>{input.candidates[0].id="999";input.candidates[0].providerAssetId="999";return {transactionId:input.transactionId,expiresAt:input.expiresAt,candidates:input.candidates};}),commit:vi.fn()};
+    const bridge:OAuthAssetRegistrationBridge={begin:vi.fn(async(input)=>{input.candidates[0].id="999";input.candidates[0].providerAssetId="999";return {transactionId:input.transactionId,expiresAt:input.expiresAt,candidates:input.candidates,registrationId:"00000000-0000-4000-8000-000000000002",revision:input.expectedRevisions.client};}),commit:vi.fn()};
     const service=new PlatformOAuthService({repository:repo,challenges:new InMemoryConnectionChallengeStore(),profiles:new ImmutableOAuthProfileRegistry([marketing]),secrets:{get:async()=>"synthetic-secret"},adapters:{get:()=>adapter},discoveryStore:store,assetRegistration:bridge});
     const start=await service.start("1004","client-discovery-substitution",marketing.id);
     await expect(service.discoverFirstTime({operatorId:"1004",clientId:"client-discovery-substitution",profileId:marketing.id,state:start.state,browserNonce:start.browserNonce,code:"synthetic-code"})).rejects.toThrow("OAUTH_DISCOVERY_HANDOFF_INVALID");
@@ -218,4 +218,5 @@ it.each(["FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED","synthetic-private-provider-s
  expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private");expect(await repo.list("connections","tenant-fixture")).toHaveLength(0);
  }finally{warn.mockRestore();}
 });
+
 

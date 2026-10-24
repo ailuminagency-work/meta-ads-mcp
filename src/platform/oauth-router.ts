@@ -86,6 +86,18 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
       res.redirect(303, started.authorizeUrl);
     } catch { res.status(503).json({ status: "HOLD", reason: "OAUTH_START_UNAVAILABLE" }); }
   });
+  router.post("/:profileId/discovery/:transactionId/associate", async (req, res) => {
+    try {
+      const operator = await deps.getSessionOperator(req);
+      if (!operator || !isSameOriginBrowserPost(req, deps.publicOrigin)) { res.sendStatus(403); return; }
+      const body = z.object({ registration_id: z.string().uuid(), revision: z.coerce.number().int().positive(), client_id: cookieSchema.shape.clientId, asset_ids: z.union([z.string().regex(/^\d{1,100}$/), z.array(z.string().regex(/^\d{1,100}$/)).max(98)]) }).strict().safeParse(req.body);
+      if (!body.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId) || !/^[0-9a-f-]{36}$/.test(req.params.transactionId)) { res.sendStatus(400); return; }
+      const ids = Array.isArray(body.data.asset_ids) ? body.data.asset_ids : [body.data.asset_ids];
+      const connected = await deps.service.associateFirstTime({ operatorId: operator, clientId: body.data.client_id, profileId: req.params.profileId, transactionId: req.params.transactionId, registrationId: body.data.registration_id, expectedRevision: body.data.revision, selectedAssets: ids.map(id => ({ type: "AD_ACCOUNT" as const, id })) });
+      if (req.get("accept")?.includes("text/html")) { res.setHeader("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"); res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><title>Client ad account connected</title><h1>Client ad account connected</h1><p>The selected Meta ad account was rechecked and enrolled for client ${body.data.client_id}. No campaign or budget action was performed.</p><p><a href="/platform/connections/">Return to client connections</a></p></html>`); return; }
+      res.json({ status: "CONNECTED", ...connected });
+    } catch (error) { logOAuthFailure("callback", error); callbackHold(req, res, 503, "CALLBACK_SERVICE_REVIEW"); }
+  });
   router.get("/:profileId/callback", async (req, res) => {
     try {
       const operator = await deps.getSessionOperator(req);
@@ -110,7 +122,8 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
         if(req.get("accept")?.includes("text/html")){
           const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
           res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'");
-          res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Choose a client ad account</title><h1>Choose a client ad account</h1><p>Meta access was inspected. Select an account in the client registry to finish connection. No credential or advertising action has been enabled.</p><ul>${result.candidates.map(candidate=>`<li>${escape(candidate.type)} ${escape(candidate.id)}</li>`).join("")}</ul><p>Discovery expires at ${escape(new Date(result.expiresAt).toISOString())}. Return to <a href="/platform/connections/">client connections</a> after the client asset association is approved.</p></html>`);
+          const options=result.candidates.map(candidate=>`<label><input type="checkbox" name="asset_ids" value="${escape(candidate.id)}"> ${escape(candidate.type)} ${escape(candidate.id)}</label><br>`).join("");
+          res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Choose a client ad account</title><h1>Choose a client ad account</h1><p>Meta access was inspected. Select the account(s) to associate with client ${escape(cookie.data.clientId)}. The token remains server-side until this approval is committed.</p><form method="post" action="/platform/oauth/${escape(req.params.profileId)}/discovery/${escape(result.transactionId)}/associate"><input type="hidden" name="registration_id" value="${escape(result.registrationId)}"><input type="hidden" name="revision" value="${result.revision}"><input type="hidden" name="client_id" value="${escape(cookie.data.clientId)}">${options}<button type="submit">Associate and finish secure enrollment</button></form><p>Discovery expires at ${escape(new Date(result.expiresAt).toISOString())}. <a href="/platform/connections/">Cancel</a></p></html>`);
           return;
         }
         res.json(result);return;
@@ -130,3 +143,4 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
   router.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(400).json({ status: "HOLD", reason: "INVALID_OAUTH_REQUEST" }); });
   return router;
 }
+
