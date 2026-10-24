@@ -72,7 +72,7 @@ bounded handlers. Every other action is an explicit human or security stop.
 | 20 | inspect_internal_failure | Investigate an unknown sanitized failure | Engineer |
 | 21 | stop_on_security_denial | Fail closed on identity, state, asset or tenant tampering | Security reviewer |
 
-This catalog covers 36 exact reason classes, including the observed
+This catalog covers 37 exact reason classes, including the observed
 `FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED`,
 `FACEBOOK_OAUTH_DEBUG_TOKEN_RESPONSE_INVALID`,
 `CLIENT_CONNECTION_ADMIN_REQUIRED` and the MCP missing-`client_id` case.
