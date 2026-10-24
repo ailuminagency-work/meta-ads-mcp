@@ -1,5 +1,5 @@
 import type express from 'express';
-import {getSession} from '../auth/meta-oauth.js';
+import {getSession} from '../auth/session.js';
 import {PlatformDenied} from './models.js';
 import {getPlatformRepository,platformEnabled} from './runtime.js';
 import {createClientManagementRouter} from './client-management-router.js';
