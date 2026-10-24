@@ -26,6 +26,16 @@ function isSameOriginBrowserPost(req: express.Request, publicOrigin: string): bo
   return fetchSite === "same-origin" && fetchMode === "navigate" && fetchDest === "document";
 }
 
+/** Deliberately discards all untrusted query values, including codes and state. */
+function callbackInputRejectionReason(query:unknown, profileId:string):string {
+  const fields=query&&typeof query==="object"&&!Array.isArray(query)?query as Record<string,unknown>:{};
+  if(Object.hasOwn(fields,"error"))return fields.error==="access_denied"?"PROVIDER_CONSENT_DENIED":"PROVIDER_AUTHORIZATION_ERROR";
+  if(!Object.hasOwn(fields,"state"))return "CALLBACK_STATE_MISSING";
+  if(!Object.hasOwn(fields,"code"))return "CALLBACK_CODE_MISSING";
+  if(!/^[A-Za-z0-9_-]{1,128}$/.test(profileId))return "CALLBACK_PROFILE_INVALID";
+  return "CALLBACK_QUERY_INVALID";
+}
+
 export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies): express.Router {
   const origin = new URL(deps.publicOrigin);
   if (origin.protocol !== "https:" || origin.origin !== deps.publicOrigin) throw new Error("OAuth publicOrigin must be an HTTPS origin");
@@ -56,7 +66,7 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
       const operator = await deps.getSessionOperator(req);
       if (!operator) { res.sendStatus(401); return; }
       const query = z.object({ state: z.string().regex(/^[a-f0-9]{64}$/), code: z.string().min(1).max(4096) }).strict().safeParse(req.query);
-      if (!query.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) { res.sendStatus(400); return; }
+      if (!query.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) { logger.warn({event:"platform_oauth_callback_query_rejected",reason:callbackInputRejectionReason(req.query,req.params.profileId)},"Platform OAuth callback input rejected"); res.sendStatus(400); return; }
       const state = query.data.state;
       res.clearCookie(cookieName(state), cookieOptions);
       const rawCookie: unknown = req.cookies?.[cookieName(state)];
