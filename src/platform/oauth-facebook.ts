@@ -41,13 +41,30 @@ const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(
 const debugResponse=z.object({data:z.object({app_id:z.union([ID,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),type:z.literal("USER"),user_id:ID,is_valid:z.literal(true),scopes:z.array(SCOPE).min(1).max(100),expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)),data_access_expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()})});
 const permissionResponse=z.object({data:z.array(z.object({permission:SCOPE,status:z.enum(["granted","declined","expired"])})).max(100),paging:z.object({next:z.unknown().optional()}).optional()});
 const scopeKey=(scopes:string[])=>canonicalJson([...scopes].sort());
+// Meta may return previously granted permissions in debug_token in addition to
+// the permissions requested by this profile. Only these explicitly read-only
+// extensions may be retained; unknown or mutation-capable extras fail closed.
+const READ_ONLY_SCOPE_SUPERSET=new Set([
+  "public_profile",
+  "ads_read",
+  "business_management",
+  "instagram_basic",
+  "instagram_manage_insights",
+  "leads_retrieval",
+  "pages_read_engagement",
+  "pages_read_user_content",
+  "pages_show_list",
+  "read_insights",
+]);
 // Meta may omit the implicit public_profile baseline from debug_token while
 // returning the explicitly consented product scopes. Accept only that narrow
 // omission; unexpected or missing product scopes still fail closed.
 export function facebookActualScopesMatch(profileScopes:string[],actualScopes:string[]):boolean {
   if(scopeKey(actualScopes)===scopeKey(profileScopes))return true;
-  if(!profileScopes.includes("public_profile"))return false;
-  return scopeKey(actualScopes)===scopeKey(profileScopes.filter(scope=>scope!=="public_profile"));
+  const expected=new Set(profileScopes);
+  if(profileScopes.includes("public_profile")&&scopeKey(actualScopes)===scopeKey(profileScopes.filter(scope=>scope!=="public_profile")))return true;
+  if(!profileScopes.every(scope=>actualScopes.includes(scope)))return false;
+  return actualScopes.every(scope=>expected.has(scope)||READ_ONLY_SCOPE_SUPERSET.has(scope));
 }
 function parse<T>(schema:z.ZodType<T>,value:unknown,reason="FACEBOOK_OAUTH_RESPONSE_SCHEMA_INVALID"):T{const parsed=schema.safeParse(value);if(!parsed.success)throw new PlatformDenied(reason);return parsed.data;}
 function normalizeDebugTokenResponse(value:unknown):unknown {

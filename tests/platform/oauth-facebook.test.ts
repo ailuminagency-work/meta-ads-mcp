@@ -59,6 +59,17 @@ describe("concrete Facebook business user OAuth adapter",()=>{
     const result=await adapter.exchangeAndInspect(baseInput);
     expect(result.grantedScopes).toEqual(["ads_read"]);
   });
+  it("accepts an explicit read-only Meta scope superset without granting write capability",async()=>{
+    const scopes=["public_profile","ads_read","business_management","instagram_basic","instagram_manage_insights","leads_retrieval","pages_read_engagement","pages_read_user_content","pages_show_list","read_insights"];
+    const {adapter}=fixture({debug:{scopes},permissions:{data:scopes.map(permission=>({permission,status:"granted"}))}});
+    const result=await adapter.exchangeAndInspect(baseInput);
+    expect(result.grantedScopes).toEqual(scopes);
+  });
+  it.each(["ads_management","pages_manage_posts","instagram_content_publish","pages_messaging","unknown_scope"])("rejects a write-capable or unknown Meta scope superset: %s",async extra=>{
+    const scopes=["public_profile","ads_read",extra];
+    const {adapter}=fixture({debug:{scopes},permissions:{data:scopes.map(permission=>({permission,status:"granted"}))}});
+    await expect(adapter.exchangeAndInspect(baseInput)).rejects.toThrow("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
+  });
   it("fails closed when Meta supplies no bounded expiry metadata",async()=>{
     const {adapter}=fixture({exchange:{expires_in:undefined},longExchange:{expires_in:undefined},debug:{expires_at:0,data_access_expires_at:0,data_access_expiration_time:0}});
     await expect(adapter.exchangeAndInspect(baseInput)).rejects.toThrow("FACEBOOK_TOKEN_EXPIRY_UNVERIFIABLE");
