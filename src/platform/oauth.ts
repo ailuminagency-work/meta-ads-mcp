@@ -18,6 +18,7 @@ import { encryptCredential } from "./connections.js";
 import { canonicalJson } from "./policy.js";
 import {encryptPageInspectionDelegation,pageInspectionDelegationMetadata,type PageInspectionDelegation} from "./page-inspection-delegation.js";
 import {facebookActualScopesMatch, classifyMetaPermissionProfiles, type MetaPermissionProfile} from "./oauth-facebook.js";
+import type {OAuthAssetDiscoveryCandidate,OAuthAssetRegistrationBridge,OAuthDiscoveryInspection,OAuthDiscoveryRequired,OAuthDiscoveryTransactionStore} from "./oauth-discovery.js";
 
 export interface TrustedOAuthProfile extends ConnectionProfile {
   appPromotionBinding?:import("./app-promotion-contract.js").AppPromotionBinding;
@@ -92,6 +93,7 @@ export interface VerifiedProviderAdapter {
   validateEnrollmentContext?(input:{profile:TrustedOAuthProfile;principal:PlatformPrincipal;clientId:string;client:Client;businessOwnerEvidence?:ClientBusinessEvidence}):void;
   exchangeAndInspectMany?(input:{code:string;profile:TrustedOAuthProfile;appSecret:string;requestedAssets:AssetRef[];registeredAssets?:MetaAsset[];expectedOperatorId?:string}):Promise<InspectedOAuthToken[]>;
   exchangeAndInspect(input: { expectedOperatorId?:string; code: string; profile: TrustedOAuthProfile; appSecret: string; requestedAssets: AssetRef[];registeredAssets?:MetaAsset[] }): Promise<InspectedOAuthToken>;
+  discoverAssets?(input:{code:string;profile:TrustedOAuthProfile;appSecret:string}): Promise<InspectedOAuthToken>;
 }
 export function unverifiedOAuthAdapter(provider: Connection["provider"]): VerifiedProviderAdapter {
   return { provider, verified: false, validateProfile:()=>{throw new PlatformDenied("PRODUCT_OAUTH_ADAPTER_UNVERIFIED_HOLD");},exchangeAndInspect: async () => { throw new PlatformDenied("PRODUCT_OAUTH_ADAPTER_UNVERIFIED_HOLD"); } };
@@ -114,6 +116,8 @@ export interface PlatformOAuthDependencies {
   adapters: { get(provider: Connection["provider"]): VerifiedProviderAdapter | null };
   commitVerifiedConnections?: (enrollments:ConnectionEnrollment[])=>Promise<void>;
   commitVerifiedConnection?: (enrollment: ConnectionEnrollment) => Promise<void>;
+  discoveryStore?: OAuthDiscoveryTransactionStore;
+  assetRegistration?: OAuthAssetRegistrationBridge;
   now?: () => number;
 }
 
@@ -150,12 +154,12 @@ export class PlatformOAuthService {
     if (profile.configurationId && !/^[0-9]{1,100}$/.test(profile.configurationId)) throw new PlatformDenied("INVALID_BUSINESS_LOGIN_CONFIGURATION");
     return structuredClone(profile);
   }
-  private adapter(profile: TrustedOAuthProfile): VerifiedProviderAdapter {
+  private adapter(profile: TrustedOAuthProfile, allowDiscovery=false): VerifiedProviderAdapter {
     const adapter = this.deps.adapters.get(profile.provider);
     if (!adapter || !adapter.verified || adapter.provider !== profile.provider) throw new PlatformDenied("PRODUCT_OAUTH_ADAPTER_UNVERIFIED_HOLD");
     adapter.validateProfile(profile);
     productVersion(profile.provider);
-    if (!this.deps.commitVerifiedConnection && !this.deps.commitVerifiedConnections) throw new PlatformDenied("ATOMIC_CONNECTION_ENROLLMENT_UNAVAILABLE_HOLD");
+    if (!allowDiscovery && !this.deps.commitVerifiedConnection && !this.deps.commitVerifiedConnections) throw new PlatformDenied("ATOMIC_CONNECTION_ENROLLMENT_UNAVAILABLE_HOLD");
     return adapter;
   }
   /**
@@ -179,7 +183,7 @@ export class PlatformOAuthService {
   }
   async start(operatorId: string, clientId: string, profileId: string): Promise<{ state: string; browserNonce: string; authorizeUrl: string }> {
     const profile = await this.profile(profileId);
-    const adapter=this.adapter(profile);
+    const adapter=this.adapter(profile,Boolean(this.deps.discoveryStore&&this.deps.assetRegistration));
     const { principal,client,businessOwnerEvidence } = await membership(this.deps.repository, operatorId, clientId);
     adapter.validateEnrollmentContext?.({profile,principal,clientId,client,businessOwnerEvidence});
     const challenge = await createConnectionChallenge(this.deps.challenges, profile, principal, clientId, this.now());
@@ -191,6 +195,38 @@ export class PlatformOAuthService {
     if (profile.strategy === "facebook_business" && profile.configurationId && !PlatformOAuthService.usesDirectReadOnlyScopes(profile)) authorize.searchParams.set("config_id", profile.configurationId);
     else authorize.searchParams.set("scope", profile.scopes.join(","));
     return { ...challenge, authorizeUrl: authorize.toString() };
+  }
+  /** Exchange and inspect a first-time agency credential, then stop before enrollment. */
+  async shouldUseFirstTimeDiscovery(operatorId:string,clientId:string,profileId:string):Promise<boolean> {
+    if(!this.deps.discoveryStore||!this.deps.assetRegistration)return false;
+    const profile=await this.profile(profileId),initial=await membership(this.deps.repository,operatorId,clientId);
+    return !(await this.deps.repository.list("assets",initial.principal.tenantId)).some(a=>a.tenantId===initial.principal.tenantId&&a.clientId===clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
+  }
+  async discoverFirstTime(input: { operatorId:string; clientId:string; profileId:string; state:string; browserNonce:string; code:string }):Promise<OAuthDiscoveryRequired> {
+    const store=this.deps.discoveryStore, registration=this.deps.assetRegistration;
+    if(!store||!registration)throw new PlatformDenied("OAUTH_FIRST_TIME_DISCOVERY_UNAVAILABLE");
+    if(!input.code||input.code.length>4096)throw new PlatformDenied("INVALID_OAUTH_CALLBACK");
+    const profile=await this.profile(input.profileId),adapter=this.adapter(profile,true);
+    if(!adapter.discoverAssets)throw new PlatformDenied("OAUTH_PROVIDER_DISCOVERY_UNAVAILABLE");
+    const initial=await membership(this.deps.repository,input.operatorId,input.clientId);
+    adapter.validateEnrollmentContext?.({profile,principal:initial.principal,clientId:input.clientId,client:initial.client,businessOwnerEvidence:initial.businessOwnerEvidence});
+    const existing=(await this.deps.repository.list("assets",initial.principal.tenantId)).some(a=>a.tenantId===initial.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
+    if(existing)throw new PlatformDenied("OAUTH_REGISTERED_ASSET_PATH_REQUIRED");
+    await consumeConnectionChallenge(this.deps.challenges,profile,initial.principal,input.clientId,input.state,input.browserNonce,this.now());
+    const appSecret=await this.deps.secrets.get(profile.secretReference);if(!appSecret)throw new PlatformDenied("OAUTH_APP_SECRET_REQUIRED");
+    let inspected:InspectedOAuthToken;
+    try{inspected=inspectedTokenSchema.parse(await adapter.discoverAssets({code:input.code,profile,appSecret}));}catch{throw new PlatformDenied("OAUTH_PROVIDER_DISCOVERY_FAILED");}
+    const now=this.now();
+    if(inspected.provider!==profile.provider||inspected.appId!==profile.appId||inspected.tokenType!=="user"||inspected.subjectId!==input.operatorId||inspected.expiresAt<=now||!facebookActualScopesMatch(profile.derivedTokenScopes??profile.scopes,inspected.grantedScopes))throw new PlatformDenied("OAUTH_DISCOVERY_TOKEN_BINDING_REQUIRED");
+    const observed=classifyMetaPermissionProfiles(profile.derivedTokenScopes??profile.scopes,inspected.grantedScopes);
+    if(profile.provider!=="META_MARKETING"||!observed)throw new PlatformDenied("OAUTH_DISCOVERY_PROFILE_REQUIRED");
+    const candidates:OAuthAssetDiscoveryCandidate[]=inspected.assets.filter(a=>a.type==="AD_ACCOUNT").map(a=>({type:a.type,id:a.id,providerAssetId:a.id,evidence:{source:"META_ME_ADACCOUNTS",checkedAt:now,expiresAt:Math.min(inspected.expiresAt,now+300000)}}));
+    if(!candidates.length||candidates.length>98)throw new PlatformDenied("OAUTH_DISCOVERY_NO_ELIGIBLE_ASSETS");
+    const transactionId=randomUUID(),expiresAt=Math.min(inspected.expiresAt,now+300000),inspection:OAuthDiscoveryInspection={provider:inspected.provider,appId:inspected.appId,subjectId:inspected.subjectId,tokenType:inspected.tokenType,grantedScopes:[...inspected.grantedScopes],...(observed?{grantedPermissionProfiles:observed}:{}),expiresAt:inspected.expiresAt};
+    await store.create({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,token:inspected.accessToken,inspection,candidates,expiresAt});
+    const started=await registration.begin({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,inspection,candidates,expiresAt});
+    if(started.transactionId!==transactionId||started.expiresAt>expiresAt||started.candidates.length!==candidates.length)throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID");
+    return {status:"DISCOVERY_REQUIRED",transactionId,expiresAt:started.expiresAt,candidates:structuredClone(started.candidates)};
   }
   async callback(input: { operatorId: string; clientId: string; profileId: string; state: string; browserNonce: string; code: string }): Promise<{ connectionId: string; connectionIds:string[];connectionCount:number;provider: Connection["provider"]; assetCount: number }> {
     if (!input.code || input.code.length > 4096) throw new PlatformDenied("INVALID_OAUTH_CALLBACK");

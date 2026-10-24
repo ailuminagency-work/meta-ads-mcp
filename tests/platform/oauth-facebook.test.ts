@@ -7,7 +7,7 @@ const now=1792180000000;
 const profile:TrustedOAuthProfile={id:"marketing",provider:"META_MARKETING",appId:"3001",strategy:"facebook_business",scopes:["public_profile","ads_read"],tokenTypes:["user"],redirectUri:"https://fixture.invalid/platform/oauth/marketing/callback",authorizeUrl:"https://www.facebook.com/v26.0/dialog/oauth",configurationId:"4001",verified:true,secretReference:"fixture-reference",capabilities:["legacy.ads_get_account_info"],actions:["READ"],requiredTasks:[]};
 const secret="synthetic-private-app-secret",code="synthetic-private-code",short="synthetic-short-token",long="synthetic-long-token";
 const baseInput={code,profile,appSecret:secret,requestedAssets:[{type:"AD_ACCOUNT" as const,id:"101"}]};
-interface Changes {debug?:Record<string,unknown>;me?:Record<string,unknown>;permissions?:unknown;asset?:Record<string,unknown>;businessPages?:unknown[];failure?:string;oversized?:boolean;exchange?:Record<string,unknown>;longExchange?:Record<string,unknown>}
+interface Changes {debug?:Record<string,unknown>;me?:Record<string,unknown>;permissions?:unknown;asset?:Record<string,unknown>;businessPages?:unknown[];adaccounts?:unknown;failure?:string;oversized?:boolean;exchange?:Record<string,unknown>;longExchange?:Record<string,unknown>}
 function fixture(changes:Changes={},provider:"META_MARKETING"|"META_BUSINESS"="META_MARKETING"){
   let exchange=0,businessPage=0;
   const fetcher=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
@@ -28,6 +28,7 @@ function fixture(changes:Changes={},provider:"META_MARKETING"|"META_BUSINESS"="M
       expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${long}`);expect(url.searchParams.has("access_token")).toBe(false);
       if(path==="/me")body={id:"2001",...changes.me};
       else if(path==="/me/permissions")body=changes.permissions??{data:(provider==="META_BUSINESS"?expandVerifiedPermissionDependencies(["public_profile","business_management"]):profile.scopes).map(permission=>({permission,status:"granted"}))};
+      else if(path==="/me/adaccounts")body=changes.adaccounts??{data:[{id:"act_101",account_id:"101"}]};
       else if(path==="/me/businesses"){body=changes.businessPages?.[businessPage++]??{data:[{id:"101",permitted_roles:["ADMIN"]},{id:"999",name:"unrelated private business"}]};}
       else if(path==="/act_101")body={id:"act_101",account_id:"101",...changes.asset};
       else throw new Error("unexpected endpoint");
@@ -40,6 +41,16 @@ describe("concrete Facebook business user OAuth adapter",()=>{
   it("enrolls only the selected verified Marketing media capability without inventing upload eligibility",async()=>{const scopes=expandVerifiedPermissionDependencies(["public_profile","ads_read","ads_management"]),mediaProfile:TrustedOAuthProfile={...profile,scopes,actions:["READ","WRITE_CONTENT"],capabilities:["legacy.ads_get_account_info","marketing.upload.image"]},{adapter}=fixture({debug:{scopes},permissions:{data:scopes.map(permission=>({permission,status:"granted"}))}});const result=await adapter.exchangeAndInspect({...baseInput,profile:mediaProfile});expect(result.grantedScopes).toEqual(scopes);expect(result.assets).toEqual([{type:"AD_ACCOUNT",id:"101",tasks:[]}]);expect(result).not.toHaveProperty("eligibility");expect(result).not.toHaveProperty("writeAvailable");});
   it.each([{actions:["WRITE_CONTENT"],capabilities:["marketing.upload.image"]},{actions:["READ"]},{capabilities:["legacy.ads_get_account_info","pages.create.photos"]},{actions:["READ","WRITE_CONTENT","WRITE_BUDGET"]},{scopes:["public_profile","ads_read"]}])("rejects media profile privilege or scope mismatch before exchange %j",async change=>{const scopes=expandVerifiedPermissionDependencies(["public_profile","ads_read","ads_management"]),mediaProfile={...profile,scopes,actions:["READ","WRITE_CONTENT"],capabilities:["legacy.ads_get_account_info","marketing.upload.image"],...change} as TrustedOAuthProfile,{adapter,fetcher}=fixture();await expect(adapter.exchangeAndInspect({...baseInput,profile:mediaProfile})).rejects.toThrow();expect(fetcher).not.toHaveBeenCalled();});
   it("exchanges code and long-lived token then proves actual app subject grants expiry and requested account",async()=>{const {adapter,fetcher}=fixture();expect(adapter.verified).toBe(true);const result=await adapter.exchangeAndInspect(baseInput);expect(result).toEqual({accessToken:long,provider:"META_MARKETING",appId:"3001",subjectId:"2001",tokenType:"user",grantedScopes:profile.scopes,expiresAt:now+3600000,assets:[{type:"AD_ACCOUNT",id:"101",tasks:[]}]});expect(fetcher).toHaveBeenCalledTimes(6);});
+  it("supports bounded first-time ad-account discovery without requiring a registered root",async()=>{
+    const {adapter,fetcher}=fixture({adaccounts:{data:[{id:"act_101",account_id:"101"},{id:"act_102",account_id:"102"},{id:"act_101",account_id:"101"}]}});
+    const result=await adapter.discoverAssets!({code,profile,appSecret:secret});
+    expect(result.assets).toEqual([{type:"AD_ACCOUNT",id:"101",tasks:[]},{type:"AD_ACCOUNT",id:"102",tasks:[]}]);
+    expect(fetcher.mock.calls.some(([url])=>String(url).includes("/me/adaccounts"))).toBe(true);
+  });
+  it("rejects malformed discovery rows and untrusted pagination",async()=>{
+    const {adapter}=fixture({adaccounts:{data:[{id:"act_101",account_id:"101"}],paging:{next:"https://attacker.invalid/steal",cursors:{after:""}}}});
+    await expect(adapter.discoverAssets!({code,profile,appSecret:secret})).rejects.toThrow("FACEBOOK_DISCOVERY_CURSOR_INVALID");
+  });
   it.each([
     ["FACEBOOK_OAUTH_TOKEN_EXCHANGE_RESPONSE_INVALID",{exchange:{access_token:undefined}}],
     ["FACEBOOK_OAUTH_DEBUG_TOKEN_RESPONSE_INVALID",{debug:{type:"SYSTEM_USER"}}],

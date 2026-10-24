@@ -102,11 +102,24 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
       const rawCookie:unknown=req.cookies?.[cookieName(state)];
       const cookie=parseCallbackCookie(rawCookie);
       if(!cookie.ok){logCallbackHold(cookie.reason);callbackHold(req,res,403,cookie.reason);return;}
-      const result=await deps.service.callback({operatorId:operator,clientId:cookie.data.clientId,profileId:req.params.profileId,state,browserNonce:cookie.data.nonce,code:query.data.code});
+      const discovery=await deps.service.shouldUseFirstTimeDiscovery?.(operator,cookie.data.clientId,req.params.profileId)??false;
+      const result=discovery
+        ? await deps.service.discoverFirstTime({operatorId:operator,clientId:cookie.data.clientId,profileId:req.params.profileId,state,browserNonce:cookie.data.nonce,code:query.data.code})
+        : await deps.service.callback({operatorId:operator,clientId:cookie.data.clientId,profileId:req.params.profileId,state,browserNonce:cookie.data.nonce,code:query.data.code});
+      if("status" in result && result.status==="DISCOVERY_REQUIRED"){
+        if(req.get("accept")?.includes("text/html")){
+          const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+          res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+          res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Choose a client ad account</title><h1>Choose a client ad account</h1><p>Meta access was inspected. Select an account in the client registry to finish connection. No credential or advertising action has been enabled.</p><ul>${result.candidates.map(candidate=>`<li>${escape(candidate.type)} ${escape(candidate.id)}</li>`).join("")}</ul><p>Discovery expires at ${escape(new Date(result.expiresAt).toISOString())}. Return to <a href="/platform/connections/">client connections</a> after the client asset association is approved.</p></html>`);
+          return;
+        }
+        res.json(result);return;
+      }
+      const connected=result as {connectionId:string;connectionIds:string[];connectionCount:number;provider:string;assetCount:number};
       let nextSteps:Array<{label:string;path:string}>=[];
-      try{nextSteps=z.array(z.object({label:z.string().min(1).max(120),path:z.string().regex(/^\/platform\/[A-Za-z0-9_/-]{1,500}$/)}).strict()).max(20).parse(await deps.getNextSteps?.(operator,cookie.data.clientId,result)??[]);}catch{nextSteps=[];}
-      if(req.get("accept")?.includes("text/html")){const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'");res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Client product connected</title><h1>Client product connected</h1><p>Meta access was checked for ${escape(cookie.data.clientId)}. ${result.assetCount} selected assets were connected. This does not verify client ownership or billing, and no ads or messages were sent.</p>${nextSteps.length?'<h2>Next review</h2><ul>'+nextSteps.map(step=>'<li><a href="'+escape(step.path)+'">'+escape(step.label)+'</a></li>').join('')+'</ul>':''}<p><a href="/platform/connections/">Return to client connections</a></p></html>`);return;}
-      res.json({ status: "CONNECTED", ...result,...(nextSteps.length?{next_steps:nextSteps}:{}) });
+      try{nextSteps=z.array(z.object({label:z.string().min(1).max(120),path:z.string().regex(/^\/platform\/[A-Za-z0-9_/-]{1,500}$/)}).strict()).max(20).parse(await deps.getNextSteps?.(operator,cookie.data.clientId,connected)??[]);}catch{nextSteps=[];}
+      if(req.get("accept")?.includes("text/html")){const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'");res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Client product connected</title><h1>Client product connected</h1><p>Meta access was checked for ${escape(cookie.data.clientId)}. ${connected.assetCount} selected assets were connected. This does not verify client ownership or billing, and no ads or messages were sent.</p>${nextSteps.length?'<h2>Next review</h2><ul>'+nextSteps.map(step=>'<li><a href="'+escape(step.path)+'">'+escape(step.label)+'</a></li>').join('')+'</ul>':''}<p><a href="/platform/connections/">Return to client connections</a></p></html>`);return;}
+      res.json({ status: "CONNECTED", ...connected,...(nextSteps.length?{next_steps:nextSteps}:{}) });
     } catch(error) {
       logOAuthFailure("callback",error);
       if(req.get("accept")?.includes("text/html")){

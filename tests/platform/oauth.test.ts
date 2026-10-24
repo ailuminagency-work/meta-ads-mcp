@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryPlatformRepository } from "../../src/platform/repository.js";
 import { InMemoryConnectionChallengeStore } from "../../src/platform/connection-challenge-store.js";
 import { PlatformOAuthService, ImmutableOAuthProfileRegistry, atomicConnectionEnrollment, type InspectedOAuthToken, type TrustedOAuthProfile, type VerifiedProviderAdapter } from "../../src/platform/oauth.js";
+import type { OAuthAssetRegistrationBridge } from "../../src/platform/oauth-discovery.js";
 import { createPlatformOAuthRouter } from "../../src/platform/oauth-router.js";
 
 const profile: TrustedOAuthProfile = { id: "pages-fixture", provider: "META_FACEBOOK_PAGES", appId: "3001", strategy: "facebook_business", scopes: ["pages_show_list","pages_read_engagement"], tokenTypes: ["page"], redirectUri: "https://fixture.invalid/platform/oauth/pages-fixture/callback", authorizeUrl: "https://www.facebook.com/v26.0/dialog/oauth", configurationId: "4001", verified: true, secretReference: "fixture-secret-reference", capabilities: ["pages.list.feed"], actions: ["READ"], requiredTasks: ["ANALYZE"] };
@@ -29,6 +30,28 @@ async function fixture(change: Partial<InspectedOAuthToken> = {}, verified = tru
 }
 
 describe("protected incremental OAuth service", () => {
+  it("hands first-time Meta discovery to the client registry without enrolling a credential", async () => {
+    const marketing: TrustedOAuthProfile = { id:"meta-discovery",provider:"META_MARKETING",appId:"3010",strategy:"facebook_business",scopes:["public_profile","ads_read"],tokenTypes:["user"],redirectUri:"https://fixture.invalid/platform/oauth/meta-discovery/callback",authorizeUrl:"https://www.facebook.com/v26.0/dialog/oauth",verified:true,secretReference:"fixture-secret-reference",capabilities:["legacy.ads_get_account_info"],actions:["READ"],requiredTasks:[] };
+    const repo=new InMemoryPlatformRepository(), now=Date.now();
+    await repo.put("operatorIndex","_index","1003",{operatorId:"1003",tenantId:"tenant-discovery"});
+    await repo.put("tenants","tenant-discovery","tenant-discovery",{id:"tenant-discovery",status:"ACTIVE",migrationState:"READY",policyRevision:1,registryRevision:1});
+    await repo.put("members","tenant-discovery","1003",{operatorId:"1003",tenantId:"tenant-discovery",roles:["connection_admin"],allowedClientIds:["client-discovery"],revision:1,disabledAt:null});
+    await repo.put("clients","tenant-discovery","client-discovery",{id:"client-discovery",tenantId:"tenant-discovery",status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
+    const token="synthetic-discovery-token";
+    const store={create:vi.fn(async()=>{}),consume:vi.fn(async()=>null)};
+    const bridge:OAuthAssetRegistrationBridge={begin:vi.fn(async(input)=>({transactionId:input.transactionId,expiresAt:input.expiresAt,candidates:input.candidates})),commit:vi.fn()};
+    const adapter:VerifiedProviderAdapter={provider:"META_MARKETING",verified:true,validateProfile:()=>{},validateEnrollmentContext:()=>{},exchangeAndInspect:async()=>{throw new Error("not reached")},discoverAssets:async()=>({accessToken:token,provider:"META_MARKETING",appId:marketing.appId,subjectId:"1003",tokenType:"user",grantedScopes:[...marketing.scopes],expiresAt:now+3600000,assets:[{type:"AD_ACCOUNT",id:"101",tasks:[]},{type:"AD_ACCOUNT",id:"102",tasks:[]}]})};
+    const service=new PlatformOAuthService({repository:repo,challenges:new InMemoryConnectionChallengeStore(),profiles:new ImmutableOAuthProfileRegistry([marketing]),secrets:{get:async()=>"synthetic-secret"},adapters:{get:()=>adapter},discoveryStore:store,assetRegistration:bridge});
+    const start=await service.start("1003","client-discovery",marketing.id);
+    const result=await service.discoverFirstTime({operatorId:"1003",clientId:"client-discovery",profileId:marketing.id,state:start.state,browserNonce:start.browserNonce,code:"synthetic-code"});
+    expect(result.status).toBe("DISCOVERY_REQUIRED");
+    expect(result.candidates.map(c=>c.id)).toEqual(["101","102"]);
+    expect(store.create).toHaveBeenCalledOnce();
+    expect(store.create.mock.calls[0][0].token).toBe(token);
+    expect(bridge.begin).toHaveBeenCalledOnce();
+    expect(await repo.list("connections","tenant-discovery")).toHaveLength(0);
+    expect(await repo.list("credentials","tenant-discovery")).toHaveLength(0);
+  });
   it("launches the plain Meta marketing reader with its exact scopes", async () => {
     const marketing: TrustedOAuthProfile = {
       id: "meta-readonly",
