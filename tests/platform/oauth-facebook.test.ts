@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { FacebookBusinessOAuthAdapter } from "../../src/platform/oauth-facebook.js";
+import { FacebookBusinessOAuthAdapter, classifyMetaPermissionProfiles } from "../../src/platform/oauth-facebook.js";
 import { expandVerifiedPermissionDependencies } from "../../src/platform/products/permission-dependencies.js";
 import type { TrustedOAuthProfile } from "../../src/platform/oauth.js";
 
@@ -65,10 +65,23 @@ describe("concrete Facebook business user OAuth adapter",()=>{
     const result=await adapter.exchangeAndInspect(baseInput);
     expect(result.grantedScopes).toEqual(scopes);
   });
-  it.each(["ads_management","pages_manage_posts","instagram_content_publish","pages_messaging","unknown_scope"])("rejects a write-capable or unknown Meta scope superset: %s",async extra=>{
+  it.each(["pages_manage_posts","unknown_scope"])("rejects an unknown Meta scope superset: %s",async extra=>{
     const scopes=["public_profile","ads_read",extra];
     const {adapter}=fixture({debug:{scopes},permissions:{data:scopes.map(permission=>({permission,status:"granted"}))}});
     await expect(adapter.exchangeAndInspect(baseInput)).rejects.toThrow("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
+  });
+  it("accepts the observed 15-scope token as classified provider metadata while retaining the read-only profile contract",async()=>{
+    const scopes=["public_profile","ads_read","ads_management","ads_mcp_management","business_management","instagram_basic","instagram_content_publish","instagram_manage_messages","pages_manage_ads","pages_manage_metadata","pages_messaging","pages_read_engagement","pages_show_list","whatsapp_business_management","whatsapp_business_messaging"];
+    const {adapter}=fixture({debug:{scopes},permissions:{data:scopes.map(permission=>({permission,status:"granted"}))}});
+    const result=await adapter.exchangeAndInspect(baseInput);
+    expect(result.grantedPermissionProfiles).toEqual(["META_MANAGEMENT","META_CONTENT_AND_MESSAGING","META_BUSINESS_OPERATIONS"]);
+    expect(result.grantedScopes).toEqual(scopes);
+  });
+  it("classifies permission families deterministically and fails closed for unknown permissions",()=>{
+    expect(classifyMetaPermissionProfiles(["public_profile","ads_read"],["public_profile","ads_read","ads_management","pages_messaging","business_management"])).toEqual(["META_MANAGEMENT","META_CONTENT_AND_MESSAGING","META_BUSINESS_OPERATIONS"]);
+    expect(classifyMetaPermissionProfiles(["public_profile","ads_read"],["public_profile","ads_read","future_permission"])).toBeNull();
+    expect(classifyMetaPermissionProfiles(["public_profile","ads_read","future_permission"],["public_profile","ads_read","future_permission"])).toBeNull();
+    expect(classifyMetaPermissionProfiles(["public_profile","ads_management"],["ads_management"])).toEqual(["META_MANAGEMENT"]);
   });
   it("fails closed when Meta supplies no bounded expiry metadata",async()=>{
     const {adapter}=fixture({exchange:{expires_in:undefined},longExchange:{expires_in:undefined},debug:{expires_at:0,data_access_expires_at:0,data_access_expiration_time:0}});

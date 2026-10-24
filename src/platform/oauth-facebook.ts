@@ -41,13 +41,14 @@ const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(
 const debugResponse=z.object({data:z.object({app_id:z.union([ID,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),type:z.literal("USER"),user_id:ID,is_valid:z.literal(true),scopes:z.array(SCOPE).min(1).max(100),expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)),data_access_expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()})});
 const permissionResponse=z.object({data:z.array(z.object({permission:SCOPE,status:z.enum(["granted","declined","expired"])})).max(100),paging:z.object({next:z.unknown().optional()}).optional()});
 const scopeKey=(scopes:string[])=>canonicalJson([...scopes].sort());
-// Meta may return previously granted permissions in debug_token in addition to
-// the permissions requested by this profile. Only these explicitly read-only
-// extensions may be retained; unknown or mutation-capable extras fail closed.
+/** Permission families are classification metadata, never an execution grant.
+ * The trusted profile's actions/capabilities remain the source of truth for
+ * what Lumin may execute. These sets are deliberately allowlisted so a token
+ * with a new or misspelled Meta permission still fails closed. */
+export type MetaPermissionProfile="META_READ_ONLY"|"META_MANAGEMENT"|"META_CONTENT_AND_MESSAGING"|"META_BUSINESS_OPERATIONS";
 const READ_ONLY_SCOPE_SUPERSET=new Set([
   "public_profile",
   "ads_read",
-  "business_management",
   "instagram_basic",
   "instagram_manage_insights",
   "leads_retrieval",
@@ -56,15 +57,31 @@ const READ_ONLY_SCOPE_SUPERSET=new Set([
   "pages_show_list",
   "read_insights",
 ]);
+const MANAGEMENT_SCOPE_SET=new Set(["ads_management","ads_mcp_management","pages_manage_ads","pages_manage_metadata"]);
+const CONTENT_AND_MESSAGING_SCOPE_SET=new Set(["instagram_content_publish","instagram_manage_messages","pages_messaging","whatsapp_business_messaging"]);
+const BUSINESS_OPERATIONS_SCOPE_SET=new Set(["business_management","whatsapp_business_management"]);
+const KNOWN_META_SCOPE_SET=new Set([...READ_ONLY_SCOPE_SUPERSET,...MANAGEMENT_SCOPE_SET,...CONTENT_AND_MESSAGING_SCOPE_SET,...BUSINESS_OPERATIONS_SCOPE_SET]);
+
+/** Classify actual Meta permissions without granting their corresponding
+ * operations. A null result is an unknown or incomplete permission set. */
+export function classifyMetaPermissionProfiles(profileScopes:string[],actualScopes:string[]):MetaPermissionProfile[]|null {
+  const expected=new Set(profileScopes), actual=new Set(actualScopes);
+  if(expected.size!==profileScopes.length||actual.size!==actualScopes.length)return null;
+  if([...actual].some(scope=>!KNOWN_META_SCOPE_SET.has(scope)))return null;
+  if(!profileScopes.every(scope=>actual.has(scope)||scope==="public_profile"))return null;
+  const observed=[...actual];
+  const profiles:MetaPermissionProfile[]=[];
+  if(!observed.some(scope=>MANAGEMENT_SCOPE_SET.has(scope)||CONTENT_AND_MESSAGING_SCOPE_SET.has(scope)||BUSINESS_OPERATIONS_SCOPE_SET.has(scope)))profiles.push("META_READ_ONLY");
+  if(observed.some(scope=>MANAGEMENT_SCOPE_SET.has(scope)))profiles.push("META_MANAGEMENT");
+  if(observed.some(scope=>CONTENT_AND_MESSAGING_SCOPE_SET.has(scope)))profiles.push("META_CONTENT_AND_MESSAGING");
+  if(observed.some(scope=>BUSINESS_OPERATIONS_SCOPE_SET.has(scope)))profiles.push("META_BUSINESS_OPERATIONS");
+  return profiles;
+}
 // Meta may omit the implicit public_profile baseline from debug_token while
 // returning the explicitly consented product scopes. Accept only that narrow
 // omission; unexpected or missing product scopes still fail closed.
 export function facebookActualScopesMatch(profileScopes:string[],actualScopes:string[]):boolean {
-  if(scopeKey(actualScopes)===scopeKey(profileScopes))return true;
-  const expected=new Set(profileScopes);
-  if(profileScopes.includes("public_profile")&&scopeKey(actualScopes)===scopeKey(profileScopes.filter(scope=>scope!=="public_profile")))return true;
-  if(!profileScopes.every(scope=>actualScopes.includes(scope)))return false;
-  return actualScopes.every(scope=>expected.has(scope)||READ_ONLY_SCOPE_SUPERSET.has(scope));
+  return classifyMetaPermissionProfiles(profileScopes,actualScopes)!==null;
 }
 function parse<T>(schema:z.ZodType<T>,value:unknown,reason="FACEBOOK_OAUTH_RESPONSE_SCHEMA_INVALID"):T{const parsed=schema.safeParse(value);if(!parsed.success)throw new PlatformDenied(reason);return parsed.data;}
 function normalizeDebugTokenResponse(value:unknown):unknown {
@@ -257,8 +274,9 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     const token=long.access_token;
     const debug=parseDebugTokenResponse(await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`));
     if(String(debug.app_id)!==profile.appId)throw new PlatformDenied("FACEBOOK_ACTUAL_APP_ID_REQUIRED");
-    if(new Set(debug.scopes).size!==debug.scopes.length||!facebookActualScopesMatch(profile.scopes,debug.scopes)){
-      logger.warn({event:"facebook_debug_token_scope_mismatch",expectedScopeCount:profile.scopes.length,actualScopeCount:debug.scopes.length,extraScopes:debug.scopes.filter(scope=>!profile.scopes.includes(scope)).sort().slice(0,32),implicitPublicProfileOmitted:profile.scopes.includes("public_profile")&&!debug.scopes.includes("public_profile")},"Meta debug_token scopes did not match the trusted profile");
+    const permissionProfiles=classifyMetaPermissionProfiles(profile.scopes,debug.scopes);
+    if(new Set(debug.scopes).size!==debug.scopes.length||permissionProfiles===null){
+      logger.warn({event:"facebook_debug_token_scope_mismatch",expectedScopeCount:profile.scopes.length,actualScopeCount:debug.scopes.length,unknownExtraScopeCount:debug.scopes.filter(scope=>!profile.scopes.includes(scope)&&!KNOWN_META_SCOPE_SET.has(scope)).length,implicitPublicProfileOmitted:profile.scopes.includes("public_profile")&&!debug.scopes.includes("public_profile")},"Meta debug_token scopes did not match the trusted profile");
       throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
     }
     const inspectedAt=this.now();
@@ -278,7 +296,7 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     if(scopeKey(granted)!==scopeKey(debug.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_GRANTED_PERMISSIONS_REQUIRED");
     const assets=isCrmOAuthProfile(input.profile)?await proveCrmOAuth(input.profile,crmOAuthRoots(input.profile,input.registeredAssets??[],this.now()),(path,query)=>this.get(path,query,token)):isSignalDatasetOAuthProfile(input.profile)?await proveSignalDatasetOAuth(input.profile,(path,query)=>this.get(path,query,token)):isAppPromotionOAuthProfile(input.profile)?await proveAppPromotionOAuth(input.profile,(path,query)=>this.get(path,query,token)):await this.proveAssets(token,input.requestedAssets,input.registeredAssets,input.profile.marketingControlMode,input.profile.capabilities.includes(INVOICE_METADATA_CAPABILITY));
     if(this.now()>=expiry)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRED");
-    return {accessToken:token,provider:this.provider,appId:profile.appId,subjectId:me.id,tokenType:"user",grantedScopes:granted,expiresAt:expiry,assets};
+    return {accessToken:token,provider:this.provider,appId:profile.appId,subjectId:me.id,tokenType:"user",grantedScopes:granted,expiresAt:expiry,assets,...(scopeKey(granted)!==scopeKey(profile.scopes)?{grantedPermissionProfiles:permissionProfiles!}: {})};
   }
 
 }
