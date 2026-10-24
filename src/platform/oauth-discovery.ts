@@ -81,6 +81,7 @@ export interface OAuthDiscoveryTransactionStore {
     inspection: OAuthDiscoveryInspection;
     candidates: OAuthAssetDiscoveryCandidate[];
     expiresAt: number;
+    expectedRevisions: { tenant: number; member: number; client: number };
   }): Promise<void>;
   read(input: { transactionId: string; tenantId: string; clientId: string; operatorId: string; now: number }): Promise<{
     profileId: string;
@@ -88,9 +89,11 @@ export interface OAuthDiscoveryTransactionStore {
     inspection: OAuthDiscoveryInspection;
     candidates: OAuthAssetDiscoveryCandidate[];
     expiresAt: number;
+    expectedRevisions: { tenant: number; member: number; client: number };
   } | null>;
   readSecret(input: { transactionId: string; tenantId: string; clientId: string; operatorId: string; now: number }): Promise<{
     token: string; inspection: OAuthDiscoveryInspection; candidates: OAuthAssetDiscoveryCandidate[]; expiresAt: number;
+    expectedRevisions: { tenant: number; member: number; client: number };
   } | null>;
   consume(input: {
     transactionId: string;

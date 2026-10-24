@@ -8,6 +8,7 @@ type DiscoveryRecord = {
   transactionId: string; tenantId: string; clientId: string; operatorId: string;
   profileId: string; appId: string; credential: ReturnType<typeof encryptCredential>;
   inspection: OAuthDiscoveryInspection; candidates: OAuthAssetDiscoveryCandidate[];
+  expectedRevisions: { tenant: number; member: number; client: number };
   expiresAt: number; state: "PENDING" | "CONSUMED"; consumedAt: number | null;
   createdAt: number; expireTime: Date;
 };
@@ -16,6 +17,7 @@ const safeRecord = (value: DiscoveryRecord) => ({
   profileId: value.profileId, appId: value.appId,
   inspection: structuredClone(value.inspection), candidates: structuredClone(value.candidates),
   expiresAt: value.expiresAt,
+  expectedRevisions: structuredClone(value.expectedRevisions),
 });
 
 /** Firestore-backed, server-only storage for the pre-enrollment OAuth credential. */
@@ -40,7 +42,7 @@ export class FirestoreOAuthDiscoveryTransactionStore implements OAuthDiscoveryTr
     const snap = await this.ref(input.transactionId).get(); if (!snap.exists) return null;
     const row = snap.data() as DiscoveryRecord;
     if (row.tenantId !== input.tenantId || row.clientId !== input.clientId || row.operatorId !== input.operatorId || row.state !== "PENDING" || row.expiresAt <= input.now) return null;
-    return { token: decryptCredential(row.credential), inspection: structuredClone(row.inspection), candidates: structuredClone(row.candidates), expiresAt: row.expiresAt };
+    return { token: decryptCredential(row.credential), inspection: structuredClone(row.inspection), candidates: structuredClone(row.candidates), expiresAt: row.expiresAt, expectedRevisions: structuredClone(row.expectedRevisions) };
   }
   async consume(input: Parameters<OAuthDiscoveryTransactionStore["consume"]>[0]) {
     let result: Awaited<ReturnType<OAuthDiscoveryTransactionStore["consume"]>> = null;
@@ -73,7 +75,7 @@ export class InMemoryOAuthDiscoveryTransactionStore implements OAuthDiscoveryTra
   async readSecret(input: Parameters<OAuthDiscoveryTransactionStore["readSecret"]>[0]) {
     const row = this.rows.get(input.transactionId);
     if (!row || row.tenantId !== input.tenantId || row.clientId !== input.clientId || row.operatorId !== input.operatorId || row.state !== "PENDING" || row.expiresAt <= input.now) return null;
-    return { token: decryptCredential(row.credential), inspection: structuredClone(row.inspection), candidates: structuredClone(row.candidates), expiresAt: row.expiresAt };
+    return { token: decryptCredential(row.credential), inspection: structuredClone(row.inspection), candidates: structuredClone(row.candidates), expiresAt: row.expiresAt, expectedRevisions: structuredClone(row.expectedRevisions) };
   }
   async consume(input: Parameters<OAuthDiscoveryTransactionStore["consume"]>[0]) {
     const row = this.rows.get(input.transactionId);

@@ -230,7 +230,7 @@ export class PlatformOAuthService {
     if(registeredDuringDiscovery)throw new PlatformDenied("OAUTH_REGISTERED_ASSET_PATH_REQUIRED");
     const transactionId=randomUUID(),expiresAt=Math.min(inspected.expiresAt,now+300000),inspection:OAuthDiscoveryInspection={provider:inspected.provider,appId:inspected.appId,subjectId:inspected.subjectId,tokenType:inspected.tokenType,grantedScopes:[...inspected.grantedScopes],...(observed?{grantedPermissionProfiles:observed}:{}),expiresAt:inspected.expiresAt};
     const expectedCandidates=structuredClone(candidates), expectedInspection=structuredClone(inspection);
-    await store.create({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,token:inspected.accessToken,inspection:structuredClone(expectedInspection),candidates:structuredClone(expectedCandidates),expiresAt});
+    await store.create({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,token:inspected.accessToken,inspection:structuredClone(expectedInspection),candidates:structuredClone(expectedCandidates),expiresAt,expectedRevisions:{tenant:fresh.tenant.registryRevision,member:fresh.member.revision,client:fresh.client.revision}});
     let started;
     try { started=oauthDiscoveryHandoffSchema.parse(await registration.begin({transactionId,tenantId:fresh.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,inspection:structuredClone(expectedInspection),candidates:structuredClone(expectedCandidates),expiresAt,expectedRevisions:{tenant:fresh.tenant.registryRevision,member:fresh.member.revision,client:fresh.client.revision}})); }
     catch { throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID"); }
@@ -248,7 +248,7 @@ export class PlatformOAuthService {
     const candidateSet=new Set(pending.candidates.map(c=>`${c.type}:${c.id}`));
     if(input.selectedAssets.some(a=>a.type!=="AD_ACCOUNT"||!candidateSet.has(`${a.type}:${a.id}`)))throw new PlatformDenied("OAUTH_DISCOVERY_ASSET_SELECTION_INVALID");
     const current=await membership(this.deps.repository,input.operatorId,input.clientId);
-    if(canonicalJson(initial.expected)!==canonicalJson(current.expected))throw new PlatformDenied("OAUTH_MEMBERSHIP_CHANGED");
+    if(canonicalJson(initial.expected)!==canonicalJson(current.expected)||current.tenant.registryRevision!==pending.expectedRevisions.tenant||current.member.revision!==pending.expectedRevisions.member||current.client.revision!==pending.expectedRevisions.client)throw new PlatformDenied("OAUTH_MEMBERSHIP_CHANGED");
     const registered=(await this.deps.repository.list("assets",current.principal.tenantId)).filter(a=>a.tenantId===current.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
     const selected=registered.filter(a=>input.selectedAssets.some(r=>r.type===a.type&&r.id.replace(/^act_/,'')===a.id.replace(/^act_/,'')&&a.verifiedAt<=this.now()));
     if(selected.length!==input.selectedAssets.length||selected.some(a=>a.verifiedAt<=0||this.now()-a.verifiedAt>3600000))throw new PlatformDenied("OAUTH_DISCOVERY_REGISTERED_ASSET_REQUIRED");
