@@ -129,6 +129,29 @@ describe("validateMetaAuthReturn", () => {
   });
 });
 
+describe("platform connections operator re-login return", () => {
+  const getClient = makeGetClient({});
+  it("accepts only the exact internal platform connections page", async () => {
+    await expect(validateMetaAuthReturn("/platform/connections/", getClient))
+      .resolves.toBe("/platform/connections/");
+  });
+  it.each([
+    "/platform/connections",
+    "/platform/connections/?client_id=attacker",
+    "/platform/connections/?return=https://evil.example",
+    "/platform/connections/extra",
+    "/platform/connections/../authorize",
+    "/platform/connections/%2e%2e/authorize",
+    "/platform/connections/%2f",
+    "//evil.example/platform/connections/",
+    "https://evil.example/platform/connections/",
+    "/\\evil.example/platform/connections/",
+    "/platform\\connections/",
+  ])("rejects unsafe or non-exact platform return %s", async input => {
+    await expect(validateMetaAuthReturn(input, getClient)).resolves.toBeNull();
+  });
+});
+
 describe("safeReturnTo fallback", () => {
   it("defaults to /authorize so existing call sites are unchanged", () => {
     expect(safeReturnTo(undefined)).toBe("/authorize");
