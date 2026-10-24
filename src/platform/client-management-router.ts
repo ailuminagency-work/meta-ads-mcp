@@ -251,7 +251,7 @@ export function createClientManagementRouter(deps: {
         .send(
           layout(
             "Access required",
-            '<main class="error-page"><div class="eyebrow">Client administration</div><h1>Administrator access required</h1><p>This area is limited to an authorized Lumin tenant administrator. No client, credential, Meta permission, or advertising setting was changed.</p><p><a class="link" href="/platform/connections/">Return to Meta connections</a></p></main>',
+            '<main class="error-page"><div class="brand"><span class="brand-mark">L</span><div>Lumin<span>Agency operations</span></div></div><div class="eyebrow">Secure workspace</div><h1>Sign in to manage clients</h1><p>This internal portal is available only to an authorized Lumin tenant administrator. Sign in with the approved Meta operator account to continue.</p><p><a class="button" href="/auth/meta?return=%2Fplatform%2Fclients%2F">Sign in with Meta</a></p><p class="notice">No client records, credentials, Meta permissions, billing settings, or advertising activity were changed.</p><p><a class="link" href="/platform/connections/">Open Meta connections</a></p></main>',
           ),
         );
     }
