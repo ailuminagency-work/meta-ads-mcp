@@ -38,7 +38,9 @@ import { ApifyApiClient } from "../apify/client.js";
 import type { ApifyEnvelope, ApifyUser } from "../apify/types.js";
 import { CONNECTIONS_PATH, renderConnectionsPage } from "./html-pages.js";
 
-const STANDALONE_RETURN_PATHS = new Set<string>([CONNECTIONS_PATH]);
+// Platform's own session-expiry redirect also returns here after operator login.
+// Keep both destinations exact and query-free; never accept arbitrary return URLs.
+const STANDALONE_RETURN_PATHS = new Set<string>([CONNECTIONS_PATH, "/platform/connections/"]);
 
 /**
  * Short timeout and no retries, unlike the shared `apifyApiClient` singleton

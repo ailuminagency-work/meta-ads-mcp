@@ -1,4 +1,5 @@
-import {logOAuthFailure} from "./oauth-diagnostics.js";
+import {logOAuthFailure,oauthFailureCategory} from "./oauth-diagnostics.js";
+import {classifyCallbackQuery,classifyCallbackServiceFailure,renderCallbackRecoveryHtml,type CallbackRecoveryCode} from "./oauth-callback-recovery.js";
 import express from "express";
 import cookieParser from "cookie-parser";
 import { z } from "zod";
@@ -24,6 +25,40 @@ function isSameOriginBrowserPost(req: express.Request, publicOrigin: string): bo
   const suppliedOrigin = req.get("origin");
   if (suppliedOrigin) return suppliedOrigin === publicOrigin;
   return fetchSite === "same-origin" && fetchMode === "navigate" && fetchDest === "document";
+}
+
+/** Browser callback recovery never reruns OAuth or uses a fallback identity. */
+function callbackHold(req:express.Request,res:express.Response,status:400|401|403|503,code:CallbackRecoveryCode):void {
+  if(req.get("accept")?.includes("text/html")){
+    res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+    res.status(status).type("html").send(renderCallbackRecoveryHtml(code));
+    return;
+  }
+  res.sendStatus(status);
+}
+
+/** Reject corrupt or absent cookies as 403 before provider token exchange. */
+function parseCallbackCookie(raw:unknown):
+  | {ok:true; data:z.infer<typeof cookieSchema>}
+  | {ok:false;reason:"CALLBACK_COOKIE_MISSING"|"CALLBACK_COOKIE_INVALID"|"CALLBACK_NONCE_INVALID"} {
+  if(raw===undefined)return {ok:false,reason:"CALLBACK_COOKIE_MISSING"};
+  if(typeof raw!=="string"||raw.length<1||raw.length>1024||!/^[A-Za-z0-9_-]+$/.test(raw))
+    return {ok:false,reason:"CALLBACK_COOKIE_INVALID"};
+  let decoded:unknown;
+  try{decoded=JSON.parse(Buffer.from(raw,"base64url").toString("utf8"));}
+  catch{return {ok:false,reason:"CALLBACK_COOKIE_INVALID"};}
+  const result=cookieSchema.safeParse(decoded);
+  if(result.success)return {ok:true,data:result.data};
+  if(decoded&&typeof decoded==="object"&&!Array.isArray(decoded)){
+    const nonce=(decoded as Record<string,unknown>).nonce;
+    if(typeof nonce!=="string"||!/^[a-f0-9]{64}$/.test(nonce))
+      return {ok:false,reason:"CALLBACK_NONCE_INVALID"};
+  }
+  return {ok:false,reason:"CALLBACK_COOKIE_INVALID"};
+}
+
+function logCallbackHold(reason:CallbackRecoveryCode):void {
+  logger.warn({event:"platform_oauth_callback_blocked",reason},"Platform OAuth callback requires a new authorized action");
 }
 
 export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies): express.Router {
@@ -54,21 +89,30 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
   router.get("/:profileId/callback", async (req, res) => {
     try {
       const operator = await deps.getSessionOperator(req);
-      if (!operator) { res.sendStatus(401); return; }
+      if (!operator) { logCallbackHold("SESSION_REQUIRED");callbackHold(req,res,401,"SESSION_REQUIRED"); return; }
       const query = z.object({ state: z.string().regex(/^[a-f0-9]{64}$/), code: z.string().min(1).max(4096) }).strict().safeParse(req.query);
-      if (!query.success || !/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) { res.sendStatus(400); return; }
-      const state = query.data.state;
-      res.clearCookie(cookieName(state), cookieOptions);
-      const rawCookie: unknown = req.cookies?.[cookieName(state)];
-      if (typeof rawCookie !== "string" || rawCookie.length > 1024) { res.sendStatus(403); return; }
-      const cookie = cookieSchema.safeParse(JSON.parse(Buffer.from(rawCookie, "base64url").toString("utf8")));
-      if (!cookie.success) { res.sendStatus(403); return; }
-      const result = await deps.service.callback({ operatorId: operator, clientId: cookie.data.clientId, profileId: req.params.profileId, state, browserNonce: cookie.data.nonce, code: query.data.code });
+      const queryIssue=classifyCallbackQuery(req.query,req.params.profileId);
+      if (queryIssue || !query.success) {
+        const reason=queryIssue??"CALLBACK_QUERY_INVALID";
+        logger.warn({event:"platform_oauth_callback_query_rejected",reason},"Platform OAuth callback input rejected");
+        callbackHold(req,res,400,reason);return;
+      }
+      const state=query.data.state;
+      res.clearCookie(cookieName(state),cookieOptions);
+      const rawCookie:unknown=req.cookies?.[cookieName(state)];
+      const cookie=parseCallbackCookie(rawCookie);
+      if(!cookie.ok){logCallbackHold(cookie.reason);callbackHold(req,res,403,cookie.reason);return;}
+      const result=await deps.service.callback({operatorId:operator,clientId:cookie.data.clientId,profileId:req.params.profileId,state,browserNonce:cookie.data.nonce,code:query.data.code});
       let nextSteps:Array<{label:string;path:string}>=[];
       try{nextSteps=z.array(z.object({label:z.string().min(1).max(120),path:z.string().regex(/^\/platform\/[A-Za-z0-9_/-]{1,500}$/)}).strict()).max(20).parse(await deps.getNextSteps?.(operator,cookie.data.clientId,result)??[]);}catch{nextSteps=[];}
       if(req.get("accept")?.includes("text/html")){const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'");res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Client product connected</title><h1>Client product connected</h1><p>Meta access was checked for ${escape(cookie.data.clientId)}. ${result.assetCount} selected assets were connected. This does not verify client ownership or billing, and no ads or messages were sent.</p>${nextSteps.length?'<h2>Next review</h2><ul>'+nextSteps.map(step=>'<li><a href="'+escape(step.path)+'">'+escape(step.label)+'</a></li>').join('')+'</ul>':''}<p><a href="/platform/connections/">Return to client connections</a></p></html>`);return;}
       res.json({ status: "CONNECTED", ...result,...(nextSteps.length?{next_steps:nextSteps}:{}) });
-    } catch(error) { logOAuthFailure("callback",error);res.status(503).json({ status: "HOLD", reason: "OAUTH_CALLBACK_UNAVAILABLE" }); }
+    } catch(error) {
+      logOAuthFailure("callback",error);
+      if(req.get("accept")?.includes("text/html")){
+        callbackHold(req,res,503,classifyCallbackServiceFailure(oauthFailureCategory(error)));
+      }else res.status(503).json({status:"HOLD",reason:"OAUTH_CALLBACK_UNAVAILABLE"});
+    }
   });
   router.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(400).json({ status: "HOLD", reason: "INVALID_OAUTH_REQUEST" }); });
   return router;
