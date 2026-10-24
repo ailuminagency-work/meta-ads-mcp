@@ -5,8 +5,8 @@
 This is an **isolated, compile-time Phase 1 policy foundation**, NOT an enabled
 automatic recovery service. Do not treat a catalog of recovery procedures as
 proof that production onboarding has been repaired. The implementation is
-\`src/platform/oauth-recovery-toolbox.ts\`, with
-\`tests/platform/oauth-recovery-toolbox.test.ts\`.
+`src/platform/oauth-recovery-toolbox.ts`, with
+`tests/platform/oauth-recovery-toolbox.test.ts`.
 
 No production environment changes, credentials, provider scopes, account grants,
 app reviews, data migration, advertising writes, token imports, or automatic
@@ -22,13 +22,13 @@ operators do not invent a new technical fix for every client callback failure.
 2. **Lumin operator/client -> Meta**: Meta user identity, account/business
    permission, Business Login/OAuth, token inspection, client-asset binding.
 
-Do not confuse these. A working MCP \`initialize\` does NOT prove Meta client
-access, and Meta consent does NOT prove the MCP tool schema accepts \`client_id\`.
+Do not confuse these. A working MCP `initialize` does NOT prove Meta client
+access, and Meta consent does NOT prove the MCP tool schema accepts `client_id`.
 
 ## User experience
 
-\`Add client -> Choose client-owned business/account -> Connect -> Meta approval
-if required -> Verify -> Connected.\`
+`Add client -> Choose client-owned business/account -> Connect -> Meta approval
+if required -> Verify -> Connected.`
 
 All routine operations should use existing verified scoped credentials. A
 client's real Meta authorization is needed when an initial grant, revocation,
@@ -44,7 +44,7 @@ Never display a misleading success status after a 401/403/503 callback.
 ## Recovery toolbox — implemented decision catalog (21 entries)
 
 The compiled catalog intentionally returns the next *proposed* action, not
-arbitrary instructions from the provider. Actions with \`automatic_diagnostic\`
+arbitrary instructions from the provider. Actions with `automatic_diagnostic`
 are **read-only probes only** and may execute only after injection of reviewed
 bounded handlers. Every other action is an explicit human or security stop.
 
@@ -73,13 +73,13 @@ bounded handlers. Every other action is an explicit human or security stop.
 | 21 | stop_on_security_denial | Fail closed on identity, state, asset or tenant tampering | Security reviewer |
 
 This catalog covers 36 exact reason classes, including the observed
-\`FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED\`,
-\`FACEBOOK_OAUTH_DEBUG_TOKEN_RESPONSE_INVALID\`,
-\`CLIENT_CONNECTION_ADMIN_REQUIRED\` and the MCP missing-\`client_id\` case.
+`FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED`,
+`FACEBOOK_OAUTH_DEBUG_TOKEN_RESPONSE_INVALID`,
+`CLIENT_CONNECTION_ADMIN_REQUIRED` and the MCP missing-`client_id` case.
 
 ### Example deterministic progression
 
-For \`FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED\`:
+For `FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED`:
 
 1. Review the trusted scopes and the already granted scopes without logging
    tokens or granting write permissions.
@@ -103,7 +103,7 @@ To activate this in the real callback path, an independent engineering PR
 must complete all of the following:
 
 1. Feed only a **known internal allowlisted failure reason** into
-   \`chooseRecovery\`. The current generic \`OAUTH_CALLBACK_UNAVAILABLE\`
+   `chooseRecovery`. The current generic `OAUTH_CALLBACK_UNAVAILABLE`
    response must never turn raw exception messages into public output.
 2. Persist an incident identifier and bounded attempt history keyed to
    the existing tenant, client, operator, profile and current OAuth state.
@@ -121,7 +121,7 @@ must complete all of the following:
    permissions, substitute another client, or circumvent Meta 2FA.
 7. Provide a sanitized incident correlation ID, safe failure category,
    owner/operator action and terminal status; never expose token, code,
-   \`state\`, raw Meta provider response or personal identity in logs.
+   `state`, raw Meta provider response or personal identity in logs.
 8. Prove the actual callback returns success and persists a verified
    connection for one Lumin-owned and one independently client-owned
    business without per-client code or Railway variable modifications.
@@ -134,7 +134,7 @@ must complete all of the following:
 
 ## Non-negotiable guardrails
 
-- Initial read-only profile cannot automatically select \`ads_management\`.
+- Initial read-only profile cannot automatically select `ads_management`.
 - Never use a token, system-user identity or agency credential belonging to a
   different business/client simply to make a rejected call succeed.
 - Do not create tenant permissions, business-ownership records, asset grants or
