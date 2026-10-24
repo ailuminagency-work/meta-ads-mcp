@@ -18,7 +18,7 @@ import { encryptCredential } from "./connections.js";
 import { canonicalJson } from "./policy.js";
 import {encryptPageInspectionDelegation,pageInspectionDelegationMetadata,type PageInspectionDelegation} from "./page-inspection-delegation.js";
 import {facebookActualScopesMatch, classifyMetaPermissionProfiles, type MetaPermissionProfile} from "./oauth-facebook.js";
-import {oauthDiscoveryHandoffSchema,type OAuthAssetDiscoveryCandidate,OAuthAssetRegistrationBridge,OAuthDiscoveryInspection,OAuthDiscoveryRequired,OAuthDiscoveryTransactionStore} from "./oauth-discovery.js";
+import { oauthDiscoveryHandoffSchema, type OAuthAssetDiscoveryCandidate, type OAuthAssetRegistrationBridge, type OAuthDiscoveryInspection, type OAuthDiscoveryRequired, type OAuthDiscoveryTransactionStore } from "./oauth-discovery.js";
 
 export interface TrustedOAuthProfile extends ConnectionProfile {
   appPromotionBinding?:import("./app-promotion-contract.js").AppPromotionBinding;
