@@ -11,14 +11,14 @@ import {productVersion} from "./product-version.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createConnectionChallenge, consumeConnectionChallenge, validateConnectionProfile, type ConnectionChallengeStore, type ConnectionProfile } from "./connection-profiles.js";
-import type { AssetGrant, AssetRef, Connection, Credential, Member, MetaAsset, OperationClass, PlatformPrincipal,Client } from "./models.js";
+import type { AssetGrant, AssetRef, Connection, Credential, Member, MetaAsset, OperationClass, PlatformPrincipal,Client,Tenant } from "./models.js";
 import { PlatformDenied } from "./models.js";
 import type { PlatformRepository } from "./repository.js";
 import { encryptCredential } from "./connections.js";
 import { canonicalJson } from "./policy.js";
 import {encryptPageInspectionDelegation,pageInspectionDelegationMetadata,type PageInspectionDelegation} from "./page-inspection-delegation.js";
 import {facebookActualScopesMatch, classifyMetaPermissionProfiles, type MetaPermissionProfile} from "./oauth-facebook.js";
-import type {OAuthAssetDiscoveryCandidate,OAuthAssetRegistrationBridge,OAuthDiscoveryInspection,OAuthDiscoveryRequired,OAuthDiscoveryTransactionStore} from "./oauth-discovery.js";
+import {oauthDiscoveryHandoffSchema,type OAuthAssetDiscoveryCandidate,OAuthAssetRegistrationBridge,OAuthDiscoveryInspection,OAuthDiscoveryRequired,OAuthDiscoveryTransactionStore} from "./oauth-discovery.js";
 
 export interface TrustedOAuthProfile extends ConnectionProfile {
   appPromotionBinding?:import("./app-promotion-contract.js").AppPromotionBinding;
@@ -121,13 +121,13 @@ export interface PlatformOAuthDependencies {
   now?: () => number;
 }
 
-async function membership(repo: PlatformRepository, operatorId: string, clientId: string): Promise<{ principal: PlatformPrincipal; member: Member;client:Client; businessOwnerEvidence:ClientBusinessEvidence; expected: ConnectionEnrollment["expectedRecords"] }> {
+async function membership(repo: PlatformRepository, operatorId: string, clientId: string): Promise<{ principal: PlatformPrincipal; tenant: Tenant; member: Member;client:Client; businessOwnerEvidence:ClientBusinessEvidence; expected: ConnectionEnrollment["expectedRecords"] }> {
   const principal = await repo.resolvePrincipal(operatorId);
   if (!principal || principal.operatorId !== operatorId) throw new PlatformDenied("AUTHENTICATED_PLATFORM_OPERATOR_REQUIRED");
   const [tenant, member, client] = await Promise.all([repo.get("tenants", principal.tenantId, principal.tenantId), repo.get("members", principal.tenantId, operatorId), repo.get("clients", principal.tenantId, clientId)]);
   if (!tenant || tenant.id !== principal.tenantId || tenant.status !== "ACTIVE" || tenant.migrationState !== "READY" || !member || member.operatorId !== operatorId || member.tenantId !== principal.tenantId || member.disabledAt !== null || !member.allowedClientIds.includes(clientId) || !member.roles.some(role => role === "admin" || role === "connection_admin") || !client || client.id !== clientId || client.tenantId !== principal.tenantId || client.status !== "ACTIVE") throw new PlatformDenied("CLIENT_CONNECTION_ADMIN_REQUIRED");
   const businessOwnerEvidence=await loadClientBusinessEvidence(repo,client);
-  return { principal, member,client,businessOwnerEvidence, expected: [{ collection: "tenants", id: tenant.id, canonical: canonicalJson(tenant) }, { collection: "members", id: member.operatorId, canonical: canonicalJson(member) }, { collection: "clients", id: client.id, canonical: canonicalJson(client) },...clientBusinessExpected(businessOwnerEvidence)] };
+  return { principal, tenant, member,client,businessOwnerEvidence, expected: [{ collection: "tenants", id: tenant.id, canonical: canonicalJson(tenant) }, { collection: "members", id: member.operatorId, canonical: canonicalJson(member) }, { collection: "clients", id: client.id, canonical: canonicalJson(client) },...clientBusinessExpected(businessOwnerEvidence)] };
 }
 
 export class PlatformOAuthService {
@@ -222,11 +222,18 @@ export class PlatformOAuthService {
     if(profile.provider!=="META_MARKETING"||!observed)throw new PlatformDenied("OAUTH_DISCOVERY_PROFILE_REQUIRED");
     const candidates:OAuthAssetDiscoveryCandidate[]=inspected.assets.filter(a=>a.type==="AD_ACCOUNT").map(a=>({type:a.type,id:a.id,providerAssetId:a.id,evidence:{source:"META_ME_ADACCOUNTS",checkedAt:now,expiresAt:Math.min(inspected.expiresAt,now+300000)}}));
     if(!candidates.length||candidates.length>98)throw new PlatformDenied("OAUTH_DISCOVERY_NO_ELIGIBLE_ASSETS");
+    const fresh=await membership(this.deps.repository,input.operatorId,input.clientId);
+    adapter.validateEnrollmentContext?.({profile,principal:fresh.principal,clientId:input.clientId,client:fresh.client,businessOwnerEvidence:fresh.businessOwnerEvidence});
+    if(canonicalJson(initial.expected)!==canonicalJson(fresh.expected))throw new PlatformDenied("OAUTH_MEMBERSHIP_CHANGED");
+    const registeredDuringDiscovery=(await this.deps.repository.list("assets",fresh.principal.tenantId)).some(a=>a.tenantId===fresh.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
+    if(registeredDuringDiscovery)throw new PlatformDenied("OAUTH_REGISTERED_ASSET_PATH_REQUIRED");
     const transactionId=randomUUID(),expiresAt=Math.min(inspected.expiresAt,now+300000),inspection:OAuthDiscoveryInspection={provider:inspected.provider,appId:inspected.appId,subjectId:inspected.subjectId,tokenType:inspected.tokenType,grantedScopes:[...inspected.grantedScopes],...(observed?{grantedPermissionProfiles:observed}:{}),expiresAt:inspected.expiresAt};
     await store.create({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,token:inspected.accessToken,inspection,candidates,expiresAt});
-    const started=await registration.begin({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,inspection,candidates,expiresAt});
-    if(started.transactionId!==transactionId||started.expiresAt>expiresAt||started.candidates.length!==candidates.length)throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID");
-    return {status:"DISCOVERY_REQUIRED",transactionId,expiresAt:started.expiresAt,candidates:structuredClone(started.candidates)};
+    let started;
+    try { started=oauthDiscoveryHandoffSchema.parse(await registration.begin({transactionId,tenantId:fresh.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,inspection,candidates,expiresAt,expectedRevisions:{tenant:fresh.tenant.registryRevision,member:fresh.member.revision,client:fresh.client.revision}})); }
+    catch { throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID"); }
+    if(started.transactionId!==transactionId||started.expiresAt<=now||started.expiresAt>expiresAt||canonicalJson(started.candidates)!==canonicalJson(candidates))throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID");
+    return {status:"DISCOVERY_REQUIRED",transactionId,expiresAt:started.expiresAt,candidates:structuredClone(candidates)};
   }
   async callback(input: { operatorId: string; clientId: string; profileId: string; state: string; browserNonce: string; code: string }): Promise<{ connectionId: string; connectionIds:string[];connectionCount:number;provider: Connection["provider"]; assetCount: number }> {
     if (!input.code || input.code.length > 4096) throw new PlatformDenied("INVALID_OAUTH_CALLBACK");

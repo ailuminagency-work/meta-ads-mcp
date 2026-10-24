@@ -1,6 +1,7 @@
 import type { AssetRef } from "./models.js";
 import type { InspectedOAuthToken } from "./oauth.js";
 import type { MetaPermissionProfile } from "./oauth-facebook.js";
+import { z } from "zod";
 
 /** A provider candidate is deliberately smaller than Meta's response. */
 export interface OAuthAssetDiscoveryCandidate extends AssetRef {
@@ -34,6 +35,7 @@ export interface OAuthAssetRegistrationBridge {
     inspection: OAuthDiscoveryInspection;
     candidates: OAuthAssetDiscoveryCandidate[];
     expiresAt: number;
+    expectedRevisions: { tenant: number; member: number; client: number };
   }): Promise<{ transactionId: string; expiresAt: number; candidates: OAuthAssetDiscoveryCandidate[] }>;
   commit(input: {
     transactionId: string;
@@ -45,6 +47,22 @@ export interface OAuthAssetRegistrationBridge {
     expectedRevision: number;
   }): Promise<{ registrationId: string; revision: number; assets: AssetRef[] }>;
 }
+
+/** Strict acknowledgement schema; the registry cannot substitute provider candidates. */
+export const oauthDiscoveryHandoffSchema = z.object({
+  transactionId: z.string().uuid(),
+  expiresAt: z.number().int().positive().finite(),
+  candidates: z.array(z.object({
+    type: z.literal("AD_ACCOUNT"),
+    id: z.string().regex(/^\d{1,100}$/),
+    providerAssetId: z.string().regex(/^\d{1,100}$/),
+    evidence: z.object({
+      source: z.literal("META_ME_ADACCOUNTS"),
+      checkedAt: z.number().int().positive().finite(),
+      expiresAt: z.number().int().positive().finite(),
+    }).strict(),
+  }).strict()).max(98),
+}).strict();
 
 /** Auth-owned storage keeps the exchanged credential server-side until registration. */
 export interface OAuthDiscoveryTransactionStore {

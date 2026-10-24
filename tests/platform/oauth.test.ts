@@ -49,8 +49,24 @@ describe("protected incremental OAuth service", () => {
     expect(store.create).toHaveBeenCalledOnce();
     expect(store.create.mock.calls[0][0].token).toBe(token);
     expect(bridge.begin).toHaveBeenCalledOnce();
+    expect(bridge.begin.mock.calls[0][0]).not.toHaveProperty("token");
+    expect(bridge.begin.mock.calls[0][0].expectedRevisions).toEqual({tenant:1,member:1,client:1});
     expect(await repo.list("connections","tenant-discovery")).toHaveLength(0);
     expect(await repo.list("credentials","tenant-discovery")).toHaveLength(0);
+  });
+  it("rejects a registry acknowledgement that substitutes provider candidates", async () => {
+    const marketing: TrustedOAuthProfile = { id:"meta-discovery-substitution",provider:"META_MARKETING",appId:"3011",strategy:"facebook_business",scopes:["public_profile","ads_read"],tokenTypes:["user"],redirectUri:"https://fixture.invalid/platform/oauth/meta-discovery-substitution/callback",authorizeUrl:"https://www.facebook.com/v26.0/dialog/oauth",verified:true,secretReference:"fixture-secret-reference",capabilities:["legacy.ads_get_account_info"],actions:["READ"],requiredTasks:[] };
+    const repo=new InMemoryPlatformRepository(), now=Date.now();
+    await repo.put("operatorIndex","_index","1004",{operatorId:"1004",tenantId:"tenant-discovery-substitution"});
+    await repo.put("tenants","tenant-discovery-substitution","tenant-discovery-substitution",{id:"tenant-discovery-substitution",status:"ACTIVE",migrationState:"READY",policyRevision:1,registryRevision:1});
+    await repo.put("members","tenant-discovery-substitution","1004",{operatorId:"1004",tenantId:"tenant-discovery-substitution",roles:["connection_admin"],allowedClientIds:["client-discovery-substitution"],revision:1,disabledAt:null});
+    await repo.put("clients","tenant-discovery-substitution","client-discovery-substitution",{id:"client-discovery-substitution",tenantId:"tenant-discovery-substitution",status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
+    const adapter:VerifiedProviderAdapter={provider:"META_MARKETING",verified:true,validateProfile:()=>{},validateEnrollmentContext:()=>{},exchangeAndInspect:async()=>{throw new Error("not reached")},discoverAssets:async()=>({accessToken:"synthetic-discovery-token",provider:"META_MARKETING",appId:marketing.appId,subjectId:"1004",tokenType:"user",grantedScopes:[...marketing.scopes],expiresAt:now+3600000,assets:[{type:"AD_ACCOUNT",id:"101",tasks:[]}]})};
+    const store={create:vi.fn(async()=>{}),consume:vi.fn(async()=>null)};
+    const bridge:OAuthAssetRegistrationBridge={begin:vi.fn(async(input)=>({transactionId:input.transactionId,expiresAt:input.expiresAt,candidates:[{...input.candidates[0],id:"999",providerAssetId:"999"}]})),commit:vi.fn()};
+    const service=new PlatformOAuthService({repository:repo,challenges:new InMemoryConnectionChallengeStore(),profiles:new ImmutableOAuthProfileRegistry([marketing]),secrets:{get:async()=>"synthetic-secret"},adapters:{get:()=>adapter},discoveryStore:store,assetRegistration:bridge});
+    const start=await service.start("1004","client-discovery-substitution",marketing.id);
+    await expect(service.discoverFirstTime({operatorId:"1004",clientId:"client-discovery-substitution",profileId:marketing.id,state:start.state,browserNonce:start.browserNonce,code:"synthetic-code"})).rejects.toThrow("OAUTH_DISCOVERY_HANDOFF_INVALID");
   });
   it("launches the plain Meta marketing reader with its exact scopes", async () => {
     const marketing: TrustedOAuthProfile = {
