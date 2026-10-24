@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Firestore } from "@google-cloud/firestore";
 import { PlatformDenied } from "./models.js";
 import type { RecoveryAttemptLedger } from "./oauth-recovery-runner.js";
-import type { RecoveryToolId } from "./oauth-recovery-toolbox.js";
+import { RECOVERY_TOOLS, type RecoveryToolId } from "./oauth-recovery-toolbox.js";
 
 const COLLECTION = "platform_oauth_recovery_incidents";
 const MAX_ID = 128;
@@ -78,13 +78,20 @@ function assertWindow(now: number, expiresAt: number): void {
 
 function assertRecord(row: RecoveryIncidentRecord, scope: RecoveryIncidentScope): void {
   assertScope(scope);
+  const validStatuses: readonly RecoveryIncidentStatus[] = ["OPEN", "RESOLVED", "EXHAUSTED", "HOLD"];
+  const validActions = new Set(Object.keys(RECOVERY_TOOLS));
   if (row.version !== 1 || row.scopeHash !== recoveryIncidentScopeHash(scope) ||
       row.tenantId !== scope.tenantId || row.clientId !== scope.clientId ||
       row.operatorId !== scope.operatorId || row.provider !== scope.provider ||
       row.connectionId !== scope.connectionId || row.profileId !== scope.profileId ||
-      row.incidentId !== scope.incidentId || !Array.isArray(row.attempted) ||
+      row.incidentId !== scope.incidentId || !validStatuses.includes(row.status) || !validId(row.reason) ||
+      !Array.isArray(row.attempted) || row.attempted.some(action => typeof action !== "string" || !validActions.has(action)) ||
       !Number.isSafeInteger(row.revision) || row.revision < 1 ||
-      !Number.isSafeInteger(row.maxTotalAttempts) || row.maxTotalAttempts < 0 || row.maxTotalAttempts > 3) {
+      !Number.isSafeInteger(row.maxTotalAttempts) || row.maxTotalAttempts < 0 || row.maxTotalAttempts > 3 ||
+      row.attempted.length > row.maxTotalAttempts ||
+      !Number.isSafeInteger(row.createdAt) || row.createdAt <= 0 ||
+      !Number.isSafeInteger(row.updatedAt) || row.updatedAt < row.createdAt ||
+      !Number.isSafeInteger(row.expiresAt) || row.expiresAt <= row.createdAt) {
     throw new PlatformDenied("RECOVERY_INCIDENT_BINDING_INVALID");
   }
 }

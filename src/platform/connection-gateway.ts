@@ -70,6 +70,7 @@ export interface ConnectionGatewayResult {
 const securityStops = new Set([
   "PLATFORM_MEMBERSHIP_REQUIRED",
   "CLIENT_MEMBERSHIP_REQUIRED",
+  "ASSET_REGISTRY_BINDING_REQUIRED",
   "SELECTED_CONNECTION_UNAVAILABLE",
   "SCOPED_ASSET_TASK_REFERENCE_REQUIRED",
   "UNREQUESTED_OAUTH_ASSET",
@@ -84,6 +85,48 @@ const securityStops = new Set([
 export class ConnectionStrategyGateway {
   public constructor(private readonly repository: PlatformRepository) {}
 
+  private async verifyScope(input: {
+    readonly context: OperationContext;
+    readonly plan: OperationPlan;
+    readonly assets: readonly MetaAsset[];
+  }): Promise<MetaAsset[]> {
+    const { context, plan, assets } = input;
+    const tenantId = context.principal.tenantId;
+    const operatorId = context.principal.operatorId;
+    if (assets.length === 0) throw new PlatformDenied("SCOPED_ASSET_TASK_REFERENCE_REQUIRED");
+    const tenant = await this.repository.get("tenants", tenantId, tenantId);
+    const member = await this.repository.get("members", tenantId, operatorId);
+    const client = await this.repository.get("clients", tenantId, context.clientId);
+    if (!tenant || tenant.status !== "ACTIVE" || tenant.migrationState !== "READY" ||
+        !member || member.tenantId !== tenantId || member.operatorId !== operatorId ||
+        member.disabledAt !== null || !member.roles.some(role => role === "admin" || role === "connection_admin") ||
+        !member.allowedClientIds.includes(context.clientId)) {
+      throw new PlatformDenied("PLATFORM_MEMBERSHIP_REQUIRED");
+    }
+    if (!client || client.tenantId !== tenantId || client.id !== context.clientId || client.status !== "ACTIVE") {
+      throw new PlatformDenied("CLIENT_MEMBERSHIP_REQUIRED");
+    }
+    const seen = new Set<string>();
+    const planRefs = new Set((plan.assets ?? []).map(asset => `${asset.type}:${asset.id.replace(/^act_/, "")}`));
+    const resolved: MetaAsset[] = [];
+    for (const supplied of assets) {
+      if (seen.has(supplied.key) || supplied.tenantId !== tenantId || supplied.clientId !== context.clientId ||
+          supplied.provider !== context.provider || supplied.revokedAt !== null ||
+          (planRefs.size > 0 && !planRefs.has(`${supplied.type}:${supplied.id.replace(/^act_/, "")}`))) {
+        throw new PlatformDenied("ASSET_REGISTRY_BINDING_REQUIRED");
+      }
+      seen.add(supplied.key);
+      const authoritative = await this.repository.get("assets", tenantId, supplied.key);
+      if (!authoritative || authoritative.key !== supplied.key || authoritative.id.replace(/^act_/, "") !== supplied.id.replace(/^act_/, "") ||
+          authoritative.type !== supplied.type || authoritative.tenantId !== tenantId || authoritative.clientId !== context.clientId ||
+          authoritative.provider !== context.provider || authoritative.appId !== supplied.appId || authoritative.revokedAt !== null) {
+        throw new PlatformDenied("ASSET_REGISTRY_BINDING_REQUIRED");
+      }
+      resolved.push(authoritative);
+    }
+    return resolved;
+  }
+
   public async evaluate(input: {
     readonly context: OperationContext;
     readonly plan: OperationPlan;
@@ -97,8 +140,9 @@ export class ConnectionStrategyGateway {
         alternatives: [], reason: "PLATFORM_MEMBERSHIP_REQUIRED" };
     }
     try {
+      const resolvedAssets = await this.verifyScope({ context, plan, assets });
       const connection = await selectConnection(
-        this.repository, context, plan, [...assets], input.now ?? Date.now(), input.selectedConnectionId,
+        this.repository, context, plan, resolvedAssets, input.now ?? Date.now(), input.selectedConnectionId,
       );
       const candidate: ConnectionCandidate = {
         method: "existing_authorized", provider: context.provider,

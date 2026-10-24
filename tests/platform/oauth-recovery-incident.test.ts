@@ -45,6 +45,11 @@ class FakeDb {
     const row = this.rows.get(ref.id);
     return { exists: Boolean(row), data: () => row };
   }
+  tamper(id: string, patch: Record<string, unknown>) {
+    const row = this.rows.get(id);
+    if (!row) throw new Error("missing");
+    this.rows.set(id, { ...row, ...patch });
+  }
 }
 
 describe("OAuth recovery incident binding", () => {
@@ -71,6 +76,18 @@ describe("OAuth recovery incident binding", () => {
     await expect(store.claim({ scope: { ...scope, clientId: "client-b" }, action: "audit_canonical_redirect", maxAttempts: 1, now: 1100 }))
       .rejects.toThrow("RECOVERY_INCIDENT_REQUIRED");
     expect(await store.claim({ scope, action: "audit_canonical_redirect", maxAttempts: 1, now: 2000 })).toBe(false);
+  });
+
+  it("rejects malformed persisted records before a claim", async () => {
+    const db = new FakeDb();
+    const store = new FirestoreRecoveryIncidentStore(db as unknown as Firestore);
+    await store.open({ scope, reason: "ORIGIN_MISMATCH", now: 1000, expiresAt: 2000 });
+    const id = recoveryIncidentScopeHash(scope);
+    db.tamper(id, { expiresAt: Number.NaN });
+    await expect(store.claim({ scope, action: "audit_canonical_redirect", maxAttempts: 1, now: 1100 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_BINDING_INVALID");
+    db.tamper(id, { expiresAt: 2000, status: "BAD" });
+    await expect(store.get(scope)).rejects.toThrow("RECOVERY_INCIDENT_BINDING_INVALID");
   });
 });
 
