@@ -17,6 +17,7 @@ import type { PlatformRepository } from "./repository.js";
 import { encryptCredential } from "./connections.js";
 import { canonicalJson } from "./policy.js";
 import {encryptPageInspectionDelegation,pageInspectionDelegationMetadata,type PageInspectionDelegation} from "./page-inspection-delegation.js";
+import {facebookActualScopesMatch} from "./oauth-facebook.js";
 
 export interface TrustedOAuthProfile extends ConnectionProfile {
   appPromotionBinding?:import("./app-promotion-contract.js").AppPromotionBinding;
@@ -196,7 +197,7 @@ export class PlatformOAuthService {
     const enrollments:ConnectionEnrollment[]=[];
     for(const inspected of inspectedTokens){
     const now = this.now();
-    if (inspected.provider !== profile.provider || inspected.appId !== profile.appId || !profile.tokenTypes.includes(inspected.tokenType) || !/^[0-9]{1,100}$/.test(inspected.subjectId) || !inspected.accessToken || inspected.accessToken.length > 16384 || !Number.isSafeInteger(inspected.expiresAt) || inspected.expiresAt <= now || inspected.grantedScopes.length !== new Set(inspected.grantedScopes).size || canonicalJson([...inspected.grantedScopes].sort()) !== canonicalJson([...(profile.derivedTokenScopes??profile.scopes)].sort()) || !inspected.assets.length || inspected.assets.length > 98) throw new PlatformDenied("ACTUAL_PROVIDER_TOKEN_BINDING_REQUIRED");
+    if (inspected.provider !== profile.provider || inspected.appId !== profile.appId || !profile.tokenTypes.includes(inspected.tokenType) || !/^[0-9]{1,100}$/.test(inspected.subjectId) || !inspected.accessToken || inspected.accessToken.length > 16384 || !Number.isSafeInteger(inspected.expiresAt) || inspected.expiresAt <= now || inspected.grantedScopes.length !== new Set(inspected.grantedScopes).size || (profile.provider === "META_MARKETING" && profile.tokenTypes.length === 1 && profile.tokenTypes[0] === "user" ? !facebookActualScopesMatch(profile.derivedTokenScopes??profile.scopes, inspected.grantedScopes) : canonicalJson([...inspected.grantedScopes].sort()) !== canonicalJson([...(profile.derivedTokenScopes??profile.scopes)].sort())) || !inspected.assets.length || inspected.assets.length > 98) throw new PlatformDenied("ACTUAL_PROVIDER_TOKEN_BINDING_REQUIRED");
     if (inspected.tokenType === "user" && inspected.subjectId !== input.operatorId) throw new PlatformDenied("ACTUAL_OPERATOR_SUBJECT_REQUIRED");
     if (canonicalJson(await this.profile(input.profileId)) !== canonicalJson(profile)) throw new PlatformDenied("OAUTH_PROFILE_CHANGED");
     const fresh = await membership(this.deps.repository, input.operatorId, input.clientId);

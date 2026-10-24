@@ -32,6 +32,7 @@ const safeReasons=new Set([
   "DUPLICATE_DEPLOYMENT_OAUTH_PROFILE",
   "DUPLICATE_OAUTH_ASSET_TOKEN",
   "FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED",
+  "FACEBOOK_ACTUAL_APP_ID_REQUIRED",
   "FACEBOOK_ACTUAL_GRANTED_PERMISSIONS_REQUIRED",
   "FACEBOOK_ACTUAL_USER_SUBJECT_REQUIRED",
   "FACEBOOK_ASSET_PROOF_CURSOR_INVALID",
@@ -128,4 +129,3 @@ export function oauthFailureCategory(error:unknown):string {
 export function logOAuthFailure(stage:"callback"|"provider_exchange",error:unknown):void {
  logger.warn({event:"platform_oauth_failure",stage,reason:oauthFailureCategory(error)},"Platform OAuth failed");
 }
-

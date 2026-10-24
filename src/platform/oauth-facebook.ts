@@ -41,6 +41,14 @@ const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(
 const debugResponse=z.object({data:z.object({app_id:z.union([ID,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),type:z.literal("USER"),user_id:ID,is_valid:z.literal(true),scopes:z.array(SCOPE).min(1).max(100),expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)),data_access_expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()})});
 const permissionResponse=z.object({data:z.array(z.object({permission:SCOPE,status:z.enum(["granted","declined","expired"])})).max(100),paging:z.object({next:z.unknown().optional()}).optional()});
 const scopeKey=(scopes:string[])=>canonicalJson([...scopes].sort());
+// Meta may omit the implicit public_profile baseline from debug_token while
+// returning the explicitly consented product scopes. Accept only that narrow
+// omission; unexpected or missing product scopes still fail closed.
+export function facebookActualScopesMatch(profileScopes:string[],actualScopes:string[]):boolean {
+  if(scopeKey(actualScopes)===scopeKey(profileScopes))return true;
+  if(!profileScopes.includes("public_profile"))return false;
+  return scopeKey(actualScopes)===scopeKey(profileScopes.filter(scope=>scope!=="public_profile"));
+}
 function parse<T>(schema:z.ZodType<T>,value:unknown,reason="FACEBOOK_OAUTH_RESPONSE_SCHEMA_INVALID"):T{const parsed=schema.safeParse(value);if(!parsed.success)throw new PlatformDenied(reason);return parsed.data;}
 function normalizeDebugTokenResponse(value:unknown):unknown {
   if(!value||typeof value!=="object"||Array.isArray(value))return value;
@@ -231,7 +239,11 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     if(long.token_type&&long.token_type.toLowerCase()!=="bearer")throw new PlatformDenied("FACEBOOK_TOKEN_TYPE_MISMATCH");
     const token=long.access_token;
     const debug=parseDebugTokenResponse(await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`));
-    if(String(debug.app_id)!==profile.appId||new Set(debug.scopes).size!==debug.scopes.length||scopeKey(debug.scopes)!==scopeKey(profile.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
+    if(String(debug.app_id)!==profile.appId)throw new PlatformDenied("FACEBOOK_ACTUAL_APP_ID_REQUIRED");
+    if(new Set(debug.scopes).size!==debug.scopes.length||!facebookActualScopesMatch(profile.scopes,debug.scopes)){
+      logger.warn({event:"facebook_debug_token_scope_mismatch",expectedScopeCount:profile.scopes.length,actualScopeCount:debug.scopes.length,implicitPublicProfileOmitted:profile.scopes.includes("public_profile")&&!debug.scopes.includes("public_profile")},"Meta debug_token scopes did not match the trusted profile");
+      throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
+    }
     const inspectedAt=this.now();
     const expiryCandidates=[
       ...(debug.expires_at>0?[debug.expires_at*1000]:[]),
@@ -253,4 +265,3 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
   }
 
 }
-

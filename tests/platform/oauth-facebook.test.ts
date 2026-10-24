@@ -54,6 +54,11 @@ describe("concrete Facebook business user OAuth adapter",()=>{
     const result=await adapter.exchangeAndInspect(baseInput);
     expect(result.expiresAt).toBe(now+3600000);
   });
+  it("accepts an implicit public_profile omission while preserving explicit ads_read consent",async()=>{
+    const {adapter}=fixture({debug:{scopes:["ads_read"]},permissions:{data:[{permission:"ads_read",status:"granted"}]}});
+    const result=await adapter.exchangeAndInspect(baseInput);
+    expect(result.grantedScopes).toEqual(["ads_read"]);
+  });
   it("fails closed when Meta supplies no bounded expiry metadata",async()=>{
     const {adapter}=fixture({exchange:{expires_in:undefined},longExchange:{expires_in:undefined},debug:{expires_at:0,data_access_expires_at:0,data_access_expiration_time:0}});
     await expect(adapter.exchangeAndInspect(baseInput)).rejects.toThrow("FACEBOOK_TOKEN_EXPIRY_UNVERIFIABLE");
@@ -82,4 +87,3 @@ describe("concrete Facebook business user OAuth adapter",()=>{
 });
 
 it.each(["marketing.create.empty.custom.audience","marketing.create.lookalike.audience"])("enrolls exact typed audience capability with READ consent and no budget authority: %s",async capability=>{const scopes=expandVerifiedPermissionDependencies(["public_profile","ads_read","ads_management"]),selected:TrustedOAuthProfile={...profile,scopes,actions:["READ","WRITE_AD_CONFIGURATION"],capabilities:["legacy.ads_get_account_info",capability]},{adapter}=fixture({debug:{scopes},permissions:{data:scopes.map(permission=>({permission,status:"granted"}))}});expect((await adapter.exchangeAndInspect({...baseInput,profile:selected})).grantedScopes).toEqual(scopes);expect(()=>adapter.validateProfile({...selected,actions:["READ","WRITE_AD_CONFIGURATION","WRITE_BUDGET"]})).toThrow();expect(()=>adapter.validateProfile({...selected,actions:["WRITE_AD_CONFIGURATION"],capabilities:[capability]})).toThrow();});
-
