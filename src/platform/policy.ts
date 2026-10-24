@@ -4,7 +4,7 @@ import {assertBusinessOwnerScope} from "./business-owner-scope.js";
 import {attachmentEnabled} from "./attachment-flags.js";
 import {publishingVideoEnabled,isPublishingVideoDraftTool} from "./publishing-video-flags.js";
 import {pageVideoEnabled} from "./video-flags.js";
-import {assertAccountOwnershipEvidence,classifyAccountOwnership} from "./ownership-evidence.js";
+import {assertAgencyAdvertisingAuthorization} from "./ownership-evidence.js";
 import { createHash } from "node:crypto";
 import type { AuthorizationSnapshot, OperationClass, OperationContext, OperationPlan, SafeChange } from "./models.js";
 import { PlatformDenied } from "./models.js";
@@ -109,17 +109,21 @@ export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snaps
   if(snapshot.member.operatorId !== ctx.principal.operatorId || snapshot.member.tenantId !== ctx.principal.tenantId || snapshot.member.disabledAt !== null || !snapshot.member.allowedClientIds.includes(ctx.clientId)) return deny("CLIENT_MEMBERSHIP_REQUIRED");
   if(!Array.isArray(snapshot.member.roles) || !snapshot.member.roles.some(role=>["reader","writer","admin","approver"].includes(role))) return deny("READ_ROLE_REQUIRED");
   if(snapshot.client.id !== ctx.clientId || snapshot.client.tenantId !== ctx.principal.tenantId || snapshot.client.status !== "ACTIVE") return deny("CLIENT_ACCESS_REQUIRED");
-  // Every advertising-account mutation must be bound to independently verified
-  // client ownership and client billing evidence.  Keep this class based rather
-  // than tool-list based so newly registered campaign/ad-set/ad controls cannot
-  // accidentally bypass the ownership gate.  A payment method or account
-  // status alone is never sufficient evidence.
+  // Every advertising-account mutation must be bound to current Meta access,
+  // the selected client, and the agency authorization contract.  Keep this
+  // class based so newly registered campaign/ad-set/ad controls cannot bypass
+  // the authorization gate. Payment-method visibility is deliberately not a
+  // prerequisite for ordinary campaign management.
   const requiresClientAdAccountEvidence = ctx.provider === "META_MARKETING" && classes.some(c => ["WRITE_AD_CONFIGURATION", "WRITE_BUDGET", "ACTIVATE_SPEND"].includes(c));
-  if(requiresClientAdAccountEvidence || ["marketing_upload_image","marketing_upload_video","marketing_create_empty_custom_audience","marketing_create_lookalike_audience","marketing_activate_ad","marketing_delete_paused_ad","marketing_create_purchase_conversion","marketing_create_async_report","marketing_create_disabled_pause_rule","marketing_create_classic_split_study"].includes(ctx.tool)){const account=snapshot.assets.filter(a=>a.type==="AD_ACCOUNT");if(account.length!==1)return deny("EXACT_CLIENT_AD_ACCOUNT_REQUIRED");const classification=classifyAccountOwnership(snapshot,account[0]);if(classification==="UNVERIFIED")return deny("ACCOUNT_OWNERSHIP_UNVERIFIED");if(classification==="AGENCY_OWNED"&&snapshot.client.id!==account[0].clientId)return deny("AGENCY_ACCOUNT_CLIENT_SCOPE_MISMATCH");try{assertAccountOwnershipEvidence(snapshot,account[0]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"OWNER_EVIDENCE_REQUIRED");}}
   if(classes.some(c => c !== "READ")) {
     if(!options.writesEnabled) return deny("DISABLED_BY_LUMIN_POLICY");
     if(!snapshot.member.roles.includes("writer") && !snapshot.member.roles.includes("admin")) return deny("WRITE_ROLE_REQUIRED");
   }
+  // The provider authorization gate also covers content and audience mutations
+  // that target an ad account but are not classified as ad-configuration writes.
+  // Read-only report creation remains governed by ads_read and client scope.
+  const accountMutationTool = ["marketing_upload_image","marketing_upload_video","marketing_create_empty_custom_audience","marketing_create_lookalike_audience","marketing_activate_ad","marketing_delete_paused_ad","marketing_create_purchase_conversion","marketing_create_disabled_pause_rule","marketing_create_classic_split_study"].includes(ctx.tool);
+  if((requiresClientAdAccountEvidence || (accountMutationTool && classes.some(c => c !== "READ")))) {const account=snapshot.assets.filter(a=>a.type==="AD_ACCOUNT");if(account.length!==1)return deny("EXACT_CLIENT_AD_ACCOUNT_REQUIRED");try{assertAgencyAdvertisingAuthorization(snapshot,account[0],classes.filter(c=>["WRITE_AD_CONFIGURATION","WRITE_BUDGET","ACTIVATE_SPEND"].includes(c)) as ("WRITE_AD_CONFIGURATION"|"WRITE_BUDGET"|"ACTIVATE_SPEND")[]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"ADVERTISING_AUTHORIZATION_REQUIRED");}}
   if(classes.some(c => ["BUSINESS_ADMIN", "IDENTITY_OR_ACCESS", "BILLING"].includes(c)) && !snapshot.member.roles.includes("admin")) return deny("ADMIN_ROLE_REQUIRED");
   for(const required of plan.requiredAssetTasks??[]){
     const matches=snapshot.assets.filter(a=>a.type===required.asset.type&&a.id.replace(/^act_/,"")===required.asset.id.replace(/^act_/,""));
@@ -128,3 +132,6 @@ export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snaps
   const confirmation: OperationClass[] = ["WRITE_AD_CONFIGURATION", "WRITE_BUDGET", "ACTIVATE_SPEND", "DELETE", "BUSINESS_ADMIN", "IDENTITY_OR_ACCESS", "BILLING", "WRITE_CONTENT", "WRITE_MESSAGING"];
   return ctx.tool==="signals_send_crm_lead_event"||classes.some(c => confirmation.includes(c)) ? {decision: "REQUIRE_CONFIRMATION", reason: "HUMAN_APPROVAL_REQUIRED", classes} : {decision: "ALLOW", reason: "AUTHORIZED", classes};
 }
+
+
+
