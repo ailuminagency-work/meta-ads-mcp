@@ -4,9 +4,22 @@ import type {ControlCommit,Collection,Records} from "./repository.js";
 import {PlatformDenied,type MetaAsset,type AssetGrant,type Connection} from "./models.js";
 import {canonicalJson} from "./policy.js";
 import {assetKey} from "./assets.js";
-const denied=()=>{throw new PlatformDenied("DISCOVERY_ENROLLMENT_INVALID");};
+import {decryptOAuthDiscoveryInspection,type OAuthDiscoveryProposal} from "./oauth-discovery.js";
+const denied=():never=>{throw new PlatformDenied("DISCOVERY_ENROLLMENT_INVALID");};
 export function validateDiscoveryControl(input:ControlCommit):void{
  const proposals=input.writes.filter(w=>w.collection==="discoveryProposals");
+ if(input.oauthDiscoveryProof){
+  const proof=input.oauthDiscoveryProof,write=proposals.length===1?proposals[0]:undefined,p=write?.value as OAuthDiscoveryProposal|undefined,oldRow=p?input.expected.find(e=>e.collection==="discoveryProposals"&&e.id===p.id):undefined,old=oldRow?JSON.parse(oldRow.canonical) as OAuthDiscoveryProposal:undefined,now=Date.now();
+  const assets=input.writes.filter(w=>w.collection==="assets"),credentials=input.writes.filter(w=>w.collection==="credentials"),connections=input.writes.filter(w=>w.collection==="connections"),grants=input.writes.filter(w=>w.collection==="grants");
+  const proposal=p as OAuthDiscoveryProposal,previous=old as OAuthDiscoveryProposal;
+  if(input.audit.event!=="ASSET_ENROLLED"||!write||write.createOnly||proposal.kind!=="OAUTH_ASSET_DISCOVERY"||previous.kind!==proposal.kind||previous.consumedAt!==null||proposal.id!==proof.proposalId||proposal.id!==input.audit.subjectId||proposal.planHash!==input.audit.planHash||!/^[a-f0-9]{64}$/.test(proposal.planHash)||proposal.tenantId!==input.tenantId||proposal.clientId!==input.audit.clientId||proposal.operatorId!==input.audit.actorId||!Number.isSafeInteger(proposal.checkedAt)||proposal.checkedAt<=0||proposal.checkedAt>now||!Number.isSafeInteger(proposal.expiresAt)||proposal.expiresAt<=now||proposal.expiresAt>proposal.checkedAt+600000||!Number.isSafeInteger(proposal.consumedAt)||proposal.consumedAt!<proposal.checkedAt||proposal.consumedAt!>now||assets.length!==1||credentials.length!==1||connections.length!==1||grants.length!==1||input.writes.some(w=>w.collection!=="discoveryProposals"&&!w.createOnly))denied();
+  if(!proposal.assets.some(a=>a.type==="AD_ACCOUNT"&&a.id===proof.selectedAssetId)||!input.expected.some(e=>e.collection==="discoveryProposals"&&e.id===proposal.id&&e.canonical===canonicalJson(previous)))denied();
+  const inspection=(()=>{try{return decryptOAuthDiscoveryInspection(proposal);}catch{return denied();}})();
+  if(inspection.subjectId!==proposal.operatorId||inspection.provider!=="META_MARKETING"||inspection.appId!==proposal.appId||inspection.tokenType!=="user"||!inspection.grantedScopes.includes("ads_read")||inspection.expiresAt<=now||inspection.assets.some(a=>a.type!=="AD_ACCOUNT")||!inspection.assets.some(a=>a.id.replace(/^act_/,"")===proof.selectedAssetId))denied();
+  const asset=assets[0].value as MetaAsset,connection=connections[0].value as Connection,grant=grants[0].value as AssetGrant,credential=credentials[0].value as import("./models.js").Credential;
+  if(asset.key!==assets[0].id||asset.key!==assetKey(asset.provider,asset.appId,asset)||asset.id!==proof.selectedAssetId||asset.tenantId!==input.tenantId||asset.clientId!==proposal.clientId||asset.provider!=="META_MARKETING"||asset.type!=="AD_ACCOUNT"||asset.appId!==proposal.appId||asset.verifiedAt!==proposal.checkedAt||asset.revokedAt!==null||asset.revision!==1||connection.tenantId!==input.tenantId||connection.operatorId!==proposal.operatorId||connection.provider!==asset.provider||connection.appId!==asset.appId||connection.subjectId!==proposal.operatorId||connection.tokenType!=="user"||connection.credentialId!==credential.id||connection.assetKeys.length!==1||connection.assetKeys[0]!==asset.key||connection.expiresAt!==inspection.expiresAt||connection.revokedAt!==null||grant.tenantId!==input.tenantId||grant.clientId!==proposal.clientId||grant.assetKey!==asset.key||grant.connectionId!==connection.id||grant.verifiedAt!==proposal.checkedAt||grant.expiresAt!==inspection.expiresAt||grant.revokedAt!==null||!grant.actions.includes("READ")||credential.tenantId!==input.tenantId||credential.operatorId!==proposal.operatorId||credential.provider!==asset.provider||credential.appId!==asset.appId||credential.id!==credentials[0].id)denied();
+  return;
+ }
  if(!["DISCOVERY_PREPARED","ASSET_ENROLLED"].includes(input.audit.event)){if(proposals.length)denied();return;}
  if(proposals.length!==1)denied();const write=proposals[0],p=write.value as DiscoveryProposal,now=Date.now();
  if(p.id!==write.id||p.id!==input.audit.subjectId||p.clientId!==input.audit.clientId||p.tenantId!==input.tenantId||p.planHash!==input.audit.planHash||!Number.isSafeInteger(p.checkedAt)||p.checkedAt<=0||p.checkedAt>now||now-p.checkedAt>300000||!Number.isSafeInteger(p.expiresAt)||p.expiresAt<=now||p.expiresAt>p.checkedAt+300000)denied();
@@ -56,3 +69,4 @@ if(input.audit.event==="DISCOVERY_PREPARED"){
  }
  if(new Set(newKeys).size!==newKeys.length||newKeys.some(k=>connection.assetKeys.includes(k)))denied();const cw=connections[0],updated=cw.value as Connection;if(cw.id!==connection.id||cw.createOnly||canonicalJson(updated)!==canonicalJson({...connection,assetKeys:[...connection.assetKeys,...newKeys],revision:connection.revision+1}))denied();
 }
+

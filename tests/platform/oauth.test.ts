@@ -1,3 +1,5 @@
+import {logger} from "../../src/utils/logger.js";
+import {PlatformDenied} from "../../src/platform/models.js";
 import express from "express";
 import { request as httpRequest, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5,11 +7,13 @@ import { InMemoryPlatformRepository } from "../../src/platform/repository.js";
 import { InMemoryConnectionChallengeStore } from "../../src/platform/connection-challenge-store.js";
 import { PlatformOAuthService, ImmutableOAuthProfileRegistry, atomicConnectionEnrollment, type InspectedOAuthToken, type TrustedOAuthProfile, type VerifiedProviderAdapter } from "../../src/platform/oauth.js";
 import { createPlatformOAuthRouter } from "../../src/platform/oauth-router.js";
+import { resetKeyCacheForTests } from "../../src/auth/crypto.js";
+import { assetKey } from "../../src/platform/assets.js";
 
 const profile: TrustedOAuthProfile = { id: "pages-fixture", provider: "META_FACEBOOK_PAGES", appId: "3001", strategy: "facebook_business", scopes: ["pages_show_list","pages_read_engagement"], tokenTypes: ["page"], redirectUri: "https://fixture.invalid/platform/oauth/pages-fixture/callback", authorizeUrl: "https://www.facebook.com/v26.0/dialog/oauth", configurationId: "4001", verified: true, secretReference: "fixture-secret-reference", capabilities: ["pages.list.feed"], actions: ["READ"], requiredTasks: ["ANALYZE"] };
 const inspected: InspectedOAuthToken = { pageInspection:{accessToken:"synthetic-inspection-user",appId:profile.appId,userSubjectId:"1001",grantedScopes:[...profile.scopes],expiresAt:Date.now()+7200000},accessToken: "synthetic-private-token", provider: profile.provider, appId: profile.appId, subjectId: "2001", tokenType: "page", grantedScopes: [...profile.scopes], expiresAt: Date.now() + 3600000, assets: [{ type: "PAGE", id: "2001", tasks: ["ANALYZE"] }] };
 let server: Server | undefined;
-beforeEach(() => vi.stubEnv("TOKEN_ENCRYPTION_KEY", Buffer.alloc(32, 3).toString("hex")));
+beforeEach(() => { resetKeyCacheForTests(); vi.stubEnv("TOKEN_ENCRYPTION_KEY", Buffer.alloc(32, 3).toString("hex")); });
 afterEach(async () => { vi.unstubAllEnvs(); if (server) await new Promise<void>(resolve => server!.close(() => resolve())); server = undefined; });
 
 async function fixture(change: Partial<InspectedOAuthToken> = {}, verified = true, atomic = true) {
@@ -27,6 +31,82 @@ async function fixture(change: Partial<InspectedOAuthToken> = {}, verified = tru
 }
 
 describe("protected incremental OAuth service", () => {
+  it("launches the plain Meta marketing reader with its exact scopes", async () => {
+    const marketing: TrustedOAuthProfile = {
+      id: "meta-readonly",
+      provider: "META_MARKETING",
+      appId: "3002",
+      strategy: "facebook_business",
+      scopes: ["public_profile", "ads_read"],
+      tokenTypes: ["user"],
+      redirectUri: "https://fixture.invalid/platform/oauth/meta-readonly/callback",
+      authorizeUrl: "https://www.facebook.com/v26.0/dialog/oauth",
+      configurationId: "9902",
+      verified: true,
+      secretReference: "fixture-secret-reference",
+      capabilities: ["legacy.ads_get_account_info"],
+      actions: ["READ"],
+      requiredTasks: [],
+    };
+    const repo = new InMemoryPlatformRepository();
+    await repo.put("operatorIndex", "_index", "1002", { operatorId: "1002", tenantId: "tenant-readonly" });
+    await repo.put("tenants", "tenant-readonly", "tenant-readonly", { id: "tenant-readonly", status: "ACTIVE", migrationState: "READY", policyRevision: 1, registryRevision: 1 });
+    await repo.put("members", "tenant-readonly", "1002", { operatorId: "1002", tenantId: "tenant-readonly", roles: ["connection_admin"], allowedClientIds: ["client-readonly"], revision: 1, disabledAt: null });
+    await repo.put("clients", "tenant-readonly", "client-readonly", { id: "client-readonly", tenantId: "tenant-readonly", status: "ACTIVE", revision: 1, verifiedBusinessIds: [] });
+    await repo.put("assets", "tenant-readonly", "account", { id: "101002", key: "account", type: "AD_ACCOUNT", tenantId: "tenant-readonly", clientId: "client-readonly", provider: "META_MARKETING", appId: marketing.appId, parents: [], verifiedAt: Date.now() - 1, revokedAt: null, revision: 1 });
+    const service = new PlatformOAuthService({
+      repository: repo,
+      challenges: new InMemoryConnectionChallengeStore(),
+      profiles: new ImmutableOAuthProfileRegistry([marketing]),
+      secrets: { get: async () => "synthetic-private-app-secret" },
+      adapters: { get: () => ({ provider: "META_MARKETING", verified: true, validateProfile: () => {}, exchangeAndInspect: async () => { throw new Error("not reached"); } }) },
+      commitVerifiedConnection: atomicConnectionEnrollment(repo),
+    });
+    const started = await service.start("1002", "client-readonly", marketing.id);
+    const url = new URL(started.authorizeUrl);
+    expect(url.searchParams.get("config_id")).toBeNull();
+    expect(url.searchParams.get("scope")).toBe("public_profile,ads_read");
+  });
+
+  it("allows first-time read-only discovery but never enrolls an unselected asset", async () => {
+    const marketing: TrustedOAuthProfile = {
+      id: "meta-discovery",
+      provider: "META_MARKETING", appId: "3003", strategy: "facebook_business",
+      scopes: ["public_profile", "ads_read"], tokenTypes: ["user"],
+      redirectUri: "https://fixture.invalid/platform/oauth/meta-discovery/callback",
+      authorizeUrl: "https://www.facebook.com/v26.0/dialog/oauth", verified: true,
+      secretReference: "fixture-secret-reference", capabilities: ["legacy.ads_get_account_info"], actions: ["READ"], requiredTasks: [],
+    };
+    const repo = new InMemoryPlatformRepository();
+    await repo.put("operatorIndex", "_index", "1003", { operatorId: "1003", tenantId: "tenant-discovery" });
+    await repo.put("tenants", "tenant-discovery", "tenant-discovery", { id: "tenant-discovery", status: "ACTIVE", migrationState: "READY", policyRevision: 1, registryRevision: 1 });
+    await repo.put("members", "tenant-discovery", "1003", { operatorId: "1003", tenantId: "tenant-discovery", roles: ["connection_admin"], allowedClientIds: ["client-discovery"], revision: 1, disabledAt: null });
+    await repo.put("clients", "tenant-discovery", "client-discovery", { id: "client-discovery", tenantId: "tenant-discovery", status: "ACTIVE", revision: 1, verifiedBusinessIds: [] });
+    const inspectedDiscovery: InspectedOAuthToken = { accessToken: "synthetic-discovery-token", provider: "META_MARKETING", appId: marketing.appId, subjectId: "1003", tokenType: "user", grantedScopes: marketing.scopes, expiresAt: Date.now() + 3600000, assets: [{ type: "AD_ACCOUNT", id: "act_101003", tasks: [] }, { type: "AD_ACCOUNT", id: "101004", tasks: [] }] };
+    const exchange = vi.fn(async () => inspectedDiscovery);
+    const service = new PlatformOAuthService({ repository: repo, challenges: new InMemoryConnectionChallengeStore(), profiles: new ImmutableOAuthProfileRegistry([marketing]), secrets: { get: async () => "synthetic-private-app-secret" }, adapters: { get: () => ({ provider: "META_MARKETING" as const, verified: true, validateProfile: () => {}, exchangeAndInspect: exchange }) }, commitVerifiedConnection: atomicConnectionEnrollment(repo) });
+    const started = await service.start("1003", "client-discovery", marketing.id);
+    await expect(service.callback({ operatorId: "1003", clientId: "client-discovery", profileId: marketing.id, ...started, code: "synthetic-code" })).rejects.toThrow("OAUTH_ASSET_SELECTION_REQUIRED");
+    expect(exchange).toHaveBeenCalledOnce();
+    expect(await repo.list("connections", "tenant-discovery")).toHaveLength(0);
+    expect(await repo.list("credentials", "tenant-discovery")).toHaveLength(0);
+    expect(await repo.list("assets", "tenant-discovery")).toHaveLength(0);
+    const proposals = await repo.list("discoveryProposals", "tenant-discovery");
+    expect(proposals).toHaveLength(1);
+    const proposal = proposals[0] as { id: string; consumedAt: number | null; assets: Array<{ id: string }> };
+    expect(proposal.consumedAt).toBeNull();
+    expect(proposal.assets.map(asset => asset.id)).toEqual(["101003", "101004"]);
+    const enrolled = await service.enrollDiscoveredAsset("1003", proposal.id, "101003");
+    expect(enrolled.assetCount).toBe(1);
+    expect(await repo.list("connections", "tenant-discovery")).toHaveLength(1);
+    expect(await repo.list("credentials", "tenant-discovery")).toHaveLength(1);
+    expect(await repo.list("assets", "tenant-discovery")).toHaveLength(1);
+    expect((await repo.get("assets", "tenant-discovery", assetKey("META_MARKETING", marketing.appId, { type: "AD_ACCOUNT", id: "101003" })))?.id).toBe("101003");
+    expect(await repo.get("assets", "tenant-discovery", assetKey("META_MARKETING", marketing.appId, { type: "AD_ACCOUNT", id: "101004" }))).toBeNull();
+    expect((await repo.get("discoveryProposals", "tenant-discovery", proposal.id) as { consumedAt: number | null }).consumedAt).toEqual(expect.any(Number));
+    await expect(service.enrollDiscoveredAsset("1003", proposal.id, "101003")).rejects.toThrow("OAUTH_DISCOVERY_PROPOSAL_UNAVAILABLE");
+  });
+
   it("uses config-specific permissions and atomically installs encrypted credentials with audit", async () => {
     const { repo, service, callback } = await fixture();
     const start = await service.start("1001", "client-fixture", profile.id);
@@ -131,3 +211,14 @@ it("authenticates from verified session only, guards start origin and binds secu
 });
 
 it.each(["valid","unsafe-link","unavailable-link"])("renders safe browser completion without changing successful OAuth when next step is %s",async mode=>{const {service}=await fixture(),app=express();app.use("/platform/oauth",createPlatformOAuthRouter({service,publicOrigin:"https://fixture.invalid",getSessionOperator:async()=>"1001",getNextSteps:async()=>{if(mode==="unavailable-link")throw Error("internal dependency unavailable");return [{label:"Review client business ownership",path:mode==="unsafe-link"?"https://foreign.invalid/":"/platform/business-owner/client-fixture/700/source-connection"}];}}));server=app.listen(0,"127.0.0.1");await new Promise<void>(r=>server!.once("listening",r));const base=`http://127.0.0.1:${(server.address() as {port:number}).port}/platform/oauth/${profile.id}`,started=await fetch(base+"/start",{method:"POST",redirect:"manual",headers:{origin:"https://fixture.invalid","content-type":"application/json"},body:JSON.stringify({client_id:"client-fixture"})}),state=new URL(started.headers.get("location")!).searchParams.get("state")!,response=await fetch(`${base}/callback?state=${state}&code=fixture`,{headers:{cookie:started.headers.get("set-cookie")!.split(";")[0],accept:"text/html"}}),html=await response.text();expect(response.status).toBe(200);expect(response.headers.get("content-type")).toContain("text/html");expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");expect(html).toContain("Client product connected");expect(html).toContain("does not verify client ownership or billing");expect(html).not.toContain("foreign.invalid");expect(html).not.toContain("internal dependency");expect(html.includes('href="/platform/business-owner/')).toBe(mode==="valid");});
+
+it.each(["FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED","synthetic-private-provider-secret"])("logs safe provider category before generic callback wrapping: %s",async reason=>{
+ const warn=vi.spyOn(logger,"warn").mockImplementation(()=>{});
+ try{const {service,exchange,callback,repo}=await fixture();exchange.mockRejectedValue(new PlatformDenied(reason));const started=await service.start("1001","client-fixture",profile.id);
+ await expect(callback(started.state,started.browserNonce)).rejects.toThrow("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");
+ expect(warn).toHaveBeenCalledWith({event:"platform_oauth_failure",stage:"provider_exchange",reason:reason==="FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED"?reason:"UNEXPECTED_INTERNAL_FAILURE"},"Platform OAuth failed");
+ expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private");expect(await repo.list("connections","tenant-fixture")).toHaveLength(0);
+ }finally{warn.mockRestore();}
+});
+
+

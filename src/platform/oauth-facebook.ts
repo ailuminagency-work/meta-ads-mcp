@@ -22,6 +22,7 @@ import type { InspectedOAuthToken, TrustedOAuthProfile, VerifiedProviderAdapter 
 import { LEGACY_CORE_READ_TOOLS } from "./legacy-read.js";
 import { LEGACY_CORE_WRITE_TOOLS } from "./legacy-write.js";
 import { expandVerifiedPermissionDependencies } from "./products/permission-dependencies.js";
+import { logger } from "../utils/logger.js";
 
 export const FACEBOOK_OAUTH_DOCUMENTATION=Object.freeze([
   "https://developers.facebook.com/documentation/facebook-login/guides/advanced/manual-flow",
@@ -33,12 +34,96 @@ export const FACEBOOK_OAUTH_DOCUMENTATION=Object.freeze([
 const TOKEN=z.string().min(1).max(16384).regex(/^[^\s\x00-\x1f\x7f]+$/);
 const ID=z.string().regex(/^\d{1,100}$/);
 const SCOPE=z.string().regex(/^[a-z][a-z0-9_]{0,100}$/);
-const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(),expires_in:z.number().int().positive().max(31536000)});
-const debugResponse=z.object({data:z.object({app_id:z.union([ID,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),type:z.literal("USER"),user_id:ID,is_valid:z.literal(true),scopes:z.array(SCOPE).min(1).max(100),expires_at:z.number().int().positive().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)),data_access_expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()})});
+// Facebook Login for Business may omit expires_in from both token-exchange
+// responses. The verified debug_token expiry remains authoritative; when an
+// exchange does include expires_in, keep validating it strictly.
+const tokenResponse=z.object({access_token:TOKEN,token_type:z.string().optional(),expires_in:z.number().int().positive().max(31536000).optional()});
+const debugResponse=z.object({data:z.object({app_id:z.union([ID,z.number().int().positive().max(Number.MAX_SAFE_INTEGER)]),type:z.literal("USER"),user_id:ID,is_valid:z.literal(true),scopes:z.array(SCOPE).min(1).max(100),expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)),data_access_expires_at:z.number().int().nonnegative().max(Math.floor(Number.MAX_SAFE_INTEGER/1000)).optional()})});
 const permissionResponse=z.object({data:z.array(z.object({permission:SCOPE,status:z.enum(["granted","declined","expired"])})).max(100),paging:z.object({next:z.unknown().optional()}).optional()});
 const scopeKey=(scopes:string[])=>canonicalJson([...scopes].sort());
-function parse<T>(schema:z.ZodType<T>,value:unknown):T{const parsed=schema.safeParse(value);if(!parsed.success)throw new PlatformDenied("FACEBOOK_OAUTH_RESPONSE_SCHEMA_INVALID");return parsed.data;}
+/** Provider permission families are descriptive metadata only. They never
+ * grant Lumin an operation; the trusted profile actions/capabilities still
+ * decide what the enrolled connection may execute. */
+export type MetaPermissionProfile="META_READ_ONLY"|"META_MANAGEMENT"|"META_CONTENT_AND_MESSAGING"|"META_BUSINESS_OPERATIONS";
+const MANAGEMENT_SCOPE_SET=new Set(["ads_management","ads_mcp_management","pages_manage_ads","pages_manage_metadata"]);
+const CONTENT_AND_MESSAGING_SCOPE_SET=new Set(["instagram_content_publish","instagram_manage_messages","pages_messaging","whatsapp_business_messaging"]);
+const BUSINESS_OPERATIONS_SCOPE_SET=new Set(["business_management","whatsapp_business_management"]);
+const KNOWN_META_SCOPE_SET=new Set([
+  "public_profile","ads_read","instagram_basic","instagram_manage_insights","leads_retrieval",
+  "pages_read_engagement","pages_read_user_content","pages_show_list","read_insights",
+  ...MANAGEMENT_SCOPE_SET,...CONTENT_AND_MESSAGING_SCOPE_SET,...BUSINESS_OPERATIONS_SCOPE_SET,
+]);
+/** Classify a provider token without converting provider scopes into Lumin
+ * write authority. Unknown, duplicated, or missing trusted scopes fail
+ * closed so a new Meta permission cannot silently widen the contract. */
+export function classifyMetaPermissionProfiles(profileScopes:string[],actualScopes:string[]):MetaPermissionProfile[]|null {
+  const expected=new Set(profileScopes), actual=new Set(actualScopes);
+  if(expected.size!==profileScopes.length||actual.size!==actualScopes.length)return null;
+  if([...actual].some(scope=>!KNOWN_META_SCOPE_SET.has(scope)))return null;
+  if(!profileScopes.every(scope=>actual.has(scope)||scope==="public_profile"))return null;
+  const profiles:MetaPermissionProfile[]=[];
+  if(![...actual].some(scope=>MANAGEMENT_SCOPE_SET.has(scope)||CONTENT_AND_MESSAGING_SCOPE_SET.has(scope)||BUSINESS_OPERATIONS_SCOPE_SET.has(scope)))profiles.push("META_READ_ONLY");
+  if([...actual].some(scope=>MANAGEMENT_SCOPE_SET.has(scope)))profiles.push("META_MANAGEMENT");
+  if([...actual].some(scope=>CONTENT_AND_MESSAGING_SCOPE_SET.has(scope)))profiles.push("META_CONTENT_AND_MESSAGING");
+  if([...actual].some(scope=>BUSINESS_OPERATIONS_SCOPE_SET.has(scope)))profiles.push("META_BUSINESS_OPERATIONS");
+  return profiles;
+}
+// Meta may omit the implicit public_profile baseline from debug_token while
+// returning the explicitly consented product scopes. Accept only that narrow
+// omission; unexpected or missing product scopes still fail closed.
+export function facebookActualScopesMatch(profileScopes:string[],actualScopes:string[]):boolean {
+  if(scopeKey(actualScopes)===scopeKey(profileScopes))return true;
+  if(profileScopes.includes("public_profile")&&scopeKey(actualScopes)===scopeKey(profileScopes.filter(scope=>scope!=="public_profile")))return true;
+  return classifyMetaPermissionProfiles(profileScopes,actualScopes)!==null;
+}
+function parse<T>(schema:z.ZodType<T>,value:unknown,reason="FACEBOOK_OAUTH_RESPONSE_SCHEMA_INVALID"):T{const parsed=schema.safeParse(value);if(!parsed.success)throw new PlatformDenied(reason);return parsed.data;}
+function normalizeDebugTokenResponse(value:unknown):unknown {
+  if(!value||typeof value!=="object"||Array.isArray(value))return value;
+  const root=value as Record<string,unknown>, data=root.data;
+  if(!data||typeof data!=="object"||Array.isArray(data))return value;
+  const row=data as Record<string,unknown>;
+  if(row.data_access_expiration_time!==undefined){
+    if(row.data_access_expires_at!==undefined&&row.data_access_expires_at!==row.data_access_expiration_time)
+      return {...root,data:{...row,data_access_expires_at:"conflicting"}};
+    return {...root,data:{...row,data_access_expires_at:row.data_access_expiration_time}};
+  }
+  return value;
+}
+function parseDebugTokenResponse(value:unknown):z.infer<typeof debugResponse>["data"] {
+  const normalized=normalizeDebugTokenResponse(value), parsed=debugResponse.safeParse(normalized);
+  if(!parsed.success){
+    const root=normalized&&typeof normalized==="object"&&!Array.isArray(normalized)?normalized as Record<string,unknown>:{};
+    const data=root.data&&typeof root.data==="object"&&!Array.isArray(root.data)?root.data as Record<string,unknown>:{};
+    logger.warn({event:"facebook_debug_token_shape_rejected",topLevelKeys:Object.keys(root).sort(),dataKeys:Object.keys(data).sort()},"Meta debug_token response did not match the verified shape");
+    throw new PlatformDenied("FACEBOOK_OAUTH_DEBUG_TOKEN_RESPONSE_INVALID");
+  }
+  return parsed.data.data;
+}
 interface FacebookAdapterOptions { fetcher?:typeof fetch; apiVersion?:string; now?:()=>number; timeoutMs?:number }
+
+const facebookProviderErrorEnvelope=z.object({
+  error:z.object({
+    code:z.number().int().optional(),
+    error_subcode:z.number().int().optional(),
+    fbtrace_id:z.string().max(128).optional(),
+  }).passthrough(),
+});
+function facebookProviderDenialReason(status:number,body:unknown):string{
+  const parsed=facebookProviderErrorEnvelope.safeParse(body);
+  const code=parsed.success?parsed.data.error.code:undefined;
+  if(code===10||code===200)return "FACEBOOK_GRAPH_PERMISSION_DENIED";
+  if(code===102||code===190||status===401)return "FACEBOOK_GRAPH_TOKEN_INVALID";
+  return "FACEBOOK_OAUTH_PROVIDER_REJECTED";
+}
+function logFacebookProviderError(status:number,body:unknown,path:string):void{
+  const parsed=facebookProviderErrorEnvelope.safeParse(body);
+  if(!parsed.success){
+    logger.warn({event:"facebook_graph_provider_error",status,path},"Meta Graph rejected an OAuth request without a safe error envelope");
+    return;
+  }
+  const {code,error_subcode}=parsed.data.error;
+  logger.warn({event:"facebook_graph_provider_error",status,path,code,subcode:error_subcode},"Meta Graph rejected an OAuth request");
+}
 export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
   readonly verified:boolean;
   private readonly version:string;
@@ -58,11 +143,24 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     for(const [key,value] of Object.entries(parameters))url.searchParams.set(key,value);
     try {
       const response=await this.fetcher(url,{method:"GET",redirect:"error",signal:AbortSignal.timeout(this.timeoutMs),headers:{Accept:"application/json",...(bearer?{Authorization:`Bearer ${bearer}`}:{})}});
-      if(!response.ok)throw new PlatformDenied("FACEBOOK_OAUTH_PROVIDER_REJECTED");
-      const body:unknown=JSON.parse(await readBodyWithLimit(response,131072));
-      if(!body||typeof body!=="object"||Array.isArray(body)||"error" in body)throw new PlatformDenied("FACEBOOK_OAUTH_PROVIDER_REJECTED");
+      const raw=await readBodyWithLimit(response,131072);
+      let body:unknown;
+      try { body=JSON.parse(raw); } catch {
+        throw new PlatformDenied("FACEBOOK_OAUTH_PROVIDER_REJECTED");
+      }
+      if(!response.ok||!body||typeof body!=="object"||Array.isArray(body)||"error" in body){
+        logFacebookProviderError(response.status,body,path);
+        throw new PlatformDenied(facebookProviderDenialReason(response.status,body));
+      }
       return body;
-    } catch {throw new PlatformDenied("FACEBOOK_OAUTH_TRANSPORT_OR_RESPONSE_FAILED");}
+    } catch(error) {
+      // Preserve deliberate provider classifications. The old catch block
+      // converted permission denials into transport failures, making a real
+      // Meta scope/app-access problem look like a network outage.
+      if(error instanceof PlatformDenied)throw error;
+      logger.warn({event:"facebook_oauth_transport_failure",path,category:"TRANSPORT_OR_RESPONSE_FAILED"},"Meta OAuth provider request failed");
+      throw new PlatformDenied("FACEBOOK_OAUTH_TRANSPORT_OR_RESPONSE_FAILED");
+    }
   }
   validateProfile(profile:TrustedOAuthProfile):void {
     if(!this.verified)throw new PlatformDenied("FACEBOOK_OAUTH_VERSION_CONTRACT_UNVERIFIED_HOLD");
@@ -116,7 +214,11 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     if(this.provider==="META_MARKETING"&&profile.capabilities.includes(MARKETING_STUDY_CAPABILITY)){const roots=studyProfileRootRefs(profile.studyRootIds);if(canonicalJson(requested.map(r=>({type:r.type,id:r.id.replace(/^act_/,"")})).sort((a,b)=>canonicalJson(a).localeCompare(canonicalJson(b))))!==canonicalJson(roots.sort((a,b)=>canonicalJson(a).localeCompare(canonicalJson(b)))))throw new PlatformDenied("CLASSIC_STUDY_PROFILE_ROOT_BINDING_REQUIRED");studyRegisteredScope(registeredAssets??[],requested,this.now());return;}
     if(this.provider==="META_MARKETING"&&usesRegisteredMarketingAdProof(profile)){const proof=marketingControlOAuthProof(registeredAssets??[],this.now());if(profile.marketingControlMode==="TRAFFIC"?proof.forms.length!==0:proof.forms.length!==1)throw new PlatformDenied("MARKETING_CONTROL_OAUTH_MODE_RELATIONSHIP_MISMATCH");if(requested.length!==proof.assets.length||requested.some(a=>!proof.assets.some(row=>row.type===a.type&&row.id.replace(/^act_/,"")===a.id.replace(/^act_/,""))))throw new PlatformDenied("MARKETING_CONTROL_OAUTH_EXACT_ROOT_PAIR_REQUIRED");return;}
     const type=this.provider==="META_MARKETING"?"AD_ACCOUNT":"BUSINESS";
-    if(!requested.length||requested.length>98||requested.some(a=>a.type!==type||! /^(?:act_)?\d{1,100}$/.test(a.id)||(a.type!=="AD_ACCOUNT"&&a.id.startsWith("act_")))||new Set(requested.map(a=>a.id.replace(/^act_/,""))).size!==requested.length)throw new PlatformDenied("FACEBOOK_REGISTERED_ROOT_TYPE_REQUIRED");
+    if(!requested.length){
+      if(this.provider!=="META_MARKETING"||profile.strategy!=="facebook_business"||profile.tokenTypes.length!==1||profile.tokenTypes[0]!=="user"||profile.actions.length!==1||profile.actions[0]!=="READ"||profile.requiredTasks.length||profile.derivedTokenScopes!==undefined||profile.crmRootIds!==undefined||profile.datasetRootIds!==undefined||profile.appPromotionBinding!==undefined||profile.studyRootIds!==undefined||profile.invoiceRootIds!==undefined||profile.marketingControlMode!==undefined)throw new PlatformDenied("FACEBOOK_REGISTERED_ROOT_TYPE_REQUIRED");
+      return;
+    }
+    if(requested.length>98||requested.some(a=>a.type!==type||! /^(?:act_)?\d{1,100}$/.test(a.id)||(a.type!=="AD_ACCOUNT"&&a.id.startsWith("act_")))||new Set(requested.map(a=>a.id.replace(/^act_/,""))).size!==requested.length)throw new PlatformDenied("FACEBOOK_REGISTERED_ROOT_TYPE_REQUIRED");
   }
   private async proveControlAssets(token:string,registered:MetaAsset[],mode:TrustedOAuthProfile["marketingControlMode"]):Promise<InspectedOAuthToken["assets"]>{
     const p=marketingControlOAuthProof(registered,this.now()),accountId=p.account.id.replace(/^act_/,""),ad=parse(z.object({id:ID,account_id:ID,adset_id:ID,campaign_id:ID,creative:z.object({id:ID})}),await this.get("/"+p.ad.id,{fields:"id,account_id,adset_id,campaign_id,creative{id}"},token)),creativeRaw=parse(z.object({id:ID,account_id:ID,object_story_spec:z.object({page_id:ID,link_data:z.object({image_hash:z.string(),call_to_action:z.object({value:z.object({lead_gen_form_id:ID.optional()})})}).optional(),video_data:z.object({video_id:ID,image_hash:z.string(),call_to_action:z.object({value:z.object({lead_gen_form_id:ID.optional()})})}).optional()})}),await this.get("/"+p.creative.id,{fields:"id,account_id,object_story_spec"},token));
@@ -137,6 +239,12 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
       if(requested.some(a=>a.type==="BUSINESS")){const selected=studyRegisteredScope(registeredAssets??[],requested,this.now()),businessId=selected.business.id,accountId=selected.account.id.replace(/^act_/,""),campaignIds=selected.campaigns.map(c=>c.id),businesses=await this.get("/me/businesses",{fields:"id",limit:"100"},token),ownedAccounts=await this.get("/"+businessId+"/owned_ad_accounts",{fields:"id,account_id",limit:"100"},token),account=await this.get("/act_"+accountId,{fields:"id,account_id,business{id},user_tasks"},token),campaigns=[];for(const id of campaignIds)campaigns.push(await this.get("/"+id,{fields:"id,account_id,status"},token));verifyStudyBusinessAccess(businessId,accountId,{businesses,ownedAccounts,account,campaigns},campaignIds);return requested.map(a=>({type:a.type,id:a.id.replace(/^act_/,""),tasks:[]}));}
       if(requested.some(a=>a.type==="PAGE"))return this.proveControlAssets(token,registeredAssets??[],mode);
       const result:InspectedOAuthToken["assets"]=[];
+      if(!requested.length){
+        const discovered=parse(z.object({data:z.array(z.object({id:z.string().regex(/^act_\d{1,100}$/),account_id:ID})).max(98),paging:z.unknown().optional()}),await this.get("/me/adaccounts",{fields:"id,account_id",limit:"98"},token));
+        for(const asset of discovered.data)result.push({type:"AD_ACCOUNT",id:asset.account_id,tasks:[]});
+        if(!result.length)throw new PlatformDenied("FACEBOOK_NO_AUTHORIZED_AD_ACCOUNTS");
+        return result;
+      }
       for(const asset of requested){
         const id=asset.id.replace(/^act_/,"");
         const object=parse(z.object({id:z.string().regex(/^act_\d{1,100}$/),account_id:ID}),await this.get(`/act_${id}`,{fields:"id,account_id"},token));
@@ -162,19 +270,30 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     const issuedAt=this.now();
     // Current manual-flow contract requires GET query credentials. These URLs
     // stay server-side and are never logged or attached to thrown errors.
-    const short=parse(tokenResponse,await this.get("/oauth/access_token",{client_id:profile.appId,client_secret:appSecret,redirect_uri:profile.redirectUri,code:input.code}));
+    const short=parse(tokenResponse,await this.get("/oauth/access_token",{client_id:profile.appId,client_secret:appSecret,redirect_uri:profile.redirectUri,code:input.code}),"FACEBOOK_OAUTH_TOKEN_EXCHANGE_RESPONSE_INVALID");
     if(short.token_type&&short.token_type.toLowerCase()!=="bearer")throw new PlatformDenied("FACEBOOK_TOKEN_TYPE_MISMATCH");
-    const long=parse(tokenResponse,await this.get("/oauth/access_token",{grant_type:"fb_exchange_token",client_id:profile.appId,client_secret:appSecret,fb_exchange_token:short.access_token}));
+    const long=parse(tokenResponse,await this.get("/oauth/access_token",{grant_type:"fb_exchange_token",client_id:profile.appId,client_secret:appSecret,fb_exchange_token:short.access_token}),"FACEBOOK_OAUTH_LONG_TOKEN_RESPONSE_INVALID");
     if(long.token_type&&long.token_type.toLowerCase()!=="bearer")throw new PlatformDenied("FACEBOOK_TOKEN_TYPE_MISMATCH");
     const token=long.access_token;
-    const debug=parse(debugResponse,await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`)).data;
-    if(String(debug.app_id)!==profile.appId||new Set(debug.scopes).size!==debug.scopes.length||scopeKey(debug.scopes)!==scopeKey(profile.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
+    const debug=parseDebugTokenResponse(await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`));
+    if(String(debug.app_id)!==profile.appId)throw new PlatformDenied("FACEBOOK_ACTUAL_APP_ID_REQUIRED");
+    const permissionProfiles=classifyMetaPermissionProfiles(profile.scopes,debug.scopes);
+    if(new Set(debug.scopes).size!==debug.scopes.length||(!facebookActualScopesMatch(profile.scopes,debug.scopes)&&permissionProfiles===null)){
+      logger.warn({event:"facebook_debug_token_scope_mismatch",expectedScopeCount:profile.scopes.length,actualScopeCount:debug.scopes.length,unknownExtraScopeCount:debug.scopes.filter(scope=>!KNOWN_META_SCOPE_SET.has(scope)).length,permissionProfiles:permissionProfiles??[],implicitPublicProfileOmitted:profile.scopes.includes("public_profile")&&!debug.scopes.includes("public_profile")},"Meta debug_token scopes did not match the trusted profile");
+      throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
+    }
     const inspectedAt=this.now();
-    const expiry=Math.min(issuedAt+long.expires_in*1000,debug.expires_at*1000,...(debug.data_access_expires_at?[debug.data_access_expires_at*1000]:[]));
+    const expiryCandidates=[
+      ...(debug.expires_at>0?[debug.expires_at*1000]:[]),
+      ...(long.expires_in!==undefined?[issuedAt+long.expires_in*1000]:[]),
+      ...(debug.data_access_expires_at&&debug.data_access_expires_at>0?[debug.data_access_expires_at*1000]:[]),
+    ];
+    if(!expiryCandidates.length)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRY_UNVERIFIABLE");
+    const expiry=Math.min(...expiryCandidates);
     if(!Number.isSafeInteger(expiry)||expiry<=inspectedAt)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRED");
-    const me=parse(z.object({id:ID}),await this.get("/me",{fields:"id"},token));
+    const me=parse(z.object({id:ID}),await this.get("/me",{fields:"id"},token),"FACEBOOK_OAUTH_USER_RESPONSE_INVALID");
     if(me.id!==debug.user_id)throw new PlatformDenied("FACEBOOK_ACTUAL_USER_SUBJECT_REQUIRED");
-    const permissions=parse(permissionResponse,await this.get("/me/permissions",{},token));
+    const permissions=parse(permissionResponse,await this.get("/me/permissions",{},token),"FACEBOOK_OAUTH_PERMISSION_RESPONSE_INVALID");
     if(permissions.paging?.next||new Set(permissions.data.map(p=>p.permission)).size!==permissions.data.length)throw new PlatformDenied("FACEBOOK_PERMISSION_INSPECTION_INCOMPLETE");
     const granted=permissions.data.filter(p=>p.status==="granted").map(p=>p.permission);
     if(scopeKey(granted)!==scopeKey(debug.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_GRANTED_PERMISSIONS_REQUIRED");
@@ -184,3 +303,5 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
   }
 
 }
+
+

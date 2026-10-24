@@ -1,9 +1,13 @@
+import {logOAuthFailure} from "./oauth-diagnostics.js";
 import express from "express";
 import cookieParser from "cookie-parser";
 import { z } from "zod";
 import { PlatformOAuthService } from "./oauth.js";
 import { verifyOAuthStartProof } from "./oauth-start-proof.js";
 import { logger } from "../utils/logger.js";
+import {randomBytes} from "node:crypto";
+import {OAuthAssetSelectionRequired} from "./oauth.js";
+import {PlatformDenied} from "./models.js";
 
 export interface PlatformOAuthRouterDependencies {
   service: PlatformOAuthService;
@@ -13,6 +17,7 @@ export interface PlatformOAuthRouterDependencies {
 }
 const cookieOptions = { httpOnly: true, secure: true, sameSite: "lax" as const, path: "/" };
 const cookieName = (state: string): string => `__Host-lumin-connect-${state}`;
+const selectionCookieName = (proposalId: string): string => `__Host-lumin-select-${proposalId}`;
 const cookieSchema = z.object({ clientId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), nonce: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 
 function isSameOriginBrowserPost(req: express.Request, publicOrigin: string): boolean {
@@ -50,6 +55,19 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
       res.redirect(303, started.authorizeUrl);
     } catch { res.status(503).json({ status: "HOLD", reason: "OAUTH_START_UNAVAILABLE" }); }
   });
+  router.post("/:profileId/select", async (req,res)=>{
+    try {
+      const operator=await deps.getSessionOperator(req);if(!operator){res.sendStatus(401);return;}
+      if(!/^[A-Za-z0-9_-]{1,128}$/.test(req.params.profileId)) {res.sendStatus(400);return;}
+      const body=z.object({proposal_id:z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),asset_id:z.string().regex(/^\d{1,100}$/),csrf:z.string().regex(/^[a-f0-9]{64}$/)}).strict().safeParse(req.body);
+      if(!body.success||!isSameOriginBrowserPost(req,deps.publicOrigin)){res.sendStatus(403);return;}
+      const cookie=req.cookies?.[selectionCookieName(body.data.proposal_id)];if(typeof cookie!=="string"||cookie!==body.data.csrf){res.sendStatus(403);return;}
+      res.clearCookie(selectionCookieName(body.data.proposal_id),cookieOptions);
+      const result=await deps.service.enrollDiscoveredAsset(operator,body.data.proposal_id,body.data.asset_id);
+      if(req.get("accept")?.includes("text/html")){res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'");res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Client product connected</title><h1>Client product connected</h1><p>The selected Meta advertising account was securely connected. No ads or messages were sent.</p><p><a href="/platform/connections/">Return to client connections</a></p></html>`);return;}
+      res.json({status:"CONNECTED",...result});
+    }catch(error){logOAuthFailure("callback",error);res.status(503).json({status:"HOLD",reason:error instanceof PlatformDenied?error.reason:"OAUTH_ASSET_SELECTION_UNAVAILABLE"});}
+  });
   router.get("/:profileId/callback", async (req, res) => {
     try {
       const operator = await deps.getSessionOperator(req);
@@ -67,8 +85,17 @@ export function createPlatformOAuthRouter(deps: PlatformOAuthRouterDependencies)
       try{nextSteps=z.array(z.object({label:z.string().min(1).max(120),path:z.string().regex(/^\/platform\/[A-Za-z0-9_/-]{1,500}$/)}).strict()).max(20).parse(await deps.getNextSteps?.(operator,cookie.data.clientId,result)??[]);}catch{nextSteps=[];}
       if(req.get("accept")?.includes("text/html")){const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'");res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Client product connected</title><h1>Client product connected</h1><p>Meta access was checked for ${escape(cookie.data.clientId)}. ${result.assetCount} selected assets were connected. This does not verify client ownership or billing, and no ads or messages were sent.</p>${nextSteps.length?'<h2>Next review</h2><ul>'+nextSteps.map(step=>'<li><a href="'+escape(step.path)+'">'+escape(step.label)+'</a></li>').join('')+'</ul>':''}<p><a href="/platform/connections/">Return to client connections</a></p></html>`);return;}
       res.json({ status: "CONNECTED", ...result,...(nextSteps.length?{next_steps:nextSteps}:{}) });
-    } catch { res.status(503).json({ status: "HOLD", reason: "OAUTH_CALLBACK_UNAVAILABLE" }); }
+    } catch(error) {
+      if(error instanceof OAuthAssetSelectionRequired){
+        const csrf=randomBytes(32).toString("hex");res.cookie(selectionCookieName(error.proposalId),csrf,{...cookieOptions,maxAge:600000});
+        const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+        if(req.get("accept")?.includes("text/html")){res.setHeader("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'");res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Select Meta account</title><h1>Select a Meta advertising account</h1><p>Meta authorized these accounts for the signed-in Lumin operator. Choose the account for this client.</p><form method="post" action="/${escape(req.params.profileId)}/select"><input type="hidden" name="proposal_id" value="${escape(error.proposalId)}"><input type="hidden" name="csrf" value="${csrf}"><label>Advertising account <select name="asset_id" required>${error.assets.map(asset=>`<option value="${escape(asset.id)}">${escape(asset.id)}</option>`).join("")}</select></label><button type="submit">Connect selected account</button></form></html>`);return;}
+        res.status(409).json({status:"AWAITING_ASSET_SELECTION",proposal_id:error.proposalId,assets:error.assets});return;
+      }
+      logOAuthFailure("callback",error);res.status(503).json({ status: "HOLD", reason: "OAUTH_CALLBACK_UNAVAILABLE" });
+    }
   });
   router.use((_error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(400).json({ status: "HOLD", reason: "INVALID_OAUTH_REQUEST" }); });
   return router;
 }
+
