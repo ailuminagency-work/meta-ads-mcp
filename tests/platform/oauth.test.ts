@@ -29,6 +29,43 @@ async function fixture(change: Partial<InspectedOAuthToken> = {}, verified = tru
 }
 
 describe("protected incremental OAuth service", () => {
+  it("launches the plain Meta marketing reader with its exact scopes", async () => {
+    const marketing: TrustedOAuthProfile = {
+      id: "meta-readonly",
+      provider: "META_MARKETING",
+      appId: "3002",
+      strategy: "facebook_business",
+      scopes: ["public_profile", "ads_read"],
+      tokenTypes: ["user"],
+      redirectUri: "https://fixture.invalid/platform/oauth/meta-readonly/callback",
+      authorizeUrl: "https://www.facebook.com/v26.0/dialog/oauth",
+      configurationId: "9902",
+      verified: true,
+      secretReference: "fixture-secret-reference",
+      capabilities: ["legacy.ads_get_account_info"],
+      actions: ["READ"],
+      requiredTasks: [],
+    };
+    const repo = new InMemoryPlatformRepository();
+    await repo.put("operatorIndex", "_index", "1002", { operatorId: "1002", tenantId: "tenant-readonly" });
+    await repo.put("tenants", "tenant-readonly", "tenant-readonly", { id: "tenant-readonly", status: "ACTIVE", migrationState: "READY", policyRevision: 1, registryRevision: 1 });
+    await repo.put("members", "tenant-readonly", "1002", { operatorId: "1002", tenantId: "tenant-readonly", roles: ["connection_admin"], allowedClientIds: ["client-readonly"], revision: 1, disabledAt: null });
+    await repo.put("clients", "tenant-readonly", "client-readonly", { id: "client-readonly", tenantId: "tenant-readonly", status: "ACTIVE", revision: 1, verifiedBusinessIds: [] });
+    await repo.put("assets", "tenant-readonly", "account", { id: "101002", key: "account", type: "AD_ACCOUNT", tenantId: "tenant-readonly", clientId: "client-readonly", provider: "META_MARKETING", appId: marketing.appId, parents: [], verifiedAt: Date.now() - 1, revokedAt: null, revision: 1 });
+    const service = new PlatformOAuthService({
+      repository: repo,
+      challenges: new InMemoryConnectionChallengeStore(),
+      profiles: new ImmutableOAuthProfileRegistry([marketing]),
+      secrets: { get: async () => "synthetic-private-app-secret" },
+      adapters: { get: () => ({ provider: "META_MARKETING", verified: true, validateProfile: () => {}, exchangeAndInspect: async () => { throw new Error("not reached"); } }) },
+      commitVerifiedConnection: atomicConnectionEnrollment(repo),
+    });
+    const started = await service.start("1002", "client-readonly", marketing.id);
+    const url = new URL(started.authorizeUrl);
+    expect(url.searchParams.get("config_id")).toBeNull();
+    expect(url.searchParams.get("scope")).toBe("public_profile,ads_read");
+  });
+
   it("uses config-specific permissions and atomically installs encrypted credentials with audit", async () => {
     const { repo, service, callback } = await fixture();
     const start = await service.start("1001", "client-fixture", profile.id);
@@ -142,3 +179,4 @@ it.each(["FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED","synthetic-private-provider-s
  expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private");expect(await repo.list("connections","tenant-fixture")).toHaveLength(0);
  }finally{warn.mockRestore();}
 });
+

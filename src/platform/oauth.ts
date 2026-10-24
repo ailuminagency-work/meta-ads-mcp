@@ -155,6 +155,25 @@ export class PlatformOAuthService {
     if (!this.deps.commitVerifiedConnection && !this.deps.commitVerifiedConnections) throw new PlatformDenied("ATOMIC_CONNECTION_ENROLLMENT_UNAVAILABLE_HOLD");
     return adapter;
   }
+  /**
+   * The plain Meta marketing reader is intentionally launched with an explicit
+   * scope set.  A Business Login configuration can carry unrelated write
+   * permissions configured at the app level; using that configuration for a
+   * read-only connection makes Meta return a scope superset that must be
+   * rejected.  Root-bound and write-capable profiles continue to use their
+   * reviewed configuration IDs.
+   */
+  private static usesDirectReadOnlyScopes(profile: TrustedOAuthProfile): boolean {
+    return profile.provider === "META_MARKETING" &&
+      profile.strategy === "facebook_business" &&
+      profile.tokenTypes.length === 1 && profile.tokenTypes[0] === "user" &&
+      profile.actions.length === 1 && profile.actions[0] === "READ" &&
+      profile.requiredTasks.length === 0 &&
+      profile.derivedTokenScopes === undefined &&
+      profile.crmRootIds === undefined && profile.datasetRootIds === undefined &&
+      profile.appPromotionBinding === undefined && profile.studyRootIds === undefined &&
+      profile.invoiceRootIds === undefined && profile.marketingControlMode === undefined;
+  }
   async start(operatorId: string, clientId: string, profileId: string): Promise<{ state: string; browserNonce: string; authorizeUrl: string }> {
     const profile = await this.profile(profileId);
     const adapter=this.adapter(profile);
@@ -166,7 +185,7 @@ export class PlatformOAuthService {
     authorize.searchParams.set("redirect_uri", profile.redirectUri);
     authorize.searchParams.set("state", challenge.state);
     authorize.searchParams.set("response_type", "code");
-    if (profile.strategy === "facebook_business" && profile.configurationId) authorize.searchParams.set("config_id", profile.configurationId);
+    if (profile.strategy === "facebook_business" && profile.configurationId && !PlatformOAuthService.usesDirectReadOnlyScopes(profile)) authorize.searchParams.set("config_id", profile.configurationId);
     else authorize.searchParams.set("scope", profile.scopes.join(","));
     return { ...challenge, authorizeUrl: authorize.toString() };
   }
@@ -275,3 +294,4 @@ export function atomicConnectionEnrollments(repository:PlatformRepository):(enro
     await repository.commitControlPlane({tenantId:first.principal.tenantId,expected:[...expected.values()],writes,audit:{id:randomUUID(),tenantId:first.principal.tenantId,clientId:first.clientId,actorId:first.principal.operatorId,event:"CONNECTION_ENROLLED",timestamp:Date.now(),subjectId:first.connection.id,planHash}});
   };
 }
+
