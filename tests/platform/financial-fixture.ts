@@ -8,13 +8,6 @@ import type {PlatformPrincipal,AuthorizationSnapshot} from "../../src/platform/m
 export async function establishFinancialFixture(repo:PlatformRepository,principal:PlatformPrincipal,clientId:string,accountKey:string):Promise<void>{
  const currentMember=await repo.get("members",principal.tenantId,principal.operatorId);if(!currentMember?.roles.some(r=>["admin","connection_admin"].includes(r))){principal={tenantId:principal.tenantId,operatorId:`${principal.operatorId}-fixture-owner-reviewer`};await repo.put("members",principal.tenantId,principal.operatorId,{tenantId:principal.tenantId,operatorId:principal.operatorId,roles:["connection_admin","reader"],allowedClientIds:[clientId],disabledAt:null,revision:1});}
  const account=await repo.get("assets",principal.tenantId,accountKey),client=await repo.get("clients",principal.tenantId,clientId);if(!account||!client)throw new Error("Fixture account/client missing");const businessId=account.ownerBusinessId??client.verifiedBusinessIds[0];if(!businessId||!client.verifiedBusinessIds.includes(businessId))throw new Error("Fixture needs explicitly client-owned business");
- // Test fixtures must model the same independently verified billing state that
- // production policy requires.  Keep this mutation scoped to the synthetic
- // account before the attestation/observation control records are created;
- // ownershipAsset intentionally preserves the flag thereafter.
- if(account.billingOwnershipVerified!==true||account.ownerBusinessId!==businessId){
-  await repo.put("assets",principal.tenantId,account.key,{...account,billingOwnershipVerified:true,ownerBusinessId:businessId});
- }
  await repo.put("operatorIndex","_index",principal.operatorId,principal);
  const now=Date.now(),suffix=randomUUID(),connectionId=`ownership-bootstrap-${suffix}`,credentialId=`ownership-credential-${suffix}`,grantId=`ownership-grant-${suffix}`;
  await repo.put("credentials",principal.tenantId,credentialId,encryptCredential({id:credentialId,tenantId:principal.tenantId,operatorId:principal.operatorId,provider:"META_MARKETING",appId:account.appId,keyVersion:"primary"},`synthetic-owner-${suffix}`));

@@ -37,6 +37,17 @@ describe("registerAccountTools", () => {
   });
 
   describe("ads_get_ad_accounts handler", () => {
+    it("does not invent disabled status for a reduced field selection", async () => {
+      const server = createMockMcpServer();
+      registerAccountTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({data:[{id:"act_123",name:"Selected account"}]})));
+      const result = await server._registeredTools[0].handler({user_id:"me",limit:1,fields:["id","name"]}) as {content:Array<{text:string}>};
+      expect(result.content[0].text).toContain("act_123");
+      expect(result.content[0].text).toContain("Status: NOT_RETURNED");
+      expect(result.content[0].text).not.toContain("DISABLED");
+      expect(result.content[0].text).not.toContain("undefined");
+    });
+
     it("returns account data formatted correctly", async () => {
       const server = createMockMcpServer();
       registerAccountTools(server as never);

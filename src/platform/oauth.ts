@@ -1,3 +1,4 @@
+import {logOAuthFailure} from "./oauth-diagnostics.js";
 import {isCrmOAuthProfile,crmOAuthRoots} from "./crm-oauth.js";
 import {isSignalDatasetOAuthProfile,signalDatasetOAuthRoots} from "./dataset-oauth.js";
 import {isAppPromotionOAuthProfile,appPromotionOAuthRoots} from "./app-promotion-oauth.js";
@@ -16,6 +17,7 @@ import type { PlatformRepository } from "./repository.js";
 import { encryptCredential } from "./connections.js";
 import { canonicalJson } from "./policy.js";
 import {encryptPageInspectionDelegation,pageInspectionDelegationMetadata,type PageInspectionDelegation} from "./page-inspection-delegation.js";
+import {facebookActualScopesMatch} from "./oauth-facebook.js";
 
 export interface TrustedOAuthProfile extends ConnectionProfile {
   appPromotionBinding?:import("./app-promotion-contract.js").AppPromotionBinding;
@@ -153,6 +155,25 @@ export class PlatformOAuthService {
     if (!this.deps.commitVerifiedConnection && !this.deps.commitVerifiedConnections) throw new PlatformDenied("ATOMIC_CONNECTION_ENROLLMENT_UNAVAILABLE_HOLD");
     return adapter;
   }
+  /**
+   * The plain Meta marketing reader is intentionally launched with an explicit
+   * scope set.  A Business Login configuration can carry unrelated write
+   * permissions configured at the app level; using that configuration for a
+   * read-only connection makes Meta return a scope superset that must be
+   * rejected.  Root-bound and write-capable profiles continue to use their
+   * reviewed configuration IDs.
+   */
+  private static usesDirectReadOnlyScopes(profile: TrustedOAuthProfile): boolean {
+    return profile.provider === "META_MARKETING" &&
+      profile.strategy === "facebook_business" &&
+      profile.tokenTypes.length === 1 && profile.tokenTypes[0] === "user" &&
+      profile.actions.length === 1 && profile.actions[0] === "READ" &&
+      profile.requiredTasks.length === 0 &&
+      profile.derivedTokenScopes === undefined &&
+      profile.crmRootIds === undefined && profile.datasetRootIds === undefined &&
+      profile.appPromotionBinding === undefined && profile.studyRootIds === undefined &&
+      profile.invoiceRootIds === undefined && profile.marketingControlMode === undefined;
+  }
   async start(operatorId: string, clientId: string, profileId: string): Promise<{ state: string; browserNonce: string; authorizeUrl: string }> {
     const profile = await this.profile(profileId);
     const adapter=this.adapter(profile);
@@ -164,7 +185,7 @@ export class PlatformOAuthService {
     authorize.searchParams.set("redirect_uri", profile.redirectUri);
     authorize.searchParams.set("state", challenge.state);
     authorize.searchParams.set("response_type", "code");
-    if (profile.strategy === "facebook_business" && profile.configurationId) authorize.searchParams.set("config_id", profile.configurationId);
+    if (profile.strategy === "facebook_business" && profile.configurationId && !PlatformOAuthService.usesDirectReadOnlyScopes(profile)) authorize.searchParams.set("config_id", profile.configurationId);
     else authorize.searchParams.set("scope", profile.scopes.join(","));
     return { ...challenge, authorizeUrl: authorize.toString() };
   }
@@ -191,11 +212,11 @@ export class PlatformOAuthService {
       const exchange={code:input.code,profile,appSecret,requestedAssets,...(crmRoots?{registeredAssets:structuredClone(crmRoots)}:signalDatasetRoots?{registeredAssets:structuredClone(signalDatasetRoots)}:appPromotionRoots?{registeredAssets:structuredClone(appPromotionRoots)}:invoiceProof?{registeredAssets:structuredClone([invoiceProof.business,...invoiceProof.accounts])}:studyProof?{registeredAssets:structuredClone([studyProof.business,studyProof.account,...studyProof.campaigns])}:controlProof?{registeredAssets:structuredClone(controlProof.assets)}:{}),expectedOperatorId:input.operatorId};
       const raw=adapter.exchangeAndInspectMany?await adapter.exchangeAndInspectMany(exchange):[await adapter.exchangeAndInspect(exchange)];
       inspectedTokens=z.array(inspectedTokenSchema).min(1).max(32).parse(raw);
-    }catch{throw new PlatformDenied("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");}
+    }catch(error){logOAuthFailure("provider_exchange",error);throw new PlatformDenied("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");}
     const enrollments:ConnectionEnrollment[]=[];
     for(const inspected of inspectedTokens){
     const now = this.now();
-    if (inspected.provider !== profile.provider || inspected.appId !== profile.appId || !profile.tokenTypes.includes(inspected.tokenType) || !/^[0-9]{1,100}$/.test(inspected.subjectId) || !inspected.accessToken || inspected.accessToken.length > 16384 || !Number.isSafeInteger(inspected.expiresAt) || inspected.expiresAt <= now || inspected.grantedScopes.length !== new Set(inspected.grantedScopes).size || canonicalJson([...inspected.grantedScopes].sort()) !== canonicalJson([...(profile.derivedTokenScopes??profile.scopes)].sort()) || !inspected.assets.length || inspected.assets.length > 98) throw new PlatformDenied("ACTUAL_PROVIDER_TOKEN_BINDING_REQUIRED");
+    if (inspected.provider !== profile.provider || inspected.appId !== profile.appId || !profile.tokenTypes.includes(inspected.tokenType) || !/^[0-9]{1,100}$/.test(inspected.subjectId) || !inspected.accessToken || inspected.accessToken.length > 16384 || !Number.isSafeInteger(inspected.expiresAt) || inspected.expiresAt <= now || inspected.grantedScopes.length !== new Set(inspected.grantedScopes).size || (profile.provider === "META_MARKETING" && profile.tokenTypes.length === 1 && profile.tokenTypes[0] === "user" ? !facebookActualScopesMatch(profile.derivedTokenScopes??profile.scopes, inspected.grantedScopes) : canonicalJson([...inspected.grantedScopes].sort()) !== canonicalJson([...(profile.derivedTokenScopes??profile.scopes)].sort())) || !inspected.assets.length || inspected.assets.length > 98) throw new PlatformDenied("ACTUAL_PROVIDER_TOKEN_BINDING_REQUIRED");
     if (inspected.tokenType === "user" && inspected.subjectId !== input.operatorId) throw new PlatformDenied("ACTUAL_OPERATOR_SUBJECT_REQUIRED");
     if (canonicalJson(await this.profile(input.profileId)) !== canonicalJson(profile)) throw new PlatformDenied("OAUTH_PROFILE_CHANGED");
     const fresh = await membership(this.deps.repository, input.operatorId, input.clientId);
@@ -273,3 +294,4 @@ export function atomicConnectionEnrollments(repository:PlatformRepository):(enro
     await repository.commitControlPlane({tenantId:first.principal.tenantId,expected:[...expected.values()],writes,audit:{id:randomUUID(),tenantId:first.principal.tenantId,clientId:first.clientId,actorId:first.principal.operatorId,event:"CONNECTION_ENROLLED",timestamp:Date.now(),subjectId:first.connection.id,planHash}});
   };
 }
+

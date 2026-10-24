@@ -1,3 +1,4 @@
+import {BILLING_CONFIGURATION_FIELDS,billingConfigurationReport} from "./billing-configuration.js";
 import {clientBusinessBound,loadClientBusinessEvidence,clientBusinessExpected} from "./client-business.js";
 import {randomUUID,createHash} from "node:crypto";
 import {z} from "zod";
@@ -9,7 +10,7 @@ import type {PlatformRepository,ControlCommit} from "./repository.js";
 import {authorizeOperation,finishOperation,getExecutionScope,revalidateExecutionPermit,runWithExecutionPermit,withConnectionCredential} from "./execution.js";
 import {assertLegacyMarketingReadEligibility} from "./legacy-egress.js";
 import {productRateController} from "./clients.js";
-import {ACCOUNT_OWNERSHIP_SOURCE,validateOwnerAttestation,ownershipObservationAad,type OwnerBillingAttestation,type AccountOwnershipObservation} from "./ownership-evidence.js";
+import {agencyOwnershipBound,ACCOUNT_OWNERSHIP_SOURCE,validateOwnerAttestation,ownershipObservationAad,type OwnerBillingAttestation,type AccountOwnershipObservation} from "./ownership-evidence.js";
 import {ownershipAsset,newOwnershipAudit,ownershipHash} from "./ownership-control.js";
 export class OwnershipEvidenceService {
  constructor(private readonly repo:PlatformRepository,private readonly fetcher:typeof fetch=fetch){}
@@ -22,9 +23,33 @@ export class OwnershipEvidenceService {
  /** Human browser controller only: billing is an explicit artifact-backed assertion, never a Meta API conclusion. */
  async attest(principal:PlatformPrincipal,clientId:string,input:{accountKey:string;businessId:string;documentReferenceHash:string;expiresAt:number;reviewedAccountHash?:string}):Promise<{attestationId:string;expiresAt:number}>{
   const s=await this.human(principal,clientId,input.accountKey),now=Date.now();if(input.reviewedAccountHash!==undefined&&input.reviewedAccountHash!==ownershipHash(s.account))throw new PlatformDenied("OWNERSHIP_REVIEW_ACCOUNT_CHANGED");
-  const row:OwnerBillingAttestation={id:randomUUID(),tenantId:principal.tenantId,clientId,appId:s.account.appId,accountKey:s.account.key,accountId:s.account.id.replace(/^act_/,""),businessId:input.businessId,source:"CLIENT_OWNER_ATTESTATION",approvedBy:principal.operatorId,documentReferenceHash:input.documentReferenceHash,checkedAt:now,expiresAt:input.expiresAt,revokedAt:null,revision:1};validateOwnerAttestation(row,now);
+  const row:OwnerBillingAttestation={id:randomUUID(),tenantId:principal.tenantId,clientId,appId:s.account.appId,accountKey:s.account.key,accountId:s.account.id.replace(/^act_/,""),businessId:input.businessId,source:agencyOwnershipBound(principal.tenantId,clientId,input.businessId)?"AGENCY_OWNER_ATTESTATION":"CLIENT_OWNER_ATTESTATION",approvedBy:principal.operatorId,documentReferenceHash:input.documentReferenceHash,checkedAt:now,expiresAt:input.expiresAt,revokedAt:null,revision:1};validateOwnerAttestation(row,now);
   if(!clientBusinessBound(s.client,row.businessId,now,s.businessOwnerEvidence,s.account.appId))throw new PlatformDenied("ATTESTED_BUSINESS_NOT_CLIENT_REGISTERED");
   await this.repo.commitControlPlane({tenantId:principal.tenantId,expected:s.expected,writes:[{collection:"ownerBillingAttestations",id:row.id,value:row,createOnly:true},{collection:"assets",id:s.account.key,value:ownershipAsset(s.account,row),createOnly:false}],audit:newOwnershipAudit(row,principal.operatorId,"OWNER_BILLING_ATTESTED")});return {attestationId:row.id,expiresAt:row.expiresAt};
+ }
+ private async readBillingConfiguration(ctx:OperationContext,accountKey:string,connectionId:string){
+  const initial=await this.human(ctx.principal,ctx.clientId,accountKey),configuration=()=>JSON.stringify([process.env.LUMIN_AGENCY_META_BUSINESS_ID,process.env.LUMIN_AGENCY_TENANT_ID,process.env.LUMIN_AGENCY_INTERNAL_CLIENT_ID,process.env.LUMIN_AGENCY_BILLING_COMPARISON_JSON]),initialConfiguration=configuration();
+  const permit=await authorizeOperation(this.repo,ctx,{assets:[{type:"AD_ACCOUNT",id:initial.account.id}],classes:["READ"],capability:"legacy.ads_get_account_info",requiredScopes:["ads_read"],tokenTypes:["user","system_user"],parameters:{fields:BILLING_CONFIGURATION_FIELDS}},{writesEnabled:false,selectedConnectionId:connectionId});
+  try{return await runWithExecutionPermit(permit,async()=>withConnectionCredential(permit,async token=>{
+   await revalidateExecutionPermit(permit);assertLegacyMarketingReadEligibility();const scope=getExecutionScope(),bucket=createHash("sha256").update(JSON.stringify(["META_MARKETING",scope.snapshot.connection.appId,createHash("sha256").update(token).digest("hex")])).digest("hex");productRateController.bind(bucket,scope.snapshot.connection.appId);productRateController.check(bucket);
+   let raw:unknown;try{const response=await this.fetcher(`https://graph.facebook.com/v26.0/act_${initial.account.id.replace(/^act_/,"")}?fields=${encodeURIComponent(BILLING_CONFIGURATION_FIELDS)}`,{headers:{Authorization:`Bearer ${token}`},redirect:"error",signal:AbortSignal.timeout(15000)});productRateController.observe(bucket,response,null);if(!response.ok)throw new Error();raw=JSON.parse(await readBodyWithLimit(response,16384));}catch{throw new PlatformDenied("BILLING_CONFIGURATION_PROVIDER_READ_FAILED");}
+   await revalidateExecutionPermit(permit);assertLegacyMarketingReadEligibility();const snapshot=getExecutionScope().snapshot,account=snapshot.assets.find(a=>a.key===accountKey);if(!account||canonicalJson(account)!==canonicalJson(initial.account))throw new PlatformDenied("BILLING_CONFIGURATION_ACCOUNT_CHANGED");
+   if(configuration()!==initialConfiguration)throw new PlatformDenied("BILLING_CONFIGURATION_CHANGED");const result={snapshot,account,raw,checkedAt:Date.now()};await finishOperation(permit,"SUCCEEDED");return result;
+  }));}catch(error){await finishOperation(permit,"FAILED");throw error;}
+ }
+ async inspectBillingConfiguration(ctx:OperationContext,accountKey:string,connectionId:string){
+  const configuration=process.env.LUMIN_AGENCY_BILLING_COMPARISON_JSON,configurationIdentity=()=>JSON.stringify([process.env.LUMIN_AGENCY_BILLING_COMPARISON_JSON,process.env.LUMIN_AGENCY_META_BUSINESS_ID,process.env.LUMIN_AGENCY_TENANT_ID,process.env.LUMIN_AGENCY_INTERNAL_CLIENT_ID]),initialIdentity=configurationIdentity();
+  let agency:Awaited<ReturnType<OwnershipEvidenceService["readBillingConfiguration"]>>|null=null;
+  if(configuration){let binding:{clientId:string;accountKey:string;connectionId:string};try{binding=z.object({clientId:z.string().min(1).max(128),accountKey:z.string().min(1).max(200),connectionId:z.string().min(1).max(128)}).strict().parse(JSON.parse(configuration));}catch{throw new PlatformDenied("AGENCY_BILLING_COMPARISON_CONFIGURATION_INVALID");}
+   if(binding.clientId!==process.env.LUMIN_AGENCY_INTERNAL_CLIENT_ID||ctx.principal.tenantId!==process.env.LUMIN_AGENCY_TENANT_ID)throw new PlatformDenied("AGENCY_BILLING_COMPARISON_SCOPE_INVALID");
+   agency=await this.readBillingConfiguration({...ctx,clientId:binding.clientId,requestId:randomUUID()},binding.accountKey,binding.connectionId);
+  }
+  const client=await this.readBillingConfiguration(ctx,accountKey,connectionId);
+  for(const observed of [agency,client]){if(!observed)continue;const scope=observed.snapshot,permit=await authorizeOperation(this.repo,{...ctx,clientId:scope.client.id,requestId:randomUUID()},{assets:[{type:"AD_ACCOUNT",id:observed.account.id}],classes:["READ"],capability:"legacy.ads_get_account_info",requiredScopes:["ads_read"],tokenTypes:["user","system_user"],parameters:{fields:BILLING_CONFIGURATION_FIELDS}},{writesEnabled:false,selectedConnectionId:scope.connection.id});
+   try{await runWithExecutionPermit(permit,async()=>{await revalidateExecutionPermit(permit);const current=getExecutionScope().snapshot;if(canonicalJson(current.assets)!==canonicalJson(scope.assets)||canonicalJson(current.connection)!==canonicalJson(scope.connection)||canonicalJson(current.grants)!==canonicalJson(scope.grants)||canonicalJson(current.client)!==canonicalJson(scope.client)||canonicalJson(current.member)!==canonicalJson(scope.member))throw new PlatformDenied("BILLING_CONFIGURATION_AUTHORIZATION_CHANGED");});await finishOperation(permit,"SUCCEEDED");}catch(error){await finishOperation(permit,"FAILED");throw error;}
+  }
+  if(configurationIdentity()!==initialIdentity)throw new PlatformDenied("BILLING_CONFIGURATION_CHANGED");
+  return billingConfigurationReport(client.snapshot,client.account,client.raw,Date.now(),agency);
  }
  async observe(ctx:OperationContext,accountKey:string,connectionId:string):Promise<{observationId:string;expiresAt:number}>{
   const initial=await this.human(ctx.principal,ctx.clientId,accountKey),attestation=initial.account.ownerBillingAttestationId?await this.repo.get("ownerBillingAttestations",ctx.principal.tenantId,initial.account.ownerBillingAttestationId):null;if(!attestation)throw new PlatformDenied("CLIENT_OWNER_BILLING_ATTESTATION_REQUIRED");validateOwnerAttestation(attestation);

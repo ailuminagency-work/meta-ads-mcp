@@ -1,7 +1,7 @@
 {
   "evidence": "SOURCE_INVENTORY_ONLY_NOT_LIVE_ACCESS",
   "summary": {
-    "registeredTools": 370,
+    "registeredTools": 371,
     "legacyTools": 142,
     "strictLegacyReads": 65,
     "strictLegacyWriteSubsets": 32,
@@ -10,7 +10,7 @@
     "productContracts": 183,
     "verifiedProductSubsets": 177,
     "unverifiedProductHolds": 6,
-    "controlAndWorkflowTools": 45
+    "controlAndWorkflowTools": 46
   },
   "legacy": [
     {
@@ -6806,6 +6806,7 @@
     "meta_lookup_ad_targeting",
     "meta_observe_ads_compatibility",
     "meta_observe_account_owner",
+    "meta_inspect_billing_configuration",
     "meta_research_prepare_job",
     "meta_research_run_job",
     "meta_research_job_status",

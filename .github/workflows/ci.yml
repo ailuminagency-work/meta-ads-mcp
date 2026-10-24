@@ -46,10 +46,16 @@ jobs:
 
       - name: Install ffmpeg (video keyframe tests)
         run: |
-          # The hosted runner may contain a blocked Microsoft source. Use only the
-          # Ubuntu source list for this ephemeral test dependency.
-          sudo apt-get update -o Dir::Etc::sourceparts="-" -o Dir::Etc::sourcelist="/etc/apt/sources.list.d/ubuntu.sources"
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          # ubuntu-latest normally includes ffmpeg. Avoid an unbounded apt wait
+          # when a hosted image's package manager is temporarily unavailable.
+          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+            ffmpeg -version >/dev/null
+          else
+            timeout --signal=TERM 180s sudo apt-get update \
+              -o Dir::Etc::sourceparts="-" \
+              -o Dir::Etc::sourcelist="/etc/apt/sources.list.d/ubuntu.sources"
+            timeout --signal=TERM 180s sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
 
       - name: Test
         env:
