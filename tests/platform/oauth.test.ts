@@ -5,7 +5,7 @@ import { request as httpRequest, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryPlatformRepository } from "../../src/platform/repository.js";
 import { InMemoryConnectionChallengeStore } from "../../src/platform/connection-challenge-store.js";
-import { PlatformOAuthService, ImmutableOAuthProfileRegistry, atomicConnectionEnrollment, type InspectedOAuthToken, type TrustedOAuthProfile, type VerifiedProviderAdapter } from "../../src/platform/oauth.js";
+import { PlatformOAuthService, ImmutableOAuthProfileRegistry, OAuthAssetSelectionRequired, atomicConnectionEnrollment, type InspectedOAuthToken, type TrustedOAuthProfile, type VerifiedProviderAdapter } from "../../src/platform/oauth.js";
 import { createPlatformOAuthRouter } from "../../src/platform/oauth-router.js";
 import { resetKeyCacheForTests } from "../../src/auth/crypto.js";
 import { assetKey } from "../../src/platform/assets.js";
@@ -210,6 +210,36 @@ it("authenticates from verified session only, guards start origin and binds secu
   expect(connected.headers.get("set-cookie")).toContain("Expires=Thu, 01 Jan 1970");
 });
 
+it("posts asset selection back through the mounted platform OAuth route", async () => {
+  const state = "a".repeat(64);
+  const nonce = "b".repeat(64);
+  const app = express();
+  app.use("/platform/oauth", createPlatformOAuthRouter({
+    publicOrigin: "https://fixture.invalid",
+    getSessionOperator: async () => "1001",
+    service: {
+      callback: async () => {
+        throw new OAuthAssetSelectionRequired("proposal-1", [{ type: "AD_ACCOUNT", id: "101003" }]);
+      },
+    } as unknown as PlatformOAuthService,
+  }));
+  server = app.listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => server!.once("listening", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("server did not start");
+  const cookie = Buffer.from(JSON.stringify({ clientId: "client-fixture", nonce })).toString("base64url");
+  const response = await fetch(`http://127.0.0.1:${address.port}/platform/oauth/pages-fixture/callback?state=${state}&code=fixture`, {
+    headers: {
+      cookie: `__Host-lumin-connect-${state}=${cookie}`,
+      accept: "text/html",
+    },
+  });
+  const html = await response.text();
+  expect(response.status).toBe(200);
+  expect(html).toContain('action="/platform/oauth/pages-fixture/select"');
+  expect(html).not.toContain('action="/pages-fixture/select"');
+});
+
 it.each(["valid","unsafe-link","unavailable-link"])("renders safe browser completion without changing successful OAuth when next step is %s",async mode=>{const {service}=await fixture(),app=express();app.use("/platform/oauth",createPlatformOAuthRouter({service,publicOrigin:"https://fixture.invalid",getSessionOperator:async()=>"1001",getNextSteps:async()=>{if(mode==="unavailable-link")throw Error("internal dependency unavailable");return [{label:"Review client business ownership",path:mode==="unsafe-link"?"https://foreign.invalid/":"/platform/business-owner/client-fixture/700/source-connection"}];}}));server=app.listen(0,"127.0.0.1");await new Promise<void>(r=>server!.once("listening",r));const base=`http://127.0.0.1:${(server.address() as {port:number}).port}/platform/oauth/${profile.id}`,started=await fetch(base+"/start",{method:"POST",redirect:"manual",headers:{origin:"https://fixture.invalid","content-type":"application/json"},body:JSON.stringify({client_id:"client-fixture"})}),state=new URL(started.headers.get("location")!).searchParams.get("state")!,response=await fetch(`${base}/callback?state=${state}&code=fixture`,{headers:{cookie:started.headers.get("set-cookie")!.split(";")[0],accept:"text/html"}}),html=await response.text();expect(response.status).toBe(200);expect(response.headers.get("content-type")).toContain("text/html");expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");expect(html).toContain("Client product connected");expect(html).toContain("does not verify client ownership or billing");expect(html).not.toContain("foreign.invalid");expect(html).not.toContain("internal dependency");expect(html.includes('href="/platform/business-owner/')).toBe(mode==="valid");});
 
 it.each(["FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED","synthetic-private-provider-secret"])("logs safe provider category before generic callback wrapping: %s",async reason=>{
@@ -220,4 +250,5 @@ it.each(["FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED","synthetic-private-provider-s
  expect(JSON.stringify(warn.mock.calls)).not.toContain("synthetic-private");expect(await repo.list("connections","tenant-fixture")).toHaveLength(0);
  }finally{warn.mockRestore();}
 });
+
 
