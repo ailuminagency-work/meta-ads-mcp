@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - feat/lumin-meta-platform-v1
+      - feat/connection-fabric-wave0
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
