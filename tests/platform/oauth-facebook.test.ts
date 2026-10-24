@@ -49,8 +49,17 @@ describe("concrete Facebook business user OAuth adapter",()=>{
     const result=await adapter.exchangeAndInspect(baseInput);
     expect(result.expiresAt).toBe(now+3600000);
   });
+  it("accepts Meta's zero token expiry when data-access expiry is authoritative",async()=>{
+    const {adapter}=fixture({exchange:{expires_in:undefined},longExchange:{expires_in:undefined},debug:{expires_at:0,data_access_expires_at:undefined,data_access_expiration_time:Math.floor(now/1000)+3600}});
+    const result=await adapter.exchangeAndInspect(baseInput);
+    expect(result.expiresAt).toBe(now+3600000);
+  });
+  it("fails closed when Meta supplies no bounded expiry metadata",async()=>{
+    const {adapter}=fixture({exchange:{expires_in:undefined},longExchange:{expires_in:undefined},debug:{expires_at:0,data_access_expires_at:0,data_access_expiration_time:0}});
+    await expect(adapter.exchangeAndInspect(baseInput)).rejects.toThrow("FACEBOOK_TOKEN_EXPIRY_UNVERIFIABLE");
+  });
   it("proves Business membership and returns only requested roots without inventing tasks",async()=>{const {adapter}=fixture({},"META_BUSINESS");const businessProfile:TrustedOAuthProfile={...profile,provider:"META_BUSINESS",scopes:expandVerifiedPermissionDependencies(["public_profile","business_management"]),capabilities:["business.get"]};const result=await adapter.exchangeAndInspect({...baseInput,profile:businessProfile,requestedAssets:[{type:"BUSINESS",id:"101"}]});expect(result.assets).toEqual([{type:"BUSINESS",id:"101",tasks:[]}]);expect(JSON.stringify(result)).not.toContain("999");});
-  it.each([{app_id:"foreign"},{type:"PAGE"},{type:"SYSTEM_USER"},{is_valid:false},{expires_at:1},{expires_at:0},{scopes:["public_profile","ads_read","ads_management"]},{scopes:["public_profile"]},{scopes:["public_profile","ads_read","ads_read"]}])("rejects independently inspected token mismatch %j",async debug=>{const {adapter}=fixture({debug});await expect(adapter.exchangeAndInspect(baseInput)).rejects.toThrow();});
+  it.each([{app_id:"foreign"},{type:"PAGE"},{type:"SYSTEM_USER"},{is_valid:false},{expires_at:1},{scopes:["public_profile","ads_read","ads_management"]},{scopes:["public_profile"]},{scopes:["public_profile","ads_read","ads_read"]}])("rejects independently inspected token mismatch %j",async debug=>{const {adapter}=fixture({debug});await expect(adapter.exchangeAndInspect(baseInput)).rejects.toThrow();});
   it("rejects mismatched /me subject",async()=>{await expect(fixture({me:{id:"other"}}).adapter.exchangeAndInspect(baseInput)).rejects.toThrow();});
   it.each([{data:[{permission:"public_profile",status:"granted"},{permission:"ads_read",status:"declined"}]},{data:[{permission:"public_profile",status:"granted"},{permission:"ads_read",status:"granted"},{permission:"ads_read",status:"granted"}]},{data:profile.scopes.map(permission=>({permission,status:"granted"})),paging:{next:"https://attacker.invalid/?access_token=private"}}])("rejects incomplete declined or duplicate actual permission records %j",async permissions=>{await expect(fixture({permissions}).adapter.exchangeAndInspect(baseInput)).rejects.toThrow();});
   it("rejects wrong private asset read identity",async()=>{await expect(fixture({asset:{account_id:"999"}}).adapter.exchangeAndInspect(baseInput)).rejects.toThrow("ASSET_READ_PROOF_MISMATCH");});

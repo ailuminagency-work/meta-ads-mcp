@@ -58,6 +58,7 @@ const safeReasons=new Set([
   "FACEBOOK_PROVIDER_ADAPTER_UNVERIFIED_HOLD",
   "FACEBOOK_REGISTERED_ROOT_TYPE_REQUIRED",
   "FACEBOOK_TOKEN_EXPIRED",
+  "FACEBOOK_TOKEN_EXPIRY_UNVERIFIABLE",
   "FACEBOOK_TOKEN_TYPE_MISMATCH",
   "FACEBOOK_USER_DERIVED_SCOPE_PROFILE_DENIED",
   "FACEBOOK_USER_PROFILE_REQUIRED",
@@ -127,3 +128,4 @@ export function oauthFailureCategory(error:unknown):string {
 export function logOAuthFailure(stage:"callback"|"provider_exchange",error:unknown):void {
  logger.warn({event:"platform_oauth_failure",stage,reason:oauthFailureCategory(error)},"Platform OAuth failed");
 }
+
