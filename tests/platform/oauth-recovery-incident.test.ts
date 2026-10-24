@@ -102,6 +102,17 @@ describe("OAuth recovery incident binding", () => {
     await expect(store.claim({ scope, action: "audit_canonical_redirect", maxAttempts: 1, now: 1000 }))
       .rejects.toThrow("RECOVERY_INCIDENT_CLAIM_INVALID");
   });
+
+  it("rejects untrusted reason text and refuses to read a tampered reason", async () => {
+    const db = new FakeDb();
+    const store = new FirestoreRecoveryIncidentStore(db as unknown as Firestore);
+    await expect(store.open({ scope, reason: "access_token=SECRET" , now: 1000, expiresAt: 2000 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_REASON_INVALID");
+    await store.open({ scope, reason: "ORIGIN_MISMATCH", now: 1000, expiresAt: 2000 });
+    db.tamper(recoveryIncidentScopeHash(scope), { reason: "token=SECRET" });
+    await expect(store.get(scope)).rejects.toThrow("RECOVERY_INCIDENT_BINDING_INVALID");
+  });
 });
+
 
 

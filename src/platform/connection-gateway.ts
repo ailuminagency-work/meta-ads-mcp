@@ -93,7 +93,9 @@ export class ConnectionStrategyGateway {
     const { context, plan, assets } = input;
     const tenantId = context.principal.tenantId;
     const operatorId = context.principal.operatorId;
-    if (assets.length === 0) throw new PlatformDenied("SCOPED_ASSET_TASK_REFERENCE_REQUIRED");
+    if (assets.length === 0 || !Array.isArray(plan.assets) || plan.assets.length === 0) {
+      throw new PlatformDenied("SCOPED_ASSET_TASK_REFERENCE_REQUIRED");
+    }
     const tenant = await this.repository.get("tenants", tenantId, tenantId);
     const member = await this.repository.get("members", tenantId, operatorId);
     const client = await this.repository.get("clients", tenantId, context.clientId);
@@ -108,12 +110,13 @@ export class ConnectionStrategyGateway {
     }
     const seen = new Set<string>();
     const seenRefs = new Set<string>();
-    const planRefs = new Set((plan.assets ?? []).map(asset => `${asset.type}:${asset.id.replace(/^act_/, "")}`));
+    const planRefs = new Set(plan.assets.map(asset => `${asset.type}:${asset.id.replace(/^act_/, "")}`));
+    if (planRefs.size !== plan.assets.length) throw new PlatformDenied("ASSET_REGISTRY_BINDING_REQUIRED");
     const resolved: MetaAsset[] = [];
     for (const supplied of assets) {
       if (seen.has(supplied.key) || supplied.tenantId !== tenantId || supplied.clientId !== context.clientId ||
           supplied.provider !== context.provider || supplied.revokedAt !== null ||
-          (planRefs.size > 0 && !planRefs.has(`${supplied.type}:${supplied.id.replace(/^act_/, "")}`))) {
+          !planRefs.has(`${supplied.type}:${supplied.id.replace(/^act_/, "")}`)) {
         throw new PlatformDenied("ASSET_REGISTRY_BINDING_REQUIRED");
       }
       seen.add(supplied.key);
@@ -126,7 +129,7 @@ export class ConnectionStrategyGateway {
       }
       resolved.push(authoritative);
     }
-    if (planRefs.size > 0 && (seenRefs.size !== planRefs.size || [...planRefs].some(ref => !seenRefs.has(ref)))) {
+    if (seenRefs.size !== planRefs.size || [...planRefs].some(ref => !seenRefs.has(ref))) {
       throw new PlatformDenied("ASSET_REGISTRY_BINDING_REQUIRED");
     }
     return resolved;
@@ -206,4 +209,5 @@ export class CredentialBroker {
     return withConnectionCredential(permit, fn);
   }
 }
+
 

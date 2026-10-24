@@ -46,6 +46,20 @@ describe("connection strategy gateway", () => {
     expect(result).toMatchObject({ status: "SECURITY_HOLD", reason: "SCOPED_ASSET_TASK_REFERENCE_REQUIRED" });
   });
 
+  it("rejects an asset supplied without a complete planned asset reference", async () => {
+    const f = fixture();
+    const plan = { ...f.plan, assets: [] };
+    const result = await new ConnectionStrategyGateway(f.repository).evaluate({ context: f.context, plan, assets: [f.asset], now: 2_000 });
+    expect(result).toMatchObject({ status: "SECURITY_HOLD", reason: "SCOPED_ASSET_TASK_REFERENCE_REQUIRED" });
+  });
+
+  it("rejects duplicate logical planned asset references", async () => {
+    const f = fixture();
+    const plan = { ...f.plan, assets: [...f.plan.assets, { type: "AD_ACCOUNT" as const, id: "act_101" }] };
+    const result = await new ConnectionStrategyGateway(f.repository).evaluate({ context: f.context, plan, assets: [f.asset], now: 2_000 });
+    expect(result).toMatchObject({ status: "SECURITY_HOLD", reason: "ASSET_REGISTRY_BINDING_REQUIRED" });
+  });
+
   it("rejects a disabled operator before selecting a connection", async () => {
     const f = fixture();
     const repository = { ...f.repository, get: async (collection: string, _tenantId: string, id: string) => collection === "members" ? { operatorId: id, tenantId: "t", roles: ["connection_admin"], allowedClientIds: ["c"], revision: 1, disabledAt: 2 } : (f.repository as any).get(collection, _tenantId, id) } as unknown as PlatformRepository;
@@ -67,4 +81,5 @@ describe("connection strategy gateway", () => {
     expect(result).toMatchObject({ status: "SECURITY_HOLD", reason: "ASSET_REGISTRY_BINDING_REQUIRED" });
   });
 });
+
 

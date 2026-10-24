@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Firestore } from "@google-cloud/firestore";
 import { PlatformDenied } from "./models.js";
 import type { RecoveryAttemptLedger } from "./oauth-recovery-runner.js";
-import { RECOVERY_TOOLS, type RecoveryToolId } from "./oauth-recovery-toolbox.js";
+import { RECOVERY_PLAYBOOKS, RECOVERY_TOOLS, type RecoveryReason, type RecoveryToolId } from "./oauth-recovery-toolbox.js";
 
 const COLLECTION = "platform_oauth_recovery_incidents";
 const MAX_ID = 128;
@@ -54,6 +54,10 @@ function validId(value: string): boolean {
   return typeof value === "string" && value.length > 0 && value.length <= MAX_ID && !/[\\/]/.test(value);
 }
 
+function isRecoveryReason(value: string): value is RecoveryReason {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(RECOVERY_PLAYBOOKS, value);
+}
+
 function assertScope(scope: RecoveryIncidentScope): void {
   if (!validId(scope.tenantId) || !validId(scope.clientId) || !validId(scope.operatorId) ||
       scope.provider !== "META" || (scope.connectionId !== null && !validId(scope.connectionId)) ||
@@ -84,7 +88,7 @@ function assertRecord(row: RecoveryIncidentRecord, scope: RecoveryIncidentScope)
       row.tenantId !== scope.tenantId || row.clientId !== scope.clientId ||
       row.operatorId !== scope.operatorId || row.provider !== scope.provider ||
       row.connectionId !== scope.connectionId || row.profileId !== scope.profileId ||
-      row.incidentId !== scope.incidentId || !validStatuses.includes(row.status) || !validId(row.reason) ||
+      row.incidentId !== scope.incidentId || !validStatuses.includes(row.status) || !isRecoveryReason(row.reason) ||
       !Array.isArray(row.attempted) || row.attempted.some(action => typeof action !== "string" || !validActions.has(action)) ||
       !Number.isSafeInteger(row.revision) || row.revision < 1 ||
       !Number.isSafeInteger(row.maxTotalAttempts) || row.maxTotalAttempts < 0 || row.maxTotalAttempts > 3 ||
@@ -122,7 +126,7 @@ export class FirestoreRecoveryIncidentStore implements RecoveryIncidentStore {
   }): Promise<RecoveryIncidentRecord> {
     assertScope(input.scope);
     assertWindow(input.now, input.expiresAt);
-    if (!validId(input.reason) || input.reason.length > MAX_ID) throw new PlatformDenied("RECOVERY_INCIDENT_REASON_INVALID");
+    if (!isRecoveryReason(input.reason)) throw new PlatformDenied("RECOVERY_INCIDENT_REASON_INVALID");
     const maxTotalAttempts = input.maxTotalAttempts ?? 3;
     if (!Number.isSafeInteger(maxTotalAttempts) || maxTotalAttempts < 0 || maxTotalAttempts > 3) {
       throw new PlatformDenied("RECOVERY_INCIDENT_BUDGET_INVALID");
@@ -189,5 +193,6 @@ export class FirestoreRecoveryIncidentStore implements RecoveryIncidentStore {
     };
   }
 }
+
 
 
