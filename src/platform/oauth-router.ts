@@ -49,9 +49,11 @@ function parseCallbackCookie(raw:unknown):
   catch{return {ok:false,reason:"CALLBACK_COOKIE_INVALID"};}
   const result=cookieSchema.safeParse(decoded);
   if(result.success)return {ok:true,data:result.data};
-  if(decoded&&typeof decoded==="object"&&!Array.isArray(decoded)&&
-    !/^[a-f0-9]{64}$/.test(String((decoded as Record<string,unknown>).nonce??"")))
-    return {ok:false,reason:"CALLBACK_NONCE_INVALID"};
+  if(decoded&&typeof decoded==="object"&&!Array.isArray(decoded)){
+    const nonce=(decoded as Record<string,unknown>).nonce;
+    if(typeof nonce!=="string"||!/^[a-f0-9]{64}$/.test(nonce))
+      return {ok:false,reason:"CALLBACK_NONCE_INVALID"};
+  }
   return {ok:false,reason:"CALLBACK_COOKIE_INVALID"};
 }
 
