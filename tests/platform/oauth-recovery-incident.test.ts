@@ -89,6 +89,19 @@ describe("OAuth recovery incident binding", () => {
     db.tamper(id, { expiresAt: 2000, status: "BAD" });
     await expect(store.get(scope)).rejects.toThrow("RECOVERY_INCIDENT_BINDING_INVALID");
   });
+
+  it("enforces the catalog ceiling and rejects invalid claim ordering", async () => {
+    const db = new FakeDb();
+    const store = new FirestoreRecoveryIncidentStore(db as unknown as Firestore);
+    await store.open({ scope, reason: "ORIGIN_MISMATCH", now: 1000, expiresAt: 3000 });
+    await expect(store.claim({ scope, action: "audit_canonical_redirect", maxAttempts: 2, now: 1100 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_CLAIM_INVALID");
+    await expect(store.claim({ scope, action: "not-a-tool" as never, maxAttempts: 1, now: 1100 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_CLAIM_INVALID");
+    expect(await store.claim({ scope, action: "audit_canonical_redirect", maxAttempts: 1, now: 1100 })).toBe(true);
+    await expect(store.claim({ scope, action: "audit_canonical_redirect", maxAttempts: 1, now: 1000 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_CLAIM_INVALID");
+  });
 });
 
 

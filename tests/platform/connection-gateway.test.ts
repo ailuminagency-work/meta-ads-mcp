@@ -59,5 +59,12 @@ describe("connection strategy gateway", () => {
     const result = await new ConnectionStrategyGateway(repository).evaluate({ context: f.context, plan: f.plan, assets: [f.asset], now: 2_000 });
     expect(result).toMatchObject({ status: "SECURITY_HOLD", reason: "ASSET_REGISTRY_BINDING_REQUIRED" });
   });
+
+  it("requires every planned asset to be resolved before reuse", async () => {
+    const f = fixture();
+    const plan = { ...f.plan, assets: [...f.plan.assets, { type: "AD_ACCOUNT" as const, id: "202" }] };
+    const result = await new ConnectionStrategyGateway(f.repository).evaluate({ context: f.context, plan, assets: [f.asset], now: 2_000 });
+    expect(result).toMatchObject({ status: "SECURITY_HOLD", reason: "ASSET_REGISTRY_BINDING_REQUIRED" });
+  });
 });
 

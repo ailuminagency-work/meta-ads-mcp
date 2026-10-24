@@ -91,7 +91,7 @@ function assertRecord(row: RecoveryIncidentRecord, scope: RecoveryIncidentScope)
       row.attempted.length > row.maxTotalAttempts ||
       !Number.isSafeInteger(row.createdAt) || row.createdAt <= 0 ||
       !Number.isSafeInteger(row.updatedAt) || row.updatedAt < row.createdAt ||
-      !Number.isSafeInteger(row.expiresAt) || row.expiresAt <= row.createdAt) {
+      !Number.isSafeInteger(row.expiresAt) || row.expiresAt <= row.updatedAt) {
     throw new PlatformDenied("RECOVERY_INCIDENT_BINDING_INVALID");
   }
 }
@@ -153,7 +153,8 @@ export class FirestoreRecoveryIncidentStore implements RecoveryIncidentStore {
     readonly now: number;
   }): Promise<boolean> {
     assertScope(input.scope);
-    if (!Number.isSafeInteger(input.now) || input.now <= 0 || !Number.isSafeInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 2) {
+    const tool = RECOVERY_TOOLS[input.action as RecoveryToolId];
+    if (!tool || !Number.isSafeInteger(input.now) || input.now <= 0 || !Number.isSafeInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > tool.maxAttempts) {
       throw new PlatformDenied("RECOVERY_INCIDENT_CLAIM_INVALID");
     }
     return this.db.runTransaction(async tx => {
@@ -162,6 +163,7 @@ export class FirestoreRecoveryIncidentStore implements RecoveryIncidentStore {
       if (!snapshot.exists) throw new PlatformDenied("RECOVERY_INCIDENT_REQUIRED");
       const row = snapshot.data() as RecoveryIncidentRecord;
       assertRecord(row, input.scope);
+      if (input.now < row.updatedAt) throw new PlatformDenied("RECOVERY_INCIDENT_CLAIM_INVALID");
       if (row.status !== "OPEN" || row.expiresAt <= input.now || row.attempted.length >= row.maxTotalAttempts) return false;
       if (row.attempted.filter(action => action === input.action).length >= input.maxAttempts) return false;
       tx.update(ref, {
