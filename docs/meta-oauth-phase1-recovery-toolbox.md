@@ -160,3 +160,26 @@ acceptance have actually shown one ordinary read-only login, a reconnect
 after expiration, and a second independently owned client connection,
 with correct tenant separation and no unauthorized writes. Until then,
 the new catalog is NOT production-ready automation.
+
+## Bounded diagnostic runner — also implemented in this draft
+
+`src/platform/oauth-recovery-runner.ts` provides an injection-based executor
+for **safe automatic diagnostics only**, with a required durable attempt ledger.
+
+- A ledger must atomically claim each attempt before execution and be bound to
+  one verified tenant/client/operator/connection incident.
+- At most **three** automatic diagnostic checks run per invocation; each
+  procedure has its own one- or two-attempt ceiling.
+- Once diagnostic checks fail, the runner selects the next reviewed human or
+  engineering procedure rather than retrying indefinitely.
+- A successful diagnostic means only **that diagnostic passed**; it does not
+  claim the Meta connection is authenticated or connected.
+- Runtime handlers are deliberately not included here: individual diagnostics
+  must be separately reviewed and injected when the live integration is wired.
+- Failure, unknown reasons, competing workers, invalid ledgers or unexpected
+  handler results stop safely.
+
+`tests/platform/oauth-recovery-runner.test.ts` checks bounded fallback
+progression, owner handoffs, denied permission non-retry, durable-claim
+failure, error sanitization and invalid budgets.
+
