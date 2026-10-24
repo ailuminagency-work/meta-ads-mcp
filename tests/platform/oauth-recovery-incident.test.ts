@@ -112,6 +112,49 @@ describe("OAuth recovery incident binding", () => {
     db.tamper(recoveryIncidentScopeHash(scope), { reason: "token=SECRET" });
     await expect(store.get(scope)).rejects.toThrow("RECOVERY_INCIDENT_BINDING_INVALID");
   });
+
+  it("transitions an incident with an immutable revision CAS", async () => {
+    const db = new FakeDb();
+    const store = new FirestoreRecoveryIncidentStore(db as unknown as Firestore);
+    const opened = await store.open({ scope, reason: "ORIGIN_MISMATCH", now: 1000, expiresAt: 3000 });
+    const held = await store.hold({ scope, expectedRevision: opened.revision, now: 1100 });
+    expect(held.status).toBe("HOLD");
+    expect(held.revision).toBe(2);
+    expect((await store.get(scope))?.status).toBe("HOLD");
+    await expect(store.resolve({ scope, expectedRevision: opened.revision, now: 1200 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_TRANSITION_REJECTED");
+    await expect(store.exhaust({ scope, expectedRevision: held.revision, now: 1000 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_TRANSITION_REJECTED");
+  });
+
+  it("supports each terminal lifecycle outcome only from OPEN", async () => {
+    const statuses = ["RESOLVED", "EXHAUSTED", "HOLD"] as const;
+    for (const status of statuses) {
+      const db = new FakeDb();
+      const store = new FirestoreRecoveryIncidentStore(db as unknown as Firestore);
+      const opened = await store.open({
+        scope, reason: "ORIGIN_MISMATCH", now: 1000, expiresAt: 3000,
+        ...(status === "EXHAUSTED" ? { maxTotalAttempts: 0 } : {}),
+      });
+      const result = status === "RESOLVED"
+        ? await store.resolve({ scope, expectedRevision: opened.revision, now: 1100 })
+        : status === "EXHAUSTED"
+          ? await store.exhaust({ scope, expectedRevision: opened.revision, now: 1100 })
+          : await store.hold({ scope, expectedRevision: opened.revision, now: 1100 });
+      expect(result.status).toBe(status);
+      expect(result.updatedAt).toBe(1100);
+    }
+  });
+
+  it("does not transition an expired incident or allow exhaustion before its budget is spent", async () => {
+    const db = new FakeDb();
+    const store = new FirestoreRecoveryIncidentStore(db as unknown as Firestore);
+    const opened = await store.open({ scope, reason: "ORIGIN_MISMATCH", now: 1000, expiresAt: 2000 });
+    await expect(store.resolve({ scope, expectedRevision: opened.revision, now: 2000 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_TRANSITION_REJECTED");
+    await expect(store.exhaust({ scope, expectedRevision: opened.revision, now: 1100 }))
+      .rejects.toThrow("RECOVERY_INCIDENT_TRANSITION_REJECTED");
+  });
 });
 
 

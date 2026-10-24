@@ -47,6 +47,32 @@ export interface RecoveryIncidentStore {
     readonly maxAttempts: number;
     readonly now: number;
   }): Promise<boolean>;
+  /**
+   * Mark an incident terminally resolved after a successful, authorized
+   * recovery. The caller must provide the revision it observed so a stale
+   * worker cannot overwrite a newer lifecycle decision.
+   */
+  resolve(input: {
+    readonly scope: RecoveryIncidentScope;
+    readonly expectedRevision: number;
+    readonly now: number;
+  }): Promise<RecoveryIncidentRecord>;
+  /** Mark an incident exhausted after its bounded recovery budget is spent. */
+  exhaust(input: {
+    readonly scope: RecoveryIncidentScope;
+    readonly expectedRevision: number;
+    readonly now: number;
+  }): Promise<RecoveryIncidentRecord>;
+  /**
+   * Stop automated recovery and require an eligible human/engineering actor.
+   * HOLD is deliberately terminal for this incident; a fresh incident is
+   * required after the underlying authorization or security state changes.
+   */
+  hold(input: {
+    readonly scope: RecoveryIncidentScope;
+    readonly expectedRevision: number;
+    readonly now: number;
+  }): Promise<RecoveryIncidentRecord>;
   readAttempted(scope: RecoveryIncidentScope): Promise<readonly RecoveryToolId[]>;
 }
 
@@ -177,6 +203,63 @@ export class FirestoreRecoveryIncidentStore implements RecoveryIncidentStore {
       });
       return true;
     });
+  }
+
+  private async transition(input: {
+    readonly scope: RecoveryIncidentScope;
+    readonly expectedRevision: number;
+    readonly now: number;
+    readonly status: Exclude<RecoveryIncidentStatus, "OPEN">;
+  }): Promise<RecoveryIncidentRecord> {
+    assertScope(input.scope);
+    if (!Number.isSafeInteger(input.now) || input.now <= 0 ||
+        !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
+      throw new PlatformDenied("RECOVERY_INCIDENT_TRANSITION_INVALID");
+    }
+    return this.db.runTransaction(async tx => {
+      const ref = this.ref(input.scope);
+      const snapshot = await tx.get(ref);
+      if (!snapshot.exists) throw new PlatformDenied("RECOVERY_INCIDENT_REQUIRED");
+      const row = snapshot.data() as RecoveryIncidentRecord;
+      assertRecord(row, input.scope);
+      if (row.status !== "OPEN" || row.revision !== input.expectedRevision ||
+          input.now < row.updatedAt || input.now >= row.expiresAt ||
+          (input.status === "EXHAUSTED" && row.attempted.length < row.maxTotalAttempts)) {
+        throw new PlatformDenied("RECOVERY_INCIDENT_TRANSITION_REJECTED");
+      }
+      const next: RecoveryIncidentRecord = {
+        ...row,
+        status: input.status,
+        revision: row.revision + 1,
+        updatedAt: input.now,
+      };
+      tx.update(ref, { status: next.status, revision: next.revision, updatedAt: next.updatedAt });
+      return next;
+    });
+  }
+
+  async resolve(input: {
+    readonly scope: RecoveryIncidentScope;
+    readonly expectedRevision: number;
+    readonly now: number;
+  }): Promise<RecoveryIncidentRecord> {
+    return this.transition({ ...input, status: "RESOLVED" });
+  }
+
+  async exhaust(input: {
+    readonly scope: RecoveryIncidentScope;
+    readonly expectedRevision: number;
+    readonly now: number;
+  }): Promise<RecoveryIncidentRecord> {
+    return this.transition({ ...input, status: "EXHAUSTED" });
+  }
+
+  async hold(input: {
+    readonly scope: RecoveryIncidentScope;
+    readonly expectedRevision: number;
+    readonly now: number;
+  }): Promise<RecoveryIncidentRecord> {
+    return this.transition({ ...input, status: "HOLD" });
   }
 
   async readAttempted(scope: RecoveryIncidentScope): Promise<readonly RecoveryToolId[]> {
