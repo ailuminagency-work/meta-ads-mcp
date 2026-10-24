@@ -38,7 +38,15 @@ import { ApifyApiClient } from "../apify/client.js";
 import type { ApifyEnvelope, ApifyUser } from "../apify/types.js";
 import { CONNECTIONS_PATH, renderConnectionsPage } from "./html-pages.js";
 
-const STANDALONE_RETURN_PATHS = new Set<string>([CONNECTIONS_PATH]);
+// These are authenticated, same-origin landing pages rather than MCP
+// /authorize requests. Keep this list exact: adding a path here permits the
+// OAuth callback to return to it, so query strings, descendants and traversal
+// variants must remain rejected by validateMetaAuthReturn.
+const STANDALONE_RETURN_PATHS = new Set<string>([
+  CONNECTIONS_PATH,
+  "/platform/connections/",
+  "/platform/clients/",
+]);
 
 /**
  * Short timeout and no retries, unlike the shared `apifyApiClient` singleton
@@ -777,3 +785,4 @@ export function mountAuthRoutes(
     },
   );
 }
+
