@@ -258,7 +258,7 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     const debug=parseDebugTokenResponse(await this.get("/debug_token",{input_token:token},`${profile.appId}|${appSecret}`));
     if(String(debug.app_id)!==profile.appId)throw new PlatformDenied("FACEBOOK_ACTUAL_APP_ID_REQUIRED");
     if(new Set(debug.scopes).size!==debug.scopes.length||!facebookActualScopesMatch(profile.scopes,debug.scopes)){
-      logger.warn({event:"facebook_debug_token_scope_mismatch",expectedScopeCount:profile.scopes.length,actualScopeCount:debug.scopes.length,implicitPublicProfileOmitted:profile.scopes.includes("public_profile")&&!debug.scopes.includes("public_profile")},"Meta debug_token scopes did not match the trusted profile");
+      logger.warn({event:"facebook_debug_token_scope_mismatch",expectedScopeCount:profile.scopes.length,actualScopeCount:debug.scopes.length,extraScopes:debug.scopes.filter(scope=>!profile.scopes.includes(scope)).sort().slice(0,32),implicitPublicProfileOmitted:profile.scopes.includes("public_profile")&&!debug.scopes.includes("public_profile")},"Meta debug_token scopes did not match the trusted profile");
       throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
     }
     const inspectedAt=this.now();
