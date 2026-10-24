@@ -4,7 +4,7 @@ Source inventory only. Regenerate with `npm exec tsx scripts/generate-platform-i
 
 | Measurement | Count |
 |---|---:|
-| registeredTools | 370 |
+| registeredTools | 371 |
 | legacyTools | 142 |
 | strictLegacyReads | 65 |
 | strictLegacyWriteSubsets | 32 |
@@ -13,7 +13,7 @@ Source inventory only. Regenerate with `npm exec tsx scripts/generate-platform-i
 | productContracts | 183 |
 | verifiedProductSubsets | 177 |
 | unverifiedProductHolds | 6 |
-| controlAndWorkflowTools | 45 |
+| controlAndWorkflowTools | 46 |
 
 ## Product contracts and permission matrix
 
@@ -385,6 +385,7 @@ Full primary references and per-contract human/App Review/ownership requirements
 - meta_lookup_ad_targeting
 - meta_observe_ads_compatibility
 - meta_observe_account_owner
+- meta_inspect_billing_configuration
 - meta_research_prepare_job
 - meta_research_run_job
 - meta_research_job_status
