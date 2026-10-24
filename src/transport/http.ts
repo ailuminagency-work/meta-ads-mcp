@@ -11,6 +11,7 @@ import {environmentBusinessOwnerRouter} from "../platform/business-owner-runtime
 import {environmentWhatsAppSetupRouter} from "../platform/whatsapp-setup-runtime.js";
 import {environmentResearchReviewRouter} from '../platform/research-runtime.js';
 import {environmentClientEnrollmentRouter} from "../platform/client-enrollment-runtime.js";
+import {environmentClientManagementRouter} from "../platform/client-management-runtime.js";
 import {environmentHealthEventStorage} from "../platform/health-events.js";
 import {environmentAttachmentRouters} from "../platform/attachment-runtime.js";
 import {environmentMessengerUtilityIngress} from "../platform/messenger-utility-runtime.js";
@@ -575,6 +576,8 @@ export async function startHttpTransport(
   if(publishingVideoRouters)app.use("/platform/publishing-videos/review",publishingVideoRouters.review);
   const privacyRouter=environmentMetaPrivacyRouter(serverUrl.origin);
   if(privacyRouter)app.use("/meta/privacy",privacyRouter);
+  const clientManagementRouter=environmentClientManagementRouter(serverUrl.origin);
+  if(clientManagementRouter)app.use("/platform/clients",clientManagementRouter);
   const clientEnrollmentRouter=environmentClientEnrollmentRouter(serverUrl.origin);
   if(clientEnrollmentRouter)app.use("/platform/clients/new",clientEnrollmentRouter);
   const whatsappSetupRouter=environmentWhatsAppSetupRouter(serverUrl.origin);
