@@ -11,13 +11,14 @@ import {productVersion} from "./product-version.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createConnectionChallenge, consumeConnectionChallenge, validateConnectionProfile, type ConnectionChallengeStore, type ConnectionProfile } from "./connection-profiles.js";
-import type { AssetGrant, AssetRef, Connection, Credential, Member, MetaAsset, OperationClass, PlatformPrincipal,Client } from "./models.js";
+import type { AssetGrant, AssetRef, Connection, Credential, Member, MetaAsset, OperationClass, PlatformPrincipal,Client,Tenant } from "./models.js";
 import { PlatformDenied } from "./models.js";
 import type { PlatformRepository } from "./repository.js";
 import { encryptCredential } from "./connections.js";
 import { canonicalJson } from "./policy.js";
 import {encryptPageInspectionDelegation,pageInspectionDelegationMetadata,type PageInspectionDelegation} from "./page-inspection-delegation.js";
 import {facebookActualScopesMatch, classifyMetaPermissionProfiles, type MetaPermissionProfile} from "./oauth-facebook.js";
+import { oauthDiscoveryHandoffSchema, type OAuthAssetDiscoveryCandidate, type OAuthAssetRegistrationBridge, type OAuthDiscoveryInspection, type OAuthDiscoveryRequired, type OAuthDiscoveryTransactionStore } from "./oauth-discovery.js";
 
 export interface TrustedOAuthProfile extends ConnectionProfile {
   appPromotionBinding?:import("./app-promotion-contract.js").AppPromotionBinding;
@@ -92,6 +93,8 @@ export interface VerifiedProviderAdapter {
   validateEnrollmentContext?(input:{profile:TrustedOAuthProfile;principal:PlatformPrincipal;clientId:string;client:Client;businessOwnerEvidence?:ClientBusinessEvidence}):void;
   exchangeAndInspectMany?(input:{code:string;profile:TrustedOAuthProfile;appSecret:string;requestedAssets:AssetRef[];registeredAssets?:MetaAsset[];expectedOperatorId?:string}):Promise<InspectedOAuthToken[]>;
   exchangeAndInspect(input: { expectedOperatorId?:string; code: string; profile: TrustedOAuthProfile; appSecret: string; requestedAssets: AssetRef[];registeredAssets?:MetaAsset[] }): Promise<InspectedOAuthToken>;
+  inspectAccessToken?(input: { accessToken: string; profile: TrustedOAuthProfile; appSecret: string; requestedAssets: AssetRef[]; registeredAssets?: MetaAsset[]; expectedOperatorId?: string }): Promise<InspectedOAuthToken>;
+  discoverAssets?(input:{code:string;profile:TrustedOAuthProfile;appSecret:string}): Promise<InspectedOAuthToken>;
 }
 export function unverifiedOAuthAdapter(provider: Connection["provider"]): VerifiedProviderAdapter {
   return { provider, verified: false, validateProfile:()=>{throw new PlatformDenied("PRODUCT_OAUTH_ADAPTER_UNVERIFIED_HOLD");},exchangeAndInspect: async () => { throw new PlatformDenied("PRODUCT_OAUTH_ADAPTER_UNVERIFIED_HOLD"); } };
@@ -114,16 +117,18 @@ export interface PlatformOAuthDependencies {
   adapters: { get(provider: Connection["provider"]): VerifiedProviderAdapter | null };
   commitVerifiedConnections?: (enrollments:ConnectionEnrollment[])=>Promise<void>;
   commitVerifiedConnection?: (enrollment: ConnectionEnrollment) => Promise<void>;
+  discoveryStore?: OAuthDiscoveryTransactionStore;
+  assetRegistration?: OAuthAssetRegistrationBridge;
   now?: () => number;
 }
 
-async function membership(repo: PlatformRepository, operatorId: string, clientId: string): Promise<{ principal: PlatformPrincipal; member: Member;client:Client; businessOwnerEvidence:ClientBusinessEvidence; expected: ConnectionEnrollment["expectedRecords"] }> {
+async function membership(repo: PlatformRepository, operatorId: string, clientId: string): Promise<{ principal: PlatformPrincipal; tenant: Tenant; member: Member;client:Client; businessOwnerEvidence:ClientBusinessEvidence; expected: ConnectionEnrollment["expectedRecords"] }> {
   const principal = await repo.resolvePrincipal(operatorId);
   if (!principal || principal.operatorId !== operatorId) throw new PlatformDenied("AUTHENTICATED_PLATFORM_OPERATOR_REQUIRED");
   const [tenant, member, client] = await Promise.all([repo.get("tenants", principal.tenantId, principal.tenantId), repo.get("members", principal.tenantId, operatorId), repo.get("clients", principal.tenantId, clientId)]);
   if (!tenant || tenant.id !== principal.tenantId || tenant.status !== "ACTIVE" || tenant.migrationState !== "READY" || !member || member.operatorId !== operatorId || member.tenantId !== principal.tenantId || member.disabledAt !== null || !member.allowedClientIds.includes(clientId) || !member.roles.some(role => role === "admin" || role === "connection_admin") || !client || client.id !== clientId || client.tenantId !== principal.tenantId || client.status !== "ACTIVE") throw new PlatformDenied("CLIENT_CONNECTION_ADMIN_REQUIRED");
   const businessOwnerEvidence=await loadClientBusinessEvidence(repo,client);
-  return { principal, member,client,businessOwnerEvidence, expected: [{ collection: "tenants", id: tenant.id, canonical: canonicalJson(tenant) }, { collection: "members", id: member.operatorId, canonical: canonicalJson(member) }, { collection: "clients", id: client.id, canonical: canonicalJson(client) },...clientBusinessExpected(businessOwnerEvidence)] };
+  return { principal, tenant, member,client,businessOwnerEvidence, expected: [{ collection: "tenants", id: tenant.id, canonical: canonicalJson(tenant) }, { collection: "members", id: member.operatorId, canonical: canonicalJson(member) }, { collection: "clients", id: client.id, canonical: canonicalJson(client) },...clientBusinessExpected(businessOwnerEvidence)] };
 }
 
 export class PlatformOAuthService {
@@ -150,12 +155,12 @@ export class PlatformOAuthService {
     if (profile.configurationId && !/^[0-9]{1,100}$/.test(profile.configurationId)) throw new PlatformDenied("INVALID_BUSINESS_LOGIN_CONFIGURATION");
     return structuredClone(profile);
   }
-  private adapter(profile: TrustedOAuthProfile): VerifiedProviderAdapter {
+  private adapter(profile: TrustedOAuthProfile, allowDiscovery=false): VerifiedProviderAdapter {
     const adapter = this.deps.adapters.get(profile.provider);
     if (!adapter || !adapter.verified || adapter.provider !== profile.provider) throw new PlatformDenied("PRODUCT_OAUTH_ADAPTER_UNVERIFIED_HOLD");
     adapter.validateProfile(profile);
     productVersion(profile.provider);
-    if (!this.deps.commitVerifiedConnection && !this.deps.commitVerifiedConnections) throw new PlatformDenied("ATOMIC_CONNECTION_ENROLLMENT_UNAVAILABLE_HOLD");
+    if (!allowDiscovery && !this.deps.commitVerifiedConnection && !this.deps.commitVerifiedConnections) throw new PlatformDenied("ATOMIC_CONNECTION_ENROLLMENT_UNAVAILABLE_HOLD");
     return adapter;
   }
   /**
@@ -179,7 +184,7 @@ export class PlatformOAuthService {
   }
   async start(operatorId: string, clientId: string, profileId: string): Promise<{ state: string; browserNonce: string; authorizeUrl: string }> {
     const profile = await this.profile(profileId);
-    const adapter=this.adapter(profile);
+    const adapter=this.adapter(profile,Boolean(this.deps.discoveryStore&&this.deps.assetRegistration));
     const { principal,client,businessOwnerEvidence } = await membership(this.deps.repository, operatorId, clientId);
     adapter.validateEnrollmentContext?.({profile,principal,clientId,client,businessOwnerEvidence});
     const challenge = await createConnectionChallenge(this.deps.challenges, profile, principal, clientId, this.now());
@@ -191,6 +196,87 @@ export class PlatformOAuthService {
     if (profile.strategy === "facebook_business" && profile.configurationId && !PlatformOAuthService.usesDirectReadOnlyScopes(profile)) authorize.searchParams.set("config_id", profile.configurationId);
     else authorize.searchParams.set("scope", profile.scopes.join(","));
     return { ...challenge, authorizeUrl: authorize.toString() };
+  }
+  /** Exchange and inspect a first-time agency credential, then stop before enrollment. */
+  async shouldUseFirstTimeDiscovery(operatorId:string,clientId:string,profileId:string):Promise<boolean> {
+    if(!this.deps.discoveryStore||!this.deps.assetRegistration)return false;
+    const profile=await this.profile(profileId),initial=await membership(this.deps.repository,operatorId,clientId);
+    return !(await this.deps.repository.list("assets",initial.principal.tenantId)).some(a=>a.tenantId===initial.principal.tenantId&&a.clientId===clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
+  }
+  async discoverFirstTime(input: { operatorId:string; clientId:string; profileId:string; state:string; browserNonce:string; code:string }):Promise<OAuthDiscoveryRequired> {
+    const store=this.deps.discoveryStore, registration=this.deps.assetRegistration;
+    if(!store||!registration)throw new PlatformDenied("OAUTH_FIRST_TIME_DISCOVERY_UNAVAILABLE");
+    if(!input.code||input.code.length>4096)throw new PlatformDenied("INVALID_OAUTH_CALLBACK");
+    const profile=await this.profile(input.profileId),adapter=this.adapter(profile,true);
+    if(!adapter.discoverAssets)throw new PlatformDenied("OAUTH_PROVIDER_DISCOVERY_UNAVAILABLE");
+    const initial=await membership(this.deps.repository,input.operatorId,input.clientId);
+    adapter.validateEnrollmentContext?.({profile,principal:initial.principal,clientId:input.clientId,client:initial.client,businessOwnerEvidence:initial.businessOwnerEvidence});
+    const existing=(await this.deps.repository.list("assets",initial.principal.tenantId)).some(a=>a.tenantId===initial.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
+    if(existing)throw new PlatformDenied("OAUTH_REGISTERED_ASSET_PATH_REQUIRED");
+    await consumeConnectionChallenge(this.deps.challenges,profile,initial.principal,input.clientId,input.state,input.browserNonce,this.now());
+    const appSecret=await this.deps.secrets.get(profile.secretReference);if(!appSecret)throw new PlatformDenied("OAUTH_APP_SECRET_REQUIRED");
+    let inspected:InspectedOAuthToken;
+    try{inspected=inspectedTokenSchema.parse(await adapter.discoverAssets({code:input.code,profile,appSecret}));}catch{throw new PlatformDenied("OAUTH_PROVIDER_DISCOVERY_FAILED");}
+    const now=this.now();
+    if(inspected.provider!==profile.provider||inspected.appId!==profile.appId||inspected.tokenType!=="user"||inspected.subjectId!==input.operatorId||inspected.expiresAt<=now||!facebookActualScopesMatch(profile.derivedTokenScopes??profile.scopes,inspected.grantedScopes))throw new PlatformDenied("OAUTH_DISCOVERY_TOKEN_BINDING_REQUIRED");
+    const observed=classifyMetaPermissionProfiles(profile.derivedTokenScopes??profile.scopes,inspected.grantedScopes);
+    if(profile.provider!=="META_MARKETING"||!observed)throw new PlatformDenied("OAUTH_DISCOVERY_PROFILE_REQUIRED");
+    const candidates:OAuthAssetDiscoveryCandidate[]=inspected.assets.filter(a=>a.type==="AD_ACCOUNT").map(a=>({type:a.type,id:a.id,providerAssetId:a.id,evidence:{source:"META_ME_ADACCOUNTS",checkedAt:now,expiresAt:Math.min(inspected.expiresAt,now+300000)}}));
+    if(!candidates.length||candidates.length>98)throw new PlatformDenied("OAUTH_DISCOVERY_NO_ELIGIBLE_ASSETS");
+    const fresh=await membership(this.deps.repository,input.operatorId,input.clientId);
+    adapter.validateEnrollmentContext?.({profile,principal:fresh.principal,clientId:input.clientId,client:fresh.client,businessOwnerEvidence:fresh.businessOwnerEvidence});
+    if(canonicalJson(initial.expected)!==canonicalJson(fresh.expected))throw new PlatformDenied("OAUTH_MEMBERSHIP_CHANGED");
+    const registeredDuringDiscovery=(await this.deps.repository.list("assets",fresh.principal.tenantId)).some(a=>a.tenantId===fresh.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
+    if(registeredDuringDiscovery)throw new PlatformDenied("OAUTH_REGISTERED_ASSET_PATH_REQUIRED");
+    const transactionId=randomUUID(),expiresAt=Math.min(inspected.expiresAt,now+300000),inspection:OAuthDiscoveryInspection={provider:inspected.provider,appId:inspected.appId,subjectId:inspected.subjectId,tokenType:inspected.tokenType,grantedScopes:[...inspected.grantedScopes],...(observed?{grantedPermissionProfiles:observed}:{}),expiresAt:inspected.expiresAt};
+    const expectedCandidates=structuredClone(candidates), expectedInspection=structuredClone(inspection);
+    await store.create({transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,token:inspected.accessToken,inspection:structuredClone(expectedInspection),candidates:structuredClone(expectedCandidates),expiresAt,expectedRevisions:{tenant:fresh.tenant.registryRevision,member:fresh.member.revision,client:fresh.client.revision}});
+    let started;
+    try { started=oauthDiscoveryHandoffSchema.parse(await registration.begin({transactionId,tenantId:fresh.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,appId:profile.appId,inspection:structuredClone(expectedInspection),candidates:structuredClone(expectedCandidates),expiresAt,expectedRevisions:{tenant:fresh.tenant.registryRevision,member:fresh.member.revision,client:fresh.client.revision}})); }
+    catch { throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID"); }
+    if(started.transactionId!==transactionId||started.expiresAt<=this.now()||started.expiresAt>expiresAt||canonicalJson(started.candidates)!==canonicalJson(expectedCandidates))throw new PlatformDenied("OAUTH_DISCOVERY_HANDOFF_INVALID");
+    return {status:"DISCOVERY_REQUIRED",transactionId,expiresAt:started.expiresAt,candidates:structuredClone(expectedCandidates),registrationId:started.registrationId,revision:started.revision};
+  }
+  /** Complete a first-time discovery only after the registry has committed the selected root. */
+  async completeFirstTime(input:{operatorId:string;clientId:string;profileId:string;transactionId:string;registrationId:string;expectedRevision:number;selectedAssets:AssetRef[]}):Promise<{connectionId:string;connectionIds:string[];connectionCount:number;provider:Connection["provider"];assetCount:number}> {
+    const store=this.deps.discoveryStore, registration=this.deps.assetRegistration;
+    if(!store||!registration)throw new PlatformDenied("OAUTH_FIRST_TIME_DISCOVERY_UNAVAILABLE");
+    const profile=await this.profile(input.profileId), adapter=this.adapter(profile);
+    if(profile.provider!=="META_MARKETING"||profile.tokenTypes.length!==1||profile.tokenTypes[0]!=="user"||profile.actions.length!==1||profile.actions[0]!=="READ"||profile.requiredTasks.length)throw new PlatformDenied("OAUTH_DISCOVERY_READ_ONLY_PROFILE_REQUIRED");
+    const initial=await membership(this.deps.repository,input.operatorId,input.clientId), pending=await store.read({transactionId:input.transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,now:this.now()});
+    if(!pending||pending.profileId!==profile.id||pending.appId!==profile.appId||pending.expiresAt<=this.now()||!input.selectedAssets.length||input.selectedAssets.length>98)throw new PlatformDenied("OAUTH_DISCOVERY_TRANSACTION_UNAVAILABLE");
+    const candidateSet=new Set(pending.candidates.map(c=>`${c.type}:${c.id}`));
+    if(input.selectedAssets.some(a=>a.type!=="AD_ACCOUNT"||!candidateSet.has(`${a.type}:${a.id}`)))throw new PlatformDenied("OAUTH_DISCOVERY_ASSET_SELECTION_INVALID");
+    const current=await membership(this.deps.repository,input.operatorId,input.clientId);
+    if(canonicalJson(initial.expected)!==canonicalJson(current.expected)||current.tenant.registryRevision!==pending.expectedRevisions.tenant||current.member.revision!==pending.expectedRevisions.member||current.client.revision!==pending.expectedRevisions.client)throw new PlatformDenied("OAUTH_MEMBERSHIP_CHANGED");
+    const registered=(await this.deps.repository.list("assets",current.principal.tenantId)).filter(a=>a.tenantId===current.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null);
+    const selected=registered.filter(a=>input.selectedAssets.some(r=>r.type===a.type&&r.id.replace(/^act_/,'')===a.id.replace(/^act_/,'')&&a.verifiedAt<=this.now()));
+    if(selected.length!==input.selectedAssets.length||selected.some(a=>a.verifiedAt<=0||this.now()-a.verifiedAt>3600000))throw new PlatformDenied("OAUTH_DISCOVERY_REGISTERED_ASSET_REQUIRED");
+    const appSecret=await this.deps.secrets.get(profile.secretReference);if(!appSecret||!adapter.inspectAccessToken)throw new PlatformDenied("OAUTH_DISCOVERY_INSPECTION_UNAVAILABLE");
+    const secret=await store.readSecret({transactionId:input.transactionId,tenantId:current.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,now:this.now()});
+    if(!secret)throw new PlatformDenied("OAUTH_DISCOVERY_TRANSACTION_UNAVAILABLE");
+    let inspected:InspectedOAuthToken;
+    try { inspected=inspectedTokenSchema.parse(await adapter.inspectAccessToken({accessToken:secret.token,profile,appSecret,requestedAssets:input.selectedAssets,registeredAssets:selected,expectedOperatorId:input.operatorId})); }
+    catch { throw new PlatformDenied("OAUTH_PROVIDER_REINSPECTION_FAILED"); }
+    if(inspected.provider!==profile.provider||inspected.appId!==profile.appId||inspected.subjectId!==input.operatorId||inspected.tokenType!=="user"||!facebookActualScopesMatch(profile.scopes,inspected.grantedScopes)||!inspected.assets.length||inspected.assets.some(a=>!input.selectedAssets.some(r=>r.type===a.type&&r.id.replace(/^act_/,'')===a.id.replace(/^act_/,'')||false)))throw new PlatformDenied("OAUTH_DISCOVERY_TOKEN_BINDING_REQUIRED");
+    const observed=classifyMetaPermissionProfiles(profile.scopes,inspected.grantedScopes);if(!observed)throw new PlatformDenied("ACTUAL_PROVIDER_PERMISSION_CLASSIFICATION_REQUIRED");
+    const consumed=await store.consume({transactionId:input.transactionId,tenantId:current.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,now:this.now()});
+    if(!consumed||consumed.token!==secret.token)throw new PlatformDenied("OAUTH_DISCOVERY_TRANSACTION_CONSUMED");
+    const now=this.now(),connectionId=randomUUID(),credentialId=randomUUID(),connection:Connection & {subjectId:string}={id:connectionId,metaAppUserId:inspected.subjectId,tenantId:current.principal.tenantId,operatorId:input.operatorId,provider:profile.provider,authStrategy:profile.strategy,credentialId,appId:profile.appId,tokenType:"user",subjectId:inspected.subjectId,scopes:[...inspected.grantedScopes],assetKeys:selected.map(a=>a.key),expiresAt:inspected.expiresAt,revokedAt:null,verifiedAt:now,revision:1,grantedPermissionProfiles:[...observed]};
+    const credential=encryptCredential({id:credentialId,tenantId:current.principal.tenantId,operatorId:input.operatorId,provider:profile.provider,appId:profile.appId,keyVersion:"primary"},inspected.accessToken);
+    const grants=selected.map(asset=>({id:randomUUID(),tenantId:current.principal.tenantId,clientId:input.clientId,assetKey:asset.key,connectionId,capabilities:[...profile.capabilities],actions:[...profile.actions],tasks:[],verifiedAt:now,expiresAt:inspected.expiresAt,revokedAt:null,revision:1}));
+    const enrollment:ConnectionEnrollment={principal:current.principal,clientId:input.clientId,connection,credential,grants,expectedRecords:[...current.expected,...selected.map(asset=>({collection:"assets" as const,id:asset.key,canonical:canonicalJson(asset)}))],checkedAt:now};
+    if(this.deps.commitVerifiedConnection)await this.deps.commitVerifiedConnection(enrollment);else if(this.deps.commitVerifiedConnections)await this.deps.commitVerifiedConnections([enrollment]);else throw new PlatformDenied("ATOMIC_CONNECTION_ENROLLMENT_UNAVAILABLE_HOLD");
+    return {connectionId,connectionIds:[connectionId],connectionCount:1,provider:profile.provider,assetCount:selected.length};
+  }
+  async associateFirstTime(input:{operatorId:string;clientId:string;profileId:string;transactionId:string;registrationId:string;expectedRevision:number;selectedAssets:AssetRef[]}):Promise<{connectionId:string;connectionIds:string[];connectionCount:number;provider:Connection["provider"];assetCount:number}> {
+    const store=this.deps.discoveryStore, registration=this.deps.assetRegistration;if(!store||!registration)throw new PlatformDenied("OAUTH_FIRST_TIME_DISCOVERY_UNAVAILABLE");
+    const profile=await this.profile(input.profileId),initial=await membership(this.deps.repository,input.operatorId,input.clientId),pending=await store.read({transactionId:input.transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,now:this.now()});
+    if(!pending||pending.profileId!==profile.id||pending.appId!==profile.appId)throw new PlatformDenied("OAUTH_DISCOVERY_TRANSACTION_UNAVAILABLE");
+    const allowed=new Set(pending.candidates.map(c=>`${c.type}:${c.id}`));if(!input.selectedAssets.length||input.selectedAssets.some(a=>!allowed.has(`${a.type}:${a.id}`)))throw new PlatformDenied("OAUTH_DISCOVERY_ASSET_SELECTION_INVALID");
+    const committed=await registration.commit({transactionId:input.transactionId,tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,provider:profile.provider,appId:profile.appId,selectedAssets:structuredClone(input.selectedAssets),registrationId:input.registrationId,expectedRevision:input.expectedRevision});
+    if(committed.registrationId!==input.registrationId||committed.revision!==input.expectedRevision||canonicalJson(committed.assets)!==canonicalJson(input.selectedAssets))throw new PlatformDenied("OAUTH_DISCOVERY_REGISTRATION_ACK_INVALID");
+    return this.completeFirstTime(input);
   }
   async callback(input: { operatorId: string; clientId: string; profileId: string; state: string; browserNonce: string; code: string }): Promise<{ connectionId: string; connectionIds:string[];connectionCount:number;provider: Connection["provider"]; assetCount: number }> {
     if (!input.code || input.code.length > 4096) throw new PlatformDenied("INVALID_OAUTH_CALLBACK");
@@ -300,4 +386,5 @@ export function atomicConnectionEnrollments(repository:PlatformRepository):(enro
     await repository.commitControlPlane({tenantId:first.principal.tenantId,expected:[...expected.values()],writes,audit:{id:randomUUID(),tenantId:first.principal.tenantId,clientId:first.clientId,actorId:first.principal.operatorId,event:"CONNECTION_ENROLLED",timestamp:Date.now(),subjectId:first.connection.id,planHash}});
   };
 }
+
 

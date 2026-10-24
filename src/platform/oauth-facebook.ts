@@ -211,7 +211,7 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     if(profile.requiredTasks.length&&!(this.provider==="META_MARKETING"&&usesRegisteredMarketingAdProof(profile)&&canonicalJson(profile.requiredTasks)===canonicalJson(["ADVERTISE"])))throw new PlatformDenied("FACEBOOK_USER_TASK_INSPECTION_UNVERIFIED_HOLD");
   }
   validateEnrollmentContext(input:{profile:TrustedOAuthProfile;principal:PlatformPrincipal;clientId:string;client:Client;businessOwnerEvidence?:ClientBusinessEvidence}):void{if(isCrmOAuthProfile(input.profile)&&input.profile.crmRootIds?.businessId){if(input.client.id!==input.clientId||input.client.tenantId!==input.principal.tenantId||!clientBusinessBound(input.client,input.profile.crmRootIds.businessId,this.now(),input.businessOwnerEvidence,input.profile.appId))throw new PlatformDenied("CRM_CLIENT_BUSINESS_BINDING_REQUIRED");return;}if(isSignalDatasetOAuthProfile(input.profile)){const roots=input.profile.datasetRootIds!;if(input.client.id!==input.clientId||input.client.tenantId!==input.principal.tenantId||!clientBusinessBound(input.client,roots.businessId,this.now(),input.businessOwnerEvidence,input.profile.appId))throw new PlatformDenied("SIGNAL_DISCOVERY_CLIENT_BUSINESS_BINDING_REQUIRED");return;}if(isAppPromotionOAuthProfile(input.profile)){const b=input.profile.appPromotionBinding!;if(b.tenantId!==input.principal.tenantId||b.clientId!==input.clientId||input.client.id!==input.clientId||input.client.tenantId!==b.tenantId)throw new PlatformDenied("APP_PROMOTION_CLIENT_PROFILE_REQUIRED");return;}if(this.provider==='META_MARKETING'&&input.profile.capabilities.includes(INVOICE_METADATA_CAPABILITY)){const refs=invoiceProfileRootRefs(input.profile.invoiceRootIds),business=refs.find(r=>r.type==='BUSINESS')!;if(input.client.id!==input.clientId||input.client.tenantId!==input.principal.tenantId||!clientBusinessBound(input.client,business.id,this.now(),input.businessOwnerEvidence,input.profile.appId))throw new PlatformDenied('INVOICE_CLIENT_BUSINESS_BINDING_REQUIRED');return;}if(this.provider!=="META_MARKETING"||!input.profile.capabilities.includes(MARKETING_STUDY_CAPABILITY))return;const refs=studyProfileRootRefs(input.profile.studyRootIds),business=refs.find(r=>r.type==="BUSINESS")!;if(input.client.id!==input.clientId||input.client.tenantId!==input.principal.tenantId||!clientBusinessBound(input.client,business.id,this.now(),input.businessOwnerEvidence,input.profile.appId))throw new PlatformDenied("CLASSIC_STUDY_CLIENT_BUSINESS_BINDING_REQUIRED");}
-  private validate(profile:TrustedOAuthProfile,appSecret:string,requested:AssetRef[],code:string,registeredAssets?:MetaAsset[]):void {
+  private validate(profile:TrustedOAuthProfile,appSecret:string,requested:AssetRef[],code:string,registeredAssets?:MetaAsset[],discoveryOnly=false):void {
     this.validateProfile(profile);
     if(!TOKEN.safeParse(appSecret).success||!code||code.length>4096||/[\s\x00-\x1f\x7f]/.test(code))throw new PlatformDenied("FACEBOOK_OAUTH_INPUT_INVALID");
     if(isCrmOAuthProfile(profile)){const roots=crmOAuthRoots(profile,registeredAssets??[],this.now());if(requested.length!==roots.length||requested.some(ref=>!roots.some(a=>a.type===ref.type&&a.id.replace(/^act_/,"")===ref.id.replace(/^act_/,""))))throw new PlatformDenied("CRM_EXACT_OAUTH_ROOTS_REQUIRED");return;}
@@ -220,6 +220,10 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     if(this.provider==='META_MARKETING'&&profile.capabilities.includes(INVOICE_METADATA_CAPABILITY)){const roots=invoiceProfileRootRefs(profile.invoiceRootIds);if(canonicalJson(requested.map(r=>({type:r.type,id:r.id.replace(/^act_/,'' )})).sort((a,b)=>canonicalJson(a).localeCompare(canonicalJson(b))))!==canonicalJson(roots.sort((a,b)=>canonicalJson(a).localeCompare(canonicalJson(b)))))throw new PlatformDenied('INVOICE_PROFILE_ROOT_BINDING_REQUIRED');invoiceRegisteredScope(registeredAssets??[],requested,this.now());return;}
     if(this.provider==="META_MARKETING"&&profile.capabilities.includes(MARKETING_STUDY_CAPABILITY)){const roots=studyProfileRootRefs(profile.studyRootIds);if(canonicalJson(requested.map(r=>({type:r.type,id:r.id.replace(/^act_/,"")})).sort((a,b)=>canonicalJson(a).localeCompare(canonicalJson(b))))!==canonicalJson(roots.sort((a,b)=>canonicalJson(a).localeCompare(canonicalJson(b)))))throw new PlatformDenied("CLASSIC_STUDY_PROFILE_ROOT_BINDING_REQUIRED");studyRegisteredScope(registeredAssets??[],requested,this.now());return;}
     if(this.provider==="META_MARKETING"&&usesRegisteredMarketingAdProof(profile)){const proof=marketingControlOAuthProof(registeredAssets??[],this.now());if(profile.marketingControlMode==="TRAFFIC"?proof.forms.length!==0:proof.forms.length!==1)throw new PlatformDenied("MARKETING_CONTROL_OAUTH_MODE_RELATIONSHIP_MISMATCH");if(requested.length!==proof.assets.length||requested.some(a=>!proof.assets.some(row=>row.type===a.type&&row.id.replace(/^act_/,"")===a.id.replace(/^act_/,""))))throw new PlatformDenied("MARKETING_CONTROL_OAUTH_EXACT_ROOT_PAIR_REQUIRED");return;}
+    if(discoveryOnly){
+      if(this.provider!=="META_MARKETING"||profile.tokenTypes.length!==1||profile.tokenTypes[0]!=="user"||requested.length!==0)throw new PlatformDenied("FACEBOOK_DISCOVERY_PROFILE_REQUIRED");
+      return;
+    }
     const type=this.provider==="META_MARKETING"?"AD_ACCOUNT":"BUSINESS";
     if(!requested.length||requested.length>98||requested.some(a=>a.type!==type||! /^(?:act_)?\d{1,100}$/.test(a.id)||(a.type!=="AD_ACCOUNT"&&a.id.startsWith("act_")))||new Set(requested.map(a=>a.id.replace(/^act_/,""))).size!==requested.length)throw new PlatformDenied("FACEBOOK_REGISTERED_ROOT_TYPE_REQUIRED");
   }
@@ -261,8 +265,46 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     }
     throw new PlatformDenied("FACEBOOK_BUSINESS_MEMBERSHIP_PROOF_REQUIRED");
   }
-  async exchangeAndInspect(input:{code:string;profile:TrustedOAuthProfile;appSecret:string;requestedAssets:AssetRef[];registeredAssets?:MetaAsset[]}):Promise<InspectedOAuthToken> {
-    this.validate(input.profile,input.appSecret,input.requestedAssets,input.code,input.registeredAssets);
+  private async discoverMarketingAssets(token:string):Promise<InspectedOAuthToken["assets"]> {
+    const found:InspectedOAuthToken["assets"]=[], seen=new Set<string>();
+    let after:string|undefined;
+    for(let page=0;page<5;page++){
+      const body=parse(z.object({data:z.array(z.object({id:z.string().regex(/^act_\d{1,100}$/),account_id:ID})).max(100),paging:z.object({next:z.unknown().optional(),cursors:z.object({after:z.string().max(2048).optional()}).optional()}).optional()}),await this.get("/me/adaccounts",{fields:"id,account_id",limit:"100",...(after?{after}:{})},token));
+      for(const row of body.data){
+        if(row.id!==`act_${row.account_id}`||seen.has(row.account_id))continue;
+        seen.add(row.account_id);found.push({type:"AD_ACCOUNT",id:row.account_id,tasks:[]});
+      }
+      if(!body.paging?.next)break;
+      const cursor=body.paging.cursors?.after;
+      if(!cursor||cursor===after||!/^[A-Za-z0-9._~+\/=\-]{1,2048}$/.test(cursor))throw new PlatformDenied("FACEBOOK_DISCOVERY_CURSOR_INVALID");
+      after=cursor;
+    }
+    if(!found.length)throw new PlatformDenied("FACEBOOK_DISCOVERY_NO_AD_ACCOUNTS");
+    return found.slice(0,98);
+  }
+  async discoverAssets(input:{code:string;profile:TrustedOAuthProfile;appSecret:string}):Promise<InspectedOAuthToken> {
+    return this.exchangeAndInspect({ ...input, requestedAssets:[], discoveryOnly:true });
+  }
+  async inspectAccessToken(input:{accessToken:string;profile:TrustedOAuthProfile;appSecret:string;requestedAssets:AssetRef[];registeredAssets?:MetaAsset[];expectedOperatorId?:string}):Promise<InspectedOAuthToken> {
+    this.validateProfile(input.profile);
+    if(!TOKEN.safeParse(input.accessToken).success||!TOKEN.safeParse(input.appSecret).success)throw new PlatformDenied("FACEBOOK_OAUTH_INPUT_INVALID");
+    const debug=parseDebugTokenResponse(await this.get("/debug_token",{input_token:input.accessToken},`${input.profile.appId}|${input.appSecret}`));
+    if(String(debug.app_id)!==input.profile.appId)throw new PlatformDenied("FACEBOOK_ACTUAL_APP_ID_REQUIRED");
+    const permissionProfiles=classifyMetaPermissionProfiles(input.profile.scopes,debug.scopes);
+    if(permissionProfiles===null||new Set(debug.scopes).size!==debug.scopes.length)throw new PlatformDenied("FACEBOOK_ACTUAL_APP_AND_SCOPES_REQUIRED");
+    const checkedAt=this.now(), expiry=debug.expires_at>0?debug.expires_at*1000:0;
+    if(!Number.isSafeInteger(expiry)||expiry<=checkedAt)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRED");
+    const me=parse(z.object({id:ID}),await this.get("/me",{fields:"id"},input.accessToken),"FACEBOOK_OAUTH_USER_RESPONSE_INVALID");
+    if(me.id!==debug.user_id||input.expectedOperatorId&&me.id!==input.expectedOperatorId)throw new PlatformDenied("FACEBOOK_ACTUAL_USER_SUBJECT_REQUIRED");
+    const permissions=parse(permissionResponse,await this.get("/me/permissions",{},input.accessToken),"FACEBOOK_OAUTH_PERMISSION_RESPONSE_INVALID");
+    if(permissions.paging?.next||new Set(permissions.data.map(p=>p.permission)).size!==permissions.data.length)throw new PlatformDenied("FACEBOOK_PERMISSION_INSPECTION_INCOMPLETE");
+    const granted=permissions.data.filter(p=>p.status==="granted").map(p=>p.permission);
+    if(scopeKey(granted)!==scopeKey(debug.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_GRANTED_PERMISSIONS_REQUIRED");
+    const assets=await this.proveAssets(input.accessToken,input.requestedAssets,input.registeredAssets,input.profile.marketingControlMode,input.profile.capabilities.includes(INVOICE_METADATA_CAPABILITY));
+    return {accessToken:input.accessToken,provider:this.provider,appId:input.profile.appId,subjectId:me.id,tokenType:"user",grantedScopes:granted,expiresAt:expiry,assets,...(scopeKey(granted)!==scopeKey(input.profile.scopes)?{grantedPermissionProfiles:permissionProfiles!}:{})};
+  }
+  async exchangeAndInspect(input:{code:string;profile:TrustedOAuthProfile;appSecret:string;requestedAssets:AssetRef[];registeredAssets?:MetaAsset[];discoveryOnly?:boolean}):Promise<InspectedOAuthToken> {
+    this.validate(input.profile,input.appSecret,input.requestedAssets,input.code,input.registeredAssets,input.discoveryOnly===true);
     const {profile,appSecret}=input;
     const issuedAt=this.now();
     // Current manual-flow contract requires GET query credentials. These URLs
@@ -294,9 +336,10 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
     if(permissions.paging?.next||new Set(permissions.data.map(p=>p.permission)).size!==permissions.data.length)throw new PlatformDenied("FACEBOOK_PERMISSION_INSPECTION_INCOMPLETE");
     const granted=permissions.data.filter(p=>p.status==="granted").map(p=>p.permission);
     if(scopeKey(granted)!==scopeKey(debug.scopes))throw new PlatformDenied("FACEBOOK_ACTUAL_GRANTED_PERMISSIONS_REQUIRED");
-    const assets=isCrmOAuthProfile(input.profile)?await proveCrmOAuth(input.profile,crmOAuthRoots(input.profile,input.registeredAssets??[],this.now()),(path,query)=>this.get(path,query,token)):isSignalDatasetOAuthProfile(input.profile)?await proveSignalDatasetOAuth(input.profile,(path,query)=>this.get(path,query,token)):isAppPromotionOAuthProfile(input.profile)?await proveAppPromotionOAuth(input.profile,(path,query)=>this.get(path,query,token)):await this.proveAssets(token,input.requestedAssets,input.registeredAssets,input.profile.marketingControlMode,input.profile.capabilities.includes(INVOICE_METADATA_CAPABILITY));
+    const assets=input.discoveryOnly?await this.discoverMarketingAssets(token):isCrmOAuthProfile(input.profile)?await proveCrmOAuth(input.profile,crmOAuthRoots(input.profile,input.registeredAssets??[],this.now()),(path,query)=>this.get(path,query,token)):isSignalDatasetOAuthProfile(input.profile)?await proveSignalDatasetOAuth(input.profile,(path,query)=>this.get(path,query,token)):isAppPromotionOAuthProfile(input.profile)?await proveAppPromotionOAuth(input.profile,(path,query)=>this.get(path,query,token)):await this.proveAssets(token,input.requestedAssets,input.registeredAssets,input.profile.marketingControlMode,input.profile.capabilities.includes(INVOICE_METADATA_CAPABILITY));
     if(this.now()>=expiry)throw new PlatformDenied("FACEBOOK_TOKEN_EXPIRED");
     return {accessToken:token,provider:this.provider,appId:profile.appId,subjectId:me.id,tokenType:"user",grantedScopes:granted,expiresAt:expiry,assets,...(scopeKey(granted)!==scopeKey(profile.scopes)?{grantedPermissionProfiles:permissionProfiles!}: {})};
   }
 
 }
+
