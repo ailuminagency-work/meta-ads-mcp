@@ -115,6 +115,11 @@ describe("protected incremental OAuth service", () => {
     await repo.put("tenants", "tenant-single", "tenant-single", { id: "tenant-single", status: "ACTIVE", migrationState: "READY", policyRevision: 1, registryRevision: 1 });
     await repo.put("members", "tenant-single", "1004", { operatorId: "1004", tenantId: "tenant-single", roles: ["connection_admin"], allowedClientIds: ["client-single"], revision: 1, disabledAt: null });
     await repo.put("clients", "tenant-single", "client-single", { id: "client-single", tenantId: "tenant-single", status: "ACTIVE", revision: 1, verifiedBusinessIds: [] });
+    // The client may have an earlier declarative root from onboarding while
+    // still lacking an enrolled connection. Discovery must still inspect Meta
+    // for the newly authorized target account instead of treating the old root
+    // as the complete requested set.
+    await repo.put("assets", "tenant-single", "declarative-root", { id: "101006", key: "declarative-root", type: "AD_ACCOUNT", tenantId: "tenant-single", clientId: "client-single", provider: "META_MARKETING", appId: marketing.appId, parents: [], verifiedAt: Date.now() - 1, revokedAt: null, revision: 1 });
     const service = new PlatformOAuthService({ repository: repo, challenges: new InMemoryConnectionChallengeStore(), profiles: new ImmutableOAuthProfileRegistry([marketing]), secrets: { get: async () => "synthetic-private-app-secret" }, adapters: { get: () => ({ provider: "META_MARKETING" as const, verified: true, validateProfile: () => {}, exchangeAndInspect: async () => ({ accessToken: "synthetic-single-token", provider: "META_MARKETING" as const, appId: marketing.appId, subjectId: "1004", tokenType: "user" as const, grantedScopes: marketing.scopes, expiresAt: Date.now() + 3600000, assets: [{ type: "AD_ACCOUNT" as const, id: "101005", tasks: [], name: "Only Account" }] }) }) }, commitVerifiedConnection: atomicConnectionEnrollment(repo) });
     const started = await service.start("1004", "client-single", marketing.id);
     const result = await service.callback({ operatorId: "1004", clientId: "client-single", profileId: marketing.id, ...started, code: "synthetic-code" });
