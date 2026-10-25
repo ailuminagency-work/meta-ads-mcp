@@ -33,3 +33,4 @@ export function decryptOAuthDiscoveryInspection(p:OAuthDiscoveryProposal):OAuthD
     return value;
   } catch { throw new PlatformDenied("OAUTH_DISCOVERY_INSPECTION_INVALID"); }
 }
+

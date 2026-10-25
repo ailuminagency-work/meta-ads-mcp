@@ -116,3 +116,4 @@ describe("concrete Facebook business user OAuth adapter",()=>{
 
 it.each(["marketing.create.empty.custom.audience","marketing.create.lookalike.audience"])("enrolls exact typed audience capability with READ consent and no budget authority: %s",async capability=>{const scopes=expandVerifiedPermissionDependencies(["public_profile","ads_read","ads_management"]),selected:TrustedOAuthProfile={...profile,scopes,actions:["READ","WRITE_AD_CONFIGURATION"],capabilities:["legacy.ads_get_account_info",capability]},{adapter}=fixture({debug:{scopes},permissions:{data:scopes.map(permission=>({permission,status:"granted"}))}});expect((await adapter.exchangeAndInspect({...baseInput,profile:selected})).grantedScopes).toEqual(scopes);expect(()=>adapter.validateProfile({...selected,actions:["READ","WRITE_AD_CONFIGURATION","WRITE_BUDGET"]})).toThrow();expect(()=>adapter.validateProfile({...selected,actions:["WRITE_AD_CONFIGURATION"],capabilities:[capability]})).toThrow();});
 
+
