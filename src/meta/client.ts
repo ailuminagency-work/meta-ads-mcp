@@ -330,10 +330,12 @@ export class MetaApiClient {
         }
 
         const projected=projectLegacyReadResponse(path,url,body) as T;
+        const requestUrl=new URL(url);
         const scope=platformEnabled()?getExecutionScope():undefined;
-        if(scope?.plan.parameters.provider_read_bootstrap===true && path.match(/^\/act_\d{1,32}$/)){
-          const accountId=path.slice(5),checkedAt=Date.now();
-          recordProviderReadProof(accountId,checkedAt);
+        if(scope?.plan.parameters.provider_read_bootstrap===true && path.match(/^\/act_\d{1,32}$/) && (requestUrl.searchParams.get("fields")?.includes("account_id")===true || requestUrl.searchParams.get("fields")?.includes("business")===true)){
+          const accountId=path.slice(5),checkedAt=Date.now(),bodyRecord=body as Record<string,unknown>,actualId=typeof bodyRecord.id==="string"?bodyRecord.id.replace(/^act_/ ,""):"",actualAccountId=typeof bodyRecord.account_id==="string"?bodyRecord.account_id.replace(/^act_/ ,""):"",business=bodyRecord.business as Record<string,unknown>|undefined,providerBusinessId=typeof business?.id==="string"?business.id:undefined;
+          if(actualId!==accountId||(actualAccountId!==""&&actualAccountId!==accountId))throw new PlatformDenied("PROVIDER_READ_PROOF_ACCOUNT_MISMATCH");
+          recordProviderReadProof(accountId,checkedAt,providerBusinessId);
           await persistProviderReadEligibility(accountId,checkedAt);
         }
         return projected;

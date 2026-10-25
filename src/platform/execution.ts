@@ -26,7 +26,7 @@ import { decryptCredential, selectConnection, assertWhatsAppPhoneUnlocked } from
 import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, normalizeSafeDiff, revisionHash } from "./policy.js";
 
 export interface ExecutionPermit { readonly operationId: string; readonly context: Readonly<OperationContext>; readonly assetKeys: readonly string[]; readonly connectionId: string; readonly planHash: string }
-interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; providerReadProof?:{accountId:string;checkedAt:number;expiresAt:number}; terminalHash?: string; finishing?: Promise<void>; createdHash?:string;createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
+interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; providerReadProof?:{accountId:string;checkedAt:number;expiresAt:number;providerBusinessId?:string}; terminalHash?: string; finishing?: Promise<void>; createdHash?:string;createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
 const permits = new WeakMap<ExecutionPermit, PermitState>();
 const execution = new AsyncLocalStorage<ExecutionPermit>();
 export async function authorizeOperation(repo: PlatformRepository, context: OperationContext, inputPlan: OperationPlan, options: { writesEnabled: boolean; approvalId?: string; selectedConnectionId?: string; now?: number; operationId?: string }): Promise<ExecutionPermit> {
@@ -40,7 +40,8 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
   if(!tenant || !member || !client) throw new PlatformDenied("PLATFORM_MEMBERSHIP_REQUIRED");
   if(member.operatorId !== ctx.principal.operatorId || member.tenantId !== ctx.principal.tenantId || member.disabledAt !== null || !member.allowedClientIds.includes(ctx.clientId)) throw new PlatformDenied("CLIENT_MEMBERSHIP_REQUIRED");
   const maximumAge = plan.classes.some(c=>c!=="READ") ? 5 * 60_000 : 60 * 60_000;
-  const assets = await resolveAuthorizedAssets(repo, ctx, plan.assets, now,maximumAge);
+  const allowStaleReadBootstrap = plan.parameters.provider_read_bootstrap === true && plan.classes.every(c => c === "READ");
+  const assets = await resolveAuthorizedAssets(repo, ctx, plan.assets, now,maximumAge,allowStaleReadBootstrap);
   const connection = await selectConnection(repo, ctx, plan, assets, now, options.selectedConnectionId);
   productVersion(connection.provider);
   const grants = (await repo.list("grants", ctx.principal.tenantId)).filter(g => assets.some(a => a.key === g.assetKey) && g.clientId === ctx.clientId && g.connectionId === connection.id && g.revokedAt === null && g.expiresAt > now);
@@ -96,7 +97,8 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
   const publicContext = structuredClone(ctx);
   Object.freeze(publicContext.principal); Object.freeze(publicContext);
   const permit: ExecutionPermit = Object.freeze({operationId, context: publicContext, assetKeys: Object.freeze(assets.map(a => a.key)), connectionId: connection.id, planHash});
-  permits.set(permit, {approvalExpected,authAppId:process.env.META_APP_ID,repo,context:ctx,plan,snapshot,connection,expiresAt: Math.min(now+60_000,approvalDeadline,...(snapshot.manualEligibilityEvidence?.attestations.map(r=>r.expiresAt)??[]),...businessOwnerDeadlines(snapshot),connection.expiresAt ?? Infinity,connection.verifiedAt+maximumAge,...assets.map(a=>a.verifiedAt+maximumAge),...grants.flatMap(g=>[g.expiresAt,g.verifiedAt+maximumAge]),...(mutation?[...snapshot.financialEvidence!.attestations.map(r=>r.expiresAt),...snapshot.financialEvidence!.observations.map(r=>r.expiresAt)]:[])),mutation,completed:false,mutationClaimed:false});
+  const freshnessWindow = allowStaleReadBootstrap ? 24 * 60 * 60_000 : maximumAge;
+  permits.set(permit, {approvalExpected,authAppId:process.env.META_APP_ID,repo,context:ctx,plan,snapshot,connection,expiresAt: Math.min(now+60_000,approvalDeadline,...(snapshot.manualEligibilityEvidence?.attestations.map(r=>r.expiresAt)??[]),...businessOwnerDeadlines(snapshot),connection.expiresAt ?? Infinity,connection.verifiedAt+freshnessWindow,...assets.map(a=>a.verifiedAt+freshnessWindow),...grants.flatMap(g=>[g.expiresAt,g.verifiedAt+freshnessWindow]),...(mutation?[...snapshot.financialEvidence!.attestations.map(r=>r.expiresAt),...snapshot.financialEvidence!.observations.map(r=>r.expiresAt)]:[])),mutation,completed:false,mutationClaimed:false});
   return permit;
 }
 export function runWithExecutionPermit<T>(permit: ExecutionPermit, fn: () => T): T { validate(permit); return execution.run(permit,fn); }
@@ -113,12 +115,14 @@ export function getExecutionScope(): {context: OperationContext; plan: Operation
  * exact selected connection and account. It is intentionally held only for
  * the lifetime of the permit; callers cannot inject or persist it.
  */
-export function recordProviderReadProof(accountId:string, checkedAt=Date.now(), ttlMs=300000):void {
+export function recordProviderReadProof(accountId:string, checkedAt=Date.now(), providerBusinessId?: string, ttlMs=300000):void {
   const permit=execution.getStore(), state=permit?permits.get(permit):undefined;
   if(!state||state.mutation||state.context.provider!=="META_MARKETING"||!/^\d{1,32}$/.test(accountId.replace(/^act_/,""))||!Number.isSafeInteger(checkedAt)||checkedAt<=0||!Number.isSafeInteger(ttlMs)||ttlMs<1000||ttlMs>300000)throw new PlatformDenied("PROVIDER_READ_PROOF_CONTEXT_REQUIRED");
   const account=accountId.replace(/^act_/,"");
   if(!state.snapshot.assets.some(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/,"")===account)||!state.plan.assets.some(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/,"")===account))throw new PlatformDenied("PROVIDER_READ_PROOF_ACCOUNT_BINDING_REQUIRED");
+  if(providerBusinessId!==undefined && !/^\d{1,32}$/.test(providerBusinessId))throw new PlatformDenied("PROVIDER_READ_PROOF_BUSINESS_BINDING_REQUIRED");
   state.providerReadProof={accountId:account,checkedAt,expiresAt:Math.min(checkedAt+ttlMs,state.connection.expiresAt??checkedAt+ttlMs)};
+  state.providerReadProof.providerBusinessId=providerBusinessId;
 }
 
 export function hasCurrentProviderReadProof(accountId:string, now=Date.now()):boolean {
@@ -130,19 +134,24 @@ export async function persistProviderReadEligibility(accountId:string, checkedAt
   const permit=execution.getStore(), state=permit?permits.get(permit):undefined;
   if(!state||state.mutation||state.context.provider!=="META_MARKETING"||!hasCurrentProviderReadProof(accountId,checkedAt))throw new PlatformDenied("PROVIDER_READ_EVIDENCE_CONTEXT_REQUIRED");
   const normalized=accountId.replace(/^act_/ ,"");
-  if(!state.snapshot.assets.some(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/ ,"")===normalized&&state.connection.assetKeys.includes(a.key)))throw new PlatformDenied("PROVIDER_READ_EVIDENCE_ACCOUNT_BINDING_REQUIRED");
+  const target=state.snapshot.assets.find(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/ ,"")===normalized&&state.connection.assetKeys.includes(a.key));
+  if(!target)throw new PlatformDenied("PROVIDER_READ_EVIDENCE_ACCOUNT_BINDING_REQUIRED");
+  const providerBusinessId=(state.providerReadProof as {providerBusinessId?:string}|undefined)?.providerBusinessId;
+  if(target.ownerBusinessId && providerBusinessId !== target.ownerBusinessId)throw new PlatformDenied("PROVIDER_READ_EVIDENCE_OWNER_MISMATCH");
   const requirement=legacyMarketingReadRequirement(),source="https://developers.facebook.com/docs/marketing-api/";
   const existingRows=state.connection.eligibility?.filter(e=>e.requirement===requirement)??[];
   const trustedSource=/^https:\/\/(developers\.facebook\.com\/|www\.postman\.com\/meta\/|github\.com\/facebook\/)/;
   const existing=existingRows.find(e=>e.verified&&trustedSource.test(e.source)&&e.checkedAt<=checkedAt&&e.expiresAt>checkedAt);
   if(existing)return;
   if(existingRows.length)throw new PlatformDenied("UNVERIFIED_MARKETING_READ_ACCESS");
-  const expiresAt=Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity,...state.snapshot.assets.filter(a=>state.connection.assetKeys.includes(a.key)).map(a=>a.verifiedAt+3600000),...state.snapshot.grants.filter(g=>g.connectionId===state.connection.id).map(g=>g.expiresAt));
+  const expiresAt=Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity,checkedAt+3600000,...state.snapshot.grants.filter(g=>g.connectionId===state.connection.id).map(g=>g.expiresAt));
   if(!Number.isSafeInteger(expiresAt)||expiresAt<=checkedAt)throw new PlatformDenied("PROVIDER_READ_EVIDENCE_EXPIRED");
-  const nextConnection={...state.connection,eligibility:[...(state.connection.eligibility??[]).filter(e=>e.requirement!==requirement),{requirement,source,checkedAt,expiresAt,verified:true}],revision:state.connection.revision+1};
+  const nextConnection={...state.connection,eligibility:[...(state.connection.eligibility??[]).filter(e=>e.requirement!==requirement),{requirement,source,checkedAt,expiresAt,verified:true}],verifiedAt:checkedAt,revision:state.connection.revision+1};
+  const nextAssets=state.snapshot.assets.map(a=>a.key===target.key?{...a,verifiedAt:checkedAt,revision:a.revision+1}:a);
+  const nextGrants=state.snapshot.grants.map(g=>g.assetKey===target.key&&g.connectionId===state.connection.id?{...g,verifiedAt:checkedAt,expiresAt:Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity),revision:g.revision+1}:g);
   const expected=[{collection:"tenants" as const,id:state.snapshot.tenant.id,canonical:canonicalJson(state.snapshot.tenant)},{collection:"members" as const,id:state.snapshot.member.operatorId,canonical:canonicalJson(state.snapshot.member)},{collection:"clients" as const,id:state.snapshot.client.id,canonical:canonicalJson(state.snapshot.client)},{collection:"connections" as const,id:state.connection.id,canonical:canonicalJson(state.connection)},...state.snapshot.assets.map(a=>({collection:"assets" as const,id:a.key,canonical:canonicalJson(a)})),...state.snapshot.grants.map(g=>({collection:"grants" as const,id:g.id,canonical:canonicalJson(g)}))];
-  await state.repo.commitControlPlane({tenantId:state.context.principal.tenantId,expected,writes:[{collection:"connections",id:state.connection.id,value:nextConnection,createOnly:false}],audit:{id:randomUUID(),tenantId:state.context.principal.tenantId,clientId:state.context.clientId,actorId:state.context.principal.operatorId,event:"PROVIDER_READ_ELIGIBILITY_RECORDED",timestamp:checkedAt,subjectId:state.connection.id,planHash:permit!.planHash}});
-  state.connection=nextConnection; state.snapshot.connection=nextConnection;
+  await state.repo.commitControlPlane({tenantId:state.context.principal.tenantId,expected,writes:[{collection:"connections",id:state.connection.id,value:nextConnection,createOnly:false},{collection:"assets",id:target.key,value:nextAssets.find(a=>a.key===target.key)!,createOnly:false},...nextGrants.filter(g=>g.assetKey===target.key&&g.connectionId===state.connection.id).map(g=>({collection:"grants" as const,id:g.id,value:g,createOnly:false}))],audit:{id:randomUUID(),tenantId:state.context.principal.tenantId,clientId:state.context.clientId,actorId:state.context.principal.operatorId,event:"PROVIDER_READ_ELIGIBILITY_RECORDED",timestamp:checkedAt,subjectId:state.connection.id,planHash:permit!.planHash}});
+  state.connection=nextConnection; state.snapshot.connection=nextConnection; state.snapshot.assets=nextAssets; state.snapshot.grants=nextGrants; state.expiresAt=Math.min(checkedAt+60_000,state.connection.expiresAt??Infinity,checkedAt+3600000,...nextGrants.filter(g=>g.connectionId===state.connection.id).map(g=>g.expiresAt));
 }
 export async function assertCatalogCampaignReadResponseCurrent(marketingPermit:ExecutionPermit,catalogPermit:ExecutionPermit):Promise<void>{
  const marketing=permits.get(marketingPermit),catalog=permits.get(catalogPermit),states=[marketing,catalog];
