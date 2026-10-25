@@ -151,6 +151,10 @@ describe("protected incremental OAuth service", () => {
     expect(proposal.assets.map(asset => asset.id)).toEqual(["101006", "101007"]);
     expect(await repo.get("assets", "tenant-incremental", assetKey("META_MARKETING", marketing.appId, { type: "AD_ACCOUNT", id: "101005" }))).toBeTruthy();
     expect(await repo.list("connections", "tenant-incremental")).toHaveLength(1);
+    const enrolled = await service.enrollDiscoveredAsset("1005", (proposals.find(candidate => (candidate as { consumedAt: number | null }).consumedAt === null) as { id: string }).id, "101006");
+    expect(enrolled.assetCount).toBe(1);
+    expect(await repo.get("assets", "tenant-incremental", assetKey("META_MARKETING", marketing.appId, { type: "AD_ACCOUNT", id: "101006" }))).toBeTruthy();
+    expect(await repo.list("connections", "tenant-incremental")).toHaveLength(2);
   });
 
   it("uses config-specific permissions and atomically installs encrypted credentials with audit", async () => {

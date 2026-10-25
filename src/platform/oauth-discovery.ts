@@ -29,7 +29,13 @@ export function decryptOAuthDiscoveryInspection(p:OAuthDiscoveryProposal):OAuthD
     if(!/^[a-f0-9]{64}$/i.test(process.env.TOKEN_ENCRYPTION_KEY??""))throw Error();
     const value=JSON.parse(decryptToken(p.encryptedInspection,oauthDiscoveryAad(p))) as OAuthDiscoveryInspection;
     const normalizedAssets=value.assets.map(a=>({type:a.type,id:a.id.replace(/^act_/ ,""),tasks:[...a.tasks],...(a.name?{name:a.name}:{}),...(a.businessId?{businessId:a.businessId}:{}),...(a.businessName?{businessName:a.businessName}:{})}));
-    if(value.provider!==p.provider||value.appId!==p.appId||value.subjectId!==p.subjectId||canonicalJson(value.grantedScopes)!==canonicalJson(p.grantedScopes)||canonicalJson(normalizedAssets)!==canonicalJson(p.assets))throw Error();
+    const inspectedAssetKeys=new Set(normalizedAssets.map(a=>canonicalJson(a)));
+    // A proposal may intentionally contain only newly selectable assets when
+    // the agency already has an enrolled root. The encrypted inspection is
+    // the authoritative superset; require every proposed asset to be present
+    // in it, while allowing previously enrolled roots to remain omitted from
+    // the selection list.
+    if(value.provider!==p.provider||value.appId!==p.appId||value.subjectId!==p.subjectId||canonicalJson(value.grantedScopes)!==canonicalJson(p.grantedScopes)||p.assets.some(asset=>!inspectedAssetKeys.has(canonicalJson({type:asset.type,id:asset.id.replace(/^act_/ ,""),tasks:[...asset.tasks],...(asset.name?{ name:asset.name }:{}),...(asset.businessId?{ businessId:asset.businessId }:{}),...(asset.businessName?{ businessName:asset.businessName }: {})}))))throw Error();
     return value;
   } catch { throw new PlatformDenied("OAUTH_DISCOVERY_INSPECTION_INVALID"); }
 }
