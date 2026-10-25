@@ -36,7 +36,7 @@ export function assertLegacyMarketingReadEligibility():void {
   const records=scope.snapshot.connection.eligibility?.filter(e=>e.requirement===requirement)??[];
   if(!records.length&&account&&hasCurrentProviderReadProof(account,now))return;
   if(!records.some(e=>e.verified===true && Number.isFinite(e.checkedAt) && e.checkedAt>0 && e.checkedAt<=now && now-e.checkedAt<=3600000 && Number.isFinite(e.expiresAt) && e.expiresAt>now && /^https:\/\/(developers\.facebook\.com\/|www\.postman\.com\/meta\/|github\.com\/facebook\/)/.test(e.source)))throw new PlatformDenied("UNVERIFIED_MARKETING_READ_ACCESS");
-  if(scope.snapshot.connection.eligibility.some(e=>e.requirement===legacyMarketingReadRequirement()&&e.attestationId))assertManualEligibilityAttestation(legacyMarketingReadEligibilityContract(),scope.snapshot.connection,legacyMarketingReadRequirement(),scope.snapshot.manualEligibilityEvidence,scope.context.clientId,now);
+  if(scope.snapshot.connection.eligibility?.some(e=>e.requirement===legacyMarketingReadRequirement()&&e.attestationId))assertManualEligibilityAttestation(legacyMarketingReadEligibilityContract(),scope.snapshot.connection,legacyMarketingReadRequirement(),scope.snapshot.manualEligibilityEvidence,scope.context.clientId,now);
 }
 function assertStepContract(tool:string,step:LegacyReadStep):void {
   const contracts:Record<string,Array<[AssetType[],string,LegacyReadStep["entityType"]]>>={
