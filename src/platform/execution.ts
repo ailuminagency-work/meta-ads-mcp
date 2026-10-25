@@ -44,7 +44,12 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
   const assets = await resolveAuthorizedAssets(repo, ctx, plan.assets, now,maximumAge,allowStaleReadBootstrap);
   const connection = await selectConnection(repo, ctx, plan, assets, now, options.selectedConnectionId);
   productVersion(connection.provider);
-  const grants = (await repo.list("grants", ctx.principal.tenantId)).filter(g => assets.some(a => a.key === g.assetKey) && g.clientId === ctx.clientId && g.connectionId === connection.id && g.revokedAt === null && g.expiresAt > now);
+  const grants = (await repo.list("grants", ctx.principal.tenantId)).filter(g => {
+    const boundAsset = assets.find(a => a.key === g.assetKey);
+    const allowExpiredBootstrap = allowStaleReadBootstrap && boundAsset?.type === "AD_ACCOUNT" && g.expiresAt > now - 24 * 60 * 60_000;
+    return Boolean(boundAsset) && g.clientId === ctx.clientId && g.connectionId === connection.id && g.revokedAt === null &&
+      (g.expiresAt > now || allowExpiredBootstrap);
+  });
   const snapshot: AuthorizationSnapshot = {tenant,member,client,assets,connection,grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client),financialEvidence:await loadOwnershipEvidence(repo,ctx,assets),manualEligibilityEvidence:await loadManualEligibilityEvidence(repo,ctx,connection,[...(connection.appPromotionProfile&&plan.assets.some(a=>a.type==="APP")?[appPurchaseRequirement(connection.appPromotionProfile.bindingHash)]:[]),...Object.keys(PRODUCT_CONTRACTS.find(c=>c.tool===ctx.tool&&c.provider===ctx.provider)?.eligibilityPolicies??{}),...(ctx.provider==="META_MARKETING"?[legacyMarketingReadRequirement(),...(ctx.tool.startsWith("ads_")&&plan.classes.some(c=>c!=="READ")?[legacyMarketingWriteRequirement()]:[])]:[])])};
   const decision = evaluatePolicy(ctx, plan, snapshot, options);
   if(decision.decision === "DENY") throw new PlatformDenied(decision.reason);
@@ -98,7 +103,12 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
   Object.freeze(publicContext.principal); Object.freeze(publicContext);
   const permit: ExecutionPermit = Object.freeze({operationId, context: publicContext, assetKeys: Object.freeze(assets.map(a => a.key)), connectionId: connection.id, planHash});
   const freshnessWindow = allowStaleReadBootstrap ? 24 * 60 * 60_000 : maximumAge;
-  permits.set(permit, {approvalExpected,authAppId:process.env.META_APP_ID,repo,context:ctx,plan,snapshot,connection,expiresAt: Math.min(now+60_000,approvalDeadline,...(snapshot.manualEligibilityEvidence?.attestations.map(r=>r.expiresAt)??[]),...businessOwnerDeadlines(snapshot),connection.expiresAt ?? Infinity,connection.verifiedAt+freshnessWindow,...assets.map(a=>a.verifiedAt+freshnessWindow),...grants.flatMap(g=>[g.expiresAt,g.verifiedAt+freshnessWindow]),...(mutation?[...snapshot.financialEvidence!.attestations.map(r=>r.expiresAt),...snapshot.financialEvidence!.observations.map(r=>r.expiresAt)]:[])),mutation,completed:false,mutationClaimed:false});
+  const grantDeadlines = grants.flatMap(g => {
+    const boundAsset = assets.find(a => a.key === g.assetKey);
+    const expiredBootstrap = allowStaleReadBootstrap && boundAsset?.type === "AD_ACCOUNT" && g.expiresAt <= now;
+    return expiredBootstrap ? [g.verifiedAt + freshnessWindow] : [g.expiresAt, g.verifiedAt + freshnessWindow];
+  });
+  permits.set(permit, {approvalExpected,authAppId:process.env.META_APP_ID,repo,context:ctx,plan,snapshot,connection,expiresAt: Math.min(now+60_000,approvalDeadline,...(snapshot.manualEligibilityEvidence?.attestations.map(r=>r.expiresAt)??[]),...businessOwnerDeadlines(snapshot),connection.expiresAt ?? Infinity,connection.verifiedAt+freshnessWindow,...assets.map(a=>a.verifiedAt+freshnessWindow),...grantDeadlines,...(mutation?[...snapshot.financialEvidence!.attestations.map(r=>r.expiresAt),...snapshot.financialEvidence!.observations.map(r=>r.expiresAt)]:[])),mutation,completed:false,mutationClaimed:false});
   return permit;
 }
 export function runWithExecutionPermit<T>(permit: ExecutionPermit, fn: () => T): T { validate(permit); return execution.run(permit,fn); }
@@ -144,7 +154,7 @@ export async function persistProviderReadEligibility(accountId:string, checkedAt
   const existing=existingRows.find(e=>e.verified&&trustedSource.test(e.source)&&e.checkedAt<=checkedAt&&e.expiresAt>checkedAt);
   if(existing)return;
   if(existingRows.length)throw new PlatformDenied("UNVERIFIED_MARKETING_READ_ACCESS");
-  const expiresAt=Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity,checkedAt+3600000,...state.snapshot.grants.filter(g=>g.connectionId===state.connection.id).map(g=>g.expiresAt));
+  const expiresAt=Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity);
   if(!Number.isSafeInteger(expiresAt)||expiresAt<=checkedAt)throw new PlatformDenied("PROVIDER_READ_EVIDENCE_EXPIRED");
   const nextConnection={...state.connection,eligibility:[...(state.connection.eligibility??[]).filter(e=>e.requirement!==requirement),{requirement,source,checkedAt,expiresAt,verified:true}],verifiedAt:checkedAt,revision:state.connection.revision+1};
   const nextAssets=state.snapshot.assets.map(a=>a.key===target.key?{...a,verifiedAt:checkedAt,revision:a.revision+1}:a);

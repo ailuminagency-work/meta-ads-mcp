@@ -39,7 +39,9 @@ export async function selectConnection(repo: PlatformRepository, ctx: OperationC
       now - c.verifiedAt <= (canUseStaleBootstrap ? freshnessWindow : maximumAge) && plan.tokenTypes.includes(c.tokenType) &&
       plan.requiredScopes.every(s => c.scopes.includes(s)) && assets.every(a => a.appId === c.appId && c.assetKeys.includes(a.key) &&
         grants.some(g => g.tenantId === c.tenantId && g.clientId === ctx.clientId && g.assetKey === a.key && g.connectionId === c.id &&
-          g.revokedAt === null && g.expiresAt > now && g.verifiedAt > 0 && g.verifiedAt <= now &&
+          g.revokedAt === null &&
+          (g.expiresAt > now || (canUseStaleBootstrap && a.type === "AD_ACCOUNT" && g.expiresAt > now - freshnessWindow)) &&
+          g.verifiedAt > 0 && g.verifiedAt <= now &&
           now - g.verifiedAt <= (canUseStaleBootstrap && a.type === "AD_ACCOUNT" ? freshnessWindow : maximumAge) &&
           g.capabilities.includes(plan.capability) && plan.classes.every(op => g.actions.includes(op)) &&
           [...(plan.requiredTasks ?? []), ...(plan.requiredAssetTasks ?? [])
