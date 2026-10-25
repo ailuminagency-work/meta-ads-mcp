@@ -16,7 +16,7 @@ import { platformEnabled } from "../platform/runtime.js";
 import { assertLegacyReadEgress, projectLegacyReadResponse } from "../platform/legacy-egress.js";
 import { PlatformDenied } from "../platform/models.js";
 import { BodyTooLargeError, readBodyWithLimit } from "../utils/bounded-body.js";
-import { assertExecutionPermit, withConnectionCredential } from "../platform/execution.js";
+import { assertExecutionPermit, getExecutionScope, recordProviderReadProof, withConnectionCredential } from "../platform/execution.js";
 
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
@@ -329,7 +329,10 @@ export class MetaApiClient {
           throw lastError;
         }
 
-        return projectLegacyReadResponse(path,url,body) as T;
+        const projected=projectLegacyReadResponse(path,url,body) as T;
+        const scope=platformEnabled()?getExecutionScope():undefined;
+        if(scope?.plan.parameters.provider_read_bootstrap===true && path.match(/^\/act_\d{1,32}$/))recordProviderReadProof(path.slice(5));
+        return projected;
       } catch (error) {
         if(error instanceof PlatformDenied)throw error;
         if(platformEnabled()&&(error instanceof BodyTooLargeError||error instanceof SyntaxError))throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_INVALID_OR_TOO_LARGE");

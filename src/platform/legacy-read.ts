@@ -10,12 +10,13 @@ import {legacyInsightRange} from "./legacy-insight-range.js";
 import { requestContext,hashToken } from "../auth/token-store.js";
 import { metaApiClient } from "../meta/client.js";
 import { z } from "zod";
-import { authorizeOperation, assertPortfolioReadResponseCurrent, revalidateExecutionPermit, finishOperation, runWithExecutionPermit, withConnectionCredential } from "./execution.js";
+import { authorizeOperation, assertPortfolioReadResponseCurrent, getExecutionScope, revalidateExecutionPermit, finishOperation, runWithExecutionPermit, withConnectionCredential } from "./execution.js";
 import { getPlatformRepository, resolveOperationContext } from "./runtime.js";
 import { PlatformDenied, type AssetRef, type AssetType, type MetaAsset, type OperationContext, type OperationPlan } from "./models.js";
 import { assertLegacyMarketingReadEligibility, type LegacyReadStep } from "./legacy-egress.js";
 import { LEGACY_MANIFEST } from "./legacy-manifest.js";
 import { ADDITIONAL_LEGACY_READ_CONTRACTS } from "./legacy-read-contracts.js";
+import { resolveMetaApiVersion } from "../meta/api-version.js";
 
 export const LEGACY_CORE_READ_TOOLS = Object.freeze([REPORT_OBSERVER_TOOL,DOSSIER_TOOL,ERRORS_TOOL,ANOMALY_TOOL,"ads_rate_status","ads_portfolio_summary","ads_get_ad_accounts","ads_get_account_info","ads_get_campaigns","ads_get_campaign_details","ads_get_ad_sets","ads_get_ad_set_details","ads_get_ads","ads_get_ad_details","ads_get_ad_entities","ads_get_insights","ads_insights_performance_trend","ads_insights_advertiser_context",...Object.keys(ADDITIONAL_LEGACY_READ_CONTRACTS)]);
 export const LEGACY_CORE_READ_DOCUMENTATION = Object.freeze(["https://www.postman.com/meta/facebook-marketing-api/documentation/0zr4mes/facebook-marketing-api-mapi", "https://www.postman.com/meta/facebook-marketing-api/request/u07tack/get-ad-insights-l1", "https://www.postman.com/meta/facebook-marketing-api/request/vhwas2d/retrieving-adset-details-l2", "https://github.com/facebook/facebook-nodejs-business-sdk/blob/main/README.md", "https://github.com/facebook/facebook-php-business-sdk/blob/main/src/FacebookAds/Object/AdAccount.php"]);
@@ -121,13 +122,19 @@ function buildPlan(tool:string,input:Record<string,unknown>,assets:MetaAsset[],n
 function toolReportPending(tool:string,item:LegacyReadStep,value:unknown,accountId:string|undefined):boolean{if(tool!=="ads_get_report_results"||item.entityType!=="REPORT")return false;const row=value as {account_id?:unknown;async_status?:unknown;async_percent_completion?:unknown};return typeof row.account_id!=="string"||row.account_id.replace(/^act_/,"")!==accountId?.replace(/^act_/,"")||row.async_status!=="Job Completed"||row.async_percent_completion!==100;}
 async function executePlan(ctx:OperationContext,input:Record<string,unknown>,built:BuiltPlan):Promise<unknown[]> {
   const repo=getPlatformRepository();
-  const plan:OperationPlan={parameters:{input:clean(input),legacy_read_steps:built.steps},assets:built.refs,classes:["READ"],capability:`legacy.${ctx.tool}`,requiredScopes:["ads_read"],tokenTypes:["user","system_user"]};
+  const plan:OperationPlan={parameters:{input:clean(input),legacy_read_steps:built.steps,provider_read_bootstrap:true},assets:built.refs,classes:["READ"],capability:`legacy.${ctx.tool}`,requiredScopes:["ads_read"],tokenTypes:["user","system_user"]};
   const permit=await authorizeOperation(repo,ctx,plan,{writesEnabled:false});let terminal=false;
   try {
     const result=await runWithExecutionPermit(permit,async()=>{
-      assertLegacyMarketingReadEligibility();
+      const requirement=`marketing_read_access:${resolveMetaApiVersion()}`;
+      if((getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===requirement))assertLegacyMarketingReadEligibility();
       return withConnectionCredential(permit,async accessToken=>requestContext.run({accessToken,fbUserId:ctx.principal.operatorId},async()=>{
         const output:unknown[]=[];
+        if(ctx.tool!=="ads_get_account_info"&&built.refs.some(ref=>ref.type==="AD_ACCOUNT")&&!(getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}`)){
+          const account=built.refs.find(ref=>ref.type==="AD_ACCOUNT");
+          if(!account)throw new PlatformDenied("LEGACY_PROVIDER_READ_PROBE_ACCOUNT_REQUIRED");
+          await metaApiClient.get(`/act_${account.id.replace(/^act_/,"")}`,{fields:"id,account_id,business{id},account_status"});
+        }
         for(const item of built.steps){const response=await metaApiClient.get(item.path,item.query);if(toolReportPending(ctx.tool,item,response,built.refs.find(ref=>ref.type==="AD_ACCOUNT")?.id))throw new PlatformDenied("REPORT_NOT_COMPLETED_HOLD");output.push(response);}
         return output;
       }));

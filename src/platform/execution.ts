@@ -26,7 +26,7 @@ import { decryptCredential, selectConnection, assertWhatsAppPhoneUnlocked } from
 import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, normalizeSafeDiff, revisionHash } from "./policy.js";
 
 export interface ExecutionPermit { readonly operationId: string; readonly context: Readonly<OperationContext>; readonly assetKeys: readonly string[]; readonly connectionId: string; readonly planHash: string }
-interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; terminalHash?: string; finishing?: Promise<void>; createdHash?:string; createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
+interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; providerReadProof?:{accountId:string;checkedAt:number;expiresAt:number}; terminalHash?: string; finishing?: Promise<void>; createdHash?:string;createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
 const permits = new WeakMap<ExecutionPermit, PermitState>();
 const execution = new AsyncLocalStorage<ExecutionPermit>();
 export async function authorizeOperation(repo: PlatformRepository, context: OperationContext, inputPlan: OperationPlan, options: { writesEnabled: boolean; approvalId?: string; selectedConnectionId?: string; now?: number; operationId?: string }): Promise<ExecutionPermit> {
@@ -106,6 +106,24 @@ export function getExecutionScope(): {context: OperationContext; plan: Operation
   const permit = execution.getStore(); if(!permit) throw new PlatformDenied("EXECUTION_PERMIT_REQUIRED");
   const state = validate(permit);
   return structuredClone({context:state.context,plan:state.plan,snapshot:state.snapshot});
+}
+
+/**
+ * A successful bounded provider read is an execution-scoped proof for the
+ * exact selected connection and account. It is intentionally held only for
+ * the lifetime of the permit; callers cannot inject or persist it.
+ */
+export function recordProviderReadProof(accountId:string, checkedAt=Date.now(), ttlMs=300000):void {
+  const permit=execution.getStore(), state=permit?permits.get(permit):undefined;
+  if(!state||state.mutation||state.context.provider!=="META_MARKETING"||!/^\d{1,32}$/.test(accountId.replace(/^act_/,""))||!Number.isSafeInteger(checkedAt)||checkedAt<=0||!Number.isSafeInteger(ttlMs)||ttlMs<1000||ttlMs>300000)throw new PlatformDenied("PROVIDER_READ_PROOF_CONTEXT_REQUIRED");
+  const account=accountId.replace(/^act_/,"");
+  if(!state.snapshot.assets.some(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/,"")===account)||!state.plan.assets.some(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/,"")===account))throw new PlatformDenied("PROVIDER_READ_PROOF_ACCOUNT_BINDING_REQUIRED");
+  state.providerReadProof={accountId:account,checkedAt,expiresAt:Math.min(checkedAt+ttlMs,state.connection.expiresAt??checkedAt+ttlMs)};
+}
+
+export function hasCurrentProviderReadProof(accountId:string, now=Date.now()):boolean {
+  const permit=execution.getStore(), state=permit?permits.get(permit):undefined, proof=state?.providerReadProof;
+  return !!state&&!state.mutation&&!!proof&&proof.accountId===accountId.replace(/^act_/,"")&&Number.isSafeInteger(now)&&now>=proof.checkedAt&&now<proof.expiresAt&&state.connection.revokedAt===null;
 }
 export async function assertCatalogCampaignReadResponseCurrent(marketingPermit:ExecutionPermit,catalogPermit:ExecutionPermit):Promise<void>{
  const marketing=permits.get(marketingPermit),catalog=permits.get(catalogPermit),states=[marketing,catalog];
