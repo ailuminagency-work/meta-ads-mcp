@@ -197,3 +197,4 @@ describe("backslash origin escapes", () => {
     expect(safeReturnTo("https://evil.example/x", "/auth/connections")).toBe("/auth/connections");
   });
 });
+
