@@ -130,7 +130,7 @@ async function executePlan(ctx:OperationContext,input:Record<string,unknown>,bui
       if((getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===requirement))assertLegacyMarketingReadEligibility();
       return withConnectionCredential(permit,async accessToken=>requestContext.run({accessToken,fbUserId:ctx.principal.operatorId},async()=>{
         const output:unknown[]=[];
-        if(ctx.tool!=="ads_get_account_info"&&built.refs.some(ref=>ref.type==="AD_ACCOUNT")&&!(getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}`)){
+        if(built.refs.some(ref=>ref.type==="AD_ACCOUNT")&&!(getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}`)){
           const account=built.refs.find(ref=>ref.type==="AD_ACCOUNT");
           if(!account)throw new PlatformDenied("LEGACY_PROVIDER_READ_PROBE_ACCOUNT_REQUIRED");
           await metaApiClient.get(`/act_${account.id.replace(/^act_/,"")}`,{fields:"id,account_id,business{id},account_status"});
@@ -179,3 +179,4 @@ export async function executeStrictLegacyRead(tool:string,input:Record<string,un
   if(tool==="ads_portfolio_summary")data=[normalizeLegacyPortfolio((input.account_ids as string[]).map(id=>normalizedId(id,true)),data,portfolioWindow(input))];
   return {content:[{type:"text",text:`Strict authorized read for ${tool}; client ${clientId}. Bounded projections and page completeness are reported in the result.`},{type:"text",text:JSON.stringify(data.length===1?data[0]:data,null,2)}]};
 }
+
