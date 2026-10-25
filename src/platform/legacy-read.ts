@@ -162,7 +162,9 @@ export async function executeStrictLegacyRead(tool:string,input:Record<string,un
   let data:unknown[];
   if(tool==="ads_get_ad_accounts") {
     if(input.user_id!==undefined&&input.user_id!=="me")throw new PlatformDenied("LEGACY_ACCOUNT_DISCOVERY_SUBJECT_DENIED");
-    const roots=assets.filter(a=>a.type==="AD_ACCOUNT");const limit=int(input.limit,100,100);const projection=fields(input.fields,ACCOUNT_FIELDS);
+    const grants=await repo.list("grants",ctx.principal.tenantId);
+    const roots=assets.filter(a=>a.type==="AD_ACCOUNT"&&grants.some(g=>g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.assetKey===a.key&&g.capabilities.includes("legacy.ads_get_ad_accounts")&&g.actions.length===1&&g.actions[0]==="READ"&&g.revokedAt===null&&g.expiresAt>Date.now()&&g.verifiedAt>0&&Date.now()-g.verifiedAt<=3600000));
+    const limit=int(input.limit,100,100);const projection=fields(input.fields,ACCOUNT_FIELDS);
     if(!roots.length)throw new PlatformDenied("ASSET_ACCESS_REQUIRED");
     const refs=roots.slice(0,limit).map(asset=>rootRef("AD_ACCOUNT",asset.id));
     data=await executePlan(ctx,input,{steps:refs.map(root=>step(root,"",projection,{},"AD_ACCOUNT")),refs});
