@@ -16,7 +16,7 @@ import { platformEnabled } from "../platform/runtime.js";
 import { assertLegacyReadEgress, projectLegacyReadResponse } from "../platform/legacy-egress.js";
 import { PlatformDenied } from "../platform/models.js";
 import { BodyTooLargeError, readBodyWithLimit } from "../utils/bounded-body.js";
-import { assertExecutionPermit, getExecutionScope, recordProviderReadProof, withConnectionCredential } from "../platform/execution.js";
+import { assertExecutionPermit, getExecutionScope, persistProviderReadEligibility, recordProviderReadProof, withConnectionCredential } from "../platform/execution.js";
 
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
@@ -331,7 +331,11 @@ export class MetaApiClient {
 
         const projected=projectLegacyReadResponse(path,url,body) as T;
         const scope=platformEnabled()?getExecutionScope():undefined;
-        if(scope?.plan.parameters.provider_read_bootstrap===true && path.match(/^\/act_\d{1,32}$/))recordProviderReadProof(path.slice(5));
+        if(scope?.plan.parameters.provider_read_bootstrap===true && path.match(/^\/act_\d{1,32}$/)){
+          const accountId=path.slice(5),checkedAt=Date.now();
+          recordProviderReadProof(accountId,checkedAt);
+          await persistProviderReadEligibility(accountId,checkedAt);
+        }
         return projected;
       } catch (error) {
         if(error instanceof PlatformDenied)throw error;
@@ -512,3 +516,4 @@ function guessBucType(method: string, path: string): string {
  * Singleton client instance used by all tools.
  */
 export const metaApiClient = new MetaApiClient();
+
