@@ -57,6 +57,13 @@ export function createPageInspectionProfileVerifier(registry:ImmutableOAuthProfi
  if(!deploymentRegistries.has(registry))throw new PlatformDenied("IMMUTABLE_DEPLOYMENT_OAUTH_PROFILES_REQUIRED");
  return async record=>{const profile=await registry.get(record.profileId);if(!profile||profile.provider!==record.provider||profile.appId!==record.appId||profile.tokenTypes.length!==1||profile.tokenTypes[0]!=="page"||createHash("sha256").update(canonicalJson(profile)).digest("hex")!==record.profileHash||canonicalJson([...profile.scopes].sort())!==canonicalJson([...record.scopes].sort()))throw new PlatformDenied("PAGE_INSPECTION_CURRENT_PROFILE_REQUIRED");};
 }
+export interface OAuthDiscoveredAsset extends AssetRef {
+  tasks: string[];
+  /** Provider-supplied display metadata only; never an authorization signal. */
+  name?: string;
+  businessId?: string;
+  businessName?: string;
+}
 export interface InspectedOAuthToken {
   metaAppUserId?:string;
   pageInspection?:{accessToken:string;appId:string;userSubjectId:string;grantedScopes:string[];expiresAt:number};
@@ -69,10 +76,10 @@ export interface InspectedOAuthToken {
   tokenType: Connection["tokenType"];
   grantedScopes: string[];
   expiresAt: number;
-  assets: Array<AssetRef & { tasks: string[] }>;
+  assets: OAuthDiscoveredAsset[];
 }
 export class OAuthAssetSelectionRequired extends PlatformDenied {
-  constructor(public readonly proposalId:string,public readonly assets:AssetRef[]){super("OAUTH_ASSET_SELECTION_REQUIRED");this.name="OAuthAssetSelectionRequired";}
+  constructor(public readonly proposalId:string,public readonly assets:OAuthDiscoveredAsset[]){super("OAUTH_ASSET_SELECTION_REQUIRED");this.name="OAuthAssetSelectionRequired";}
 }
 const inspectedTokenSchema = z.object({
   metaAppUserId:z.string().regex(/^\d{1,100}$/).optional(),
@@ -85,7 +92,7 @@ const inspectedTokenSchema = z.object({
   tokenType: z.enum(["user", "page", "system_user", "business_integration_system_user", "instagram", "threads"]),
   grantedScopes: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,100}$/)).min(1).max(100),
   expiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  assets: z.array(z.object({ type: z.enum(["BUSINESS", "AD_ACCOUNT", "PAGE", "INSTAGRAM_ACCOUNT", "DATASET", "PIXEL", "CATALOG", "WABA", "WHATSAPP_ACCOUNT","MESSAGING_ACCOUNT","WHATSAPP_PHONE", "THREADS_ACCOUNT", "APP","CAMPAIGN","AD_SET","CREATIVE","AD","AD_IMAGE","AD_VIDEO","LEAD_FORM","AUDIENCE"]), id: z.string().regex(/^(?:(?:act_)?[0-9]{1,100}|[a-f0-9]{32})$/), tasks: z.array(z.string().regex(/^[A-Z_]{1,100}$/)).max(100) }).strict().refine(asset => asset.type==="AD_IMAGE"?/^[a-f0-9]{32}$/.test(asset.id):/^(?:act_)?[0-9]{1,100}$/.test(asset.id)&&(asset.type === "AD_ACCOUNT" || !asset.id.startsWith("act_")))).min(1).max(98),
+  assets: z.array(z.object({ type: z.enum(["BUSINESS", "AD_ACCOUNT", "PAGE", "INSTAGRAM_ACCOUNT", "DATASET", "PIXEL", "CATALOG", "WABA", "WHATSAPP_ACCOUNT","MESSAGING_ACCOUNT","WHATSAPP_PHONE", "THREADS_ACCOUNT", "APP","CAMPAIGN","AD_SET","CREATIVE","AD","AD_IMAGE","AD_VIDEO","LEAD_FORM","AUDIENCE"]), id: z.string().regex(/^(?:(?:act_)?[0-9]{1,100}|[a-f0-9]{32})$/), tasks: z.array(z.string().regex(/^[A-Z_]{1,100}$/)).max(100), name: z.string().trim().min(1).max(200).optional(), businessId: z.string().regex(/^\d{1,100}$/).optional(), businessName: z.string().trim().min(1).max(200).optional() }).strict().refine(asset => asset.type==="AD_IMAGE"?/^[a-f0-9]{32}$/.test(asset.id):/^(?:act_)?[0-9]{1,100}$/.test(asset.id)&&(asset.type === "AD_ACCOUNT" || !asset.id.startsWith("act_")))).min(1).max(98),
 }).strict();
 export interface VerifiedProviderAdapter {
   provider: Connection["provider"];
@@ -246,9 +253,13 @@ export class PlatformOAuthService {
         if(inspectedTokens.length!==1)throw new PlatformDenied("OAUTH_DISCOVERY_TOKEN_COUNT_INVALID");
         const inspected=inspectedTokens[0],now=this.now(),expiresAt=Math.min(now+10*60_000,inspected.expiresAt);
         if(inspected.tokenType!=="user"||inspected.subjectId!==input.operatorId||inspected.provider!=="META_MARKETING"||inspected.assets.length<1||inspected.assets.some(a=>a.type!=="AD_ACCOUNT"))throw new PlatformDenied("OAUTH_DISCOVERY_OPERATOR_OR_ASSET_INVALID");
-        const proposal:OAuthDiscoveryProposal={id:randomUUID(),kind:"OAUTH_ASSET_DISCOVERY",tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,provider:"META_MARKETING",appId:profile.appId,subjectId:inspected.subjectId,grantedScopes:[...inspected.grantedScopes],assets:inspected.assets.map(a=>({type:a.type,id:a.id.replace(/^act_/,"")})),checkedAt:now,expiresAt,consumedAt:null,expected:initial.expected.map(row=>({collection:row.collection as "tenants"|"members"|"clients",id:row.id,canonical:row.canonical})),encryptedInspection:{ciphertext:"",iv:"",tag:""},planHash:""};
+        const proposal:OAuthDiscoveryProposal={id:randomUUID(),kind:"OAUTH_ASSET_DISCOVERY",tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,provider:"META_MARKETING",appId:profile.appId,subjectId:inspected.subjectId,grantedScopes:[...inspected.grantedScopes],assets:inspected.assets.map(a=>({type:a.type,id:a.id.replace(/^act_/,""),tasks:[...a.tasks],...(a.name?{name:a.name}:{}),...(a.businessId?{businessId:a.businessId}:{}),...(a.businessName?{businessName:a.businessName}:{})})),checkedAt:now,expiresAt,consumedAt:null,expected:initial.expected.map(row=>({collection:row.collection as "tenants"|"members"|"clients",id:row.id,canonical:row.canonical})),encryptedInspection:{ciphertext:"",iv:"",tag:""},planHash:""};
         proposal.encryptedInspection=encryptOAuthDiscoveryInspection(proposal,inspected);proposal.planHash=oauthDiscoveryHash(proposal);
         await this.deps.repository.put("discoveryProposals",initial.principal.tenantId,proposal.id,proposal as unknown as import("./repository.js").Records["discoveryProposals"]);
+        if (proposal.assets.length === 1) {
+            const enrolled=await this.enrollDiscoveredAsset(input.operatorId, proposal.id, proposal.assets[0].id);
+            return {...enrolled,connectionIds:[enrolled.connectionId],connectionCount:1};
+        }
         throw new OAuthAssetSelectionRequired(proposal.id,proposal.assets);
       }
     }catch(error){if(error instanceof PlatformDenied && error.reason==="OAUTH_ASSET_SELECTION_REQUIRED")throw error;logOAuthFailure("provider_exchange",error);throw new PlatformDenied("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");}
