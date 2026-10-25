@@ -238,11 +238,13 @@ export class PlatformOAuthService {
     const signalDatasetRoots=isSignalDatasetOAuthProfile(profile)?signalDatasetOAuthRoots(profile,registeredAssets,this.now()):undefined;
     const appPromotionRoots=isAppPromotionOAuthProfile(profile)?appPromotionOAuthRoots(profile,registeredAssets,this.now()):undefined;
     const requestedAssets = crmRoots?crmRoots.map(a=>({type:a.type,id:a.id})):signalDatasetRoots?signalDatasetRoots.map(a=>({type:a.type,id:a.id})):appPromotionRoots?appPromotionRoots.map(a=>({type:a.type,id:a.id})):invoiceProof?[invoiceProof.business,...invoiceProof.accounts].map(a=>({type:a.type,id:a.id})):studyProof?[studyProof.business,studyProof.account,...studyProof.campaigns].map(a=>({type:a.type,id:a.id})):controlProof?controlProof.assets.map(a=>({type:a.type,id:a.id})):registeredAssets.filter(asset => asset.tenantId === initial.principal.tenantId && asset.clientId === input.clientId && asset.provider === profile.provider && asset.appId === profile.appId && asset.revokedAt === null && (!marketingUser||(marketingControlUser?["AD_ACCOUNT","PAGE"].includes(asset.type):asset.type==="AD_ACCOUNT")) && (!businessUser||asset.type==="BUSINESS") && (!marketingPage||["PAGE","AD_ACCOUNT"].includes(asset.type)) && (profile.provider!=="META_INSTAGRAM_FACEBOOK_LOGIN"||["PAGE","INSTAGRAM_ACCOUNT"].includes(asset.type)) && (!whatsappBisu||["WHATSAPP_ACCOUNT","MESSAGING_ACCOUNT","WHATSAPP_PHONE"].includes(asset.type)) && (!asset.parents.length || (profile.provider==="META_INSTAGRAM_FACEBOOK_LOGIN" && asset.type==="INSTAGRAM_ACCOUNT" && asset.parents.length===1 && asset.parents[0].type==="PAGE") || (whatsappBisu&&asset.type==="MESSAGING_ACCOUNT"&&asset.parents.length===1&&asset.parents[0].type==="WHATSAPP_ACCOUNT") || (whatsappBisu&&asset.type==="WHATSAPP_PHONE"&&asset.parents.length===2&&asset.parents.some(p=>p.type==="WHATSAPP_ACCOUNT")&&asset.parents.some(p=>p.type==="MESSAGING_ACCOUNT")))).map(asset => ({ type: asset.type, id: asset.id }));
-    // A client may already have a declarative root from onboarding while still
-    // lacking an enrolled connection. In that case perform the same bounded
-    // discovery flow as a rootless client. Existing enrolled connections retain
-    // the normal root-bound reauthorization path.
-    const discoveryMode=PlatformOAuthService.usesDirectReadOnlyScopes(profile)&&!existingConnections.length;
+    // Direct Meta read-only authorization is discovery-capable on every start.
+    // This is required for incremental onboarding: an existing connection for
+    // one account must not prevent the operator from discovering another
+    // account that Meta authorizes for the same client. When discovery returns
+    // only already-enrolled roots, the normal reauthorization path below is
+    // retained. Other profiles remain registry-root bound.
+    const discoveryMode=PlatformOAuthService.usesDirectReadOnlyScopes(profile);
     if ((!discoveryMode && !requestedAssets.length) || requestedAssets.length > 98) throw new PlatformDenied("REGISTERED_CLIENT_ROOTS_REQUIRED");
     let inspectedTokens:InspectedOAuthToken[];
     try {
@@ -257,7 +259,17 @@ export class PlatformOAuthService {
         if(inspectedTokens.length!==1)throw new PlatformDenied("OAUTH_DISCOVERY_TOKEN_COUNT_INVALID");
         const inspected=inspectedTokens[0],now=this.now(),expiresAt=Math.min(now+10*60_000,inspected.expiresAt);
         if(inspected.tokenType!=="user"||inspected.subjectId!==input.operatorId||inspected.provider!=="META_MARKETING"||inspected.assets.length<1||inspected.assets.some(a=>a.type!=="AD_ACCOUNT"))throw new PlatformDenied("OAUTH_DISCOVERY_OPERATOR_OR_ASSET_INVALID");
-        const proposal:OAuthDiscoveryProposal={id:randomUUID(),kind:"OAUTH_ASSET_DISCOVERY",tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,provider:"META_MARKETING",appId:profile.appId,subjectId:inspected.subjectId,grantedScopes:[...inspected.grantedScopes],assets:inspected.assets.map(a=>({type:a.type,id:a.id.replace(/^act_/,""),tasks:[...a.tasks],...(a.name?{name:a.name}:{}),...(a.businessId?{businessId:a.businessId}:{}),...(a.businessName?{businessName:a.businessName}:{})})),checkedAt:now,expiresAt,consumedAt:null,expected:initial.expected.map(row=>({collection:row.collection as "tenants"|"members"|"clients",id:row.id,canonical:row.canonical})),encryptedInspection:{ciphertext:"",iv:"",tag:""},planHash:""};
+        const enrolledKeys=new Set(registeredAssets.map(asset=>`${asset.type}:${asset.id.replace(/^act_/,"")}`));
+        const proposalAssets=existingConnections.length?inspected.assets.filter(asset=>!enrolledKeys.has(`${asset.type}:${asset.id.replace(/^act_/,"")}`)):inspected.assets;
+        // A direct read-only reauthorization of an already-enrolled asset uses
+        // the ordinary root-bound enrollment validation. Do not create a new
+        // proposal or duplicate its credential when discovery has no new root.
+        if(existingConnections.length && proposalAssets.length===0){
+          // Continue into the common enrollment path below. It will validate
+          // the discovered assets against the exact registered roots.
+        } else {
+          const proposal:OAuthDiscoveryProposal={id:randomUUID(),kind:"OAUTH_ASSET_DISCOVERY",tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,provider:"META_MARKETING",appId:profile.appId,subjectId:inspected.subjectId,grantedScopes:[...inspected.grantedScopes],assets:proposalAssets.map(a=>({type:a.type,id:a.id.replace(/^act_/,""),tasks:[...a.tasks],...(a.name?{name:a.name}:{}),...(a.businessId?{businessId:a.businessId}:{}),...(a.businessName?{businessName:a.businessName}:{})})),checkedAt:now,expiresAt,consumedAt:null,expected:initial.expected.map(row=>({collection:row.collection as "tenants"|"members"|"clients",id:row.id,canonical:row.canonical})),encryptedInspection:{ciphertext:"",iv:"",tag:""},planHash:""};
+          if(!proposal.assets.length)throw new PlatformDenied("OAUTH_DISCOVERY_NO_NEW_ASSETS");
         proposal.encryptedInspection=encryptOAuthDiscoveryInspection(proposal,inspected);proposal.planHash=oauthDiscoveryHash(proposal);
         await this.deps.repository.put("discoveryProposals",initial.principal.tenantId,proposal.id,proposal as unknown as import("./repository.js").Records["discoveryProposals"]);
         if (proposal.assets.length === 1) {
@@ -265,6 +277,7 @@ export class PlatformOAuthService {
             return {...enrolled,connectionIds:[enrolled.connectionId],connectionCount:1};
         }
         throw new OAuthAssetSelectionRequired(proposal.id,proposal.assets);
+        }
       }
     }catch(error){if(error instanceof PlatformDenied && error.reason==="OAUTH_ASSET_SELECTION_REQUIRED")throw error;logOAuthFailure("provider_exchange",error);throw new PlatformDenied("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");}
     const enrollments:ConnectionEnrollment[]=[];

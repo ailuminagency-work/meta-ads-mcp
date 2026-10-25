@@ -128,6 +128,31 @@ describe("protected incremental OAuth service", () => {
     expect(await repo.list("connections", "tenant-single")).toHaveLength(1);
   });
 
+  it("performs incremental discovery when an existing connection is already enrolled", async () => {
+    const marketing: TrustedOAuthProfile = { id: "meta-incremental-discovery", provider: "META_MARKETING", appId: "3005", strategy: "facebook_business", scopes: ["public_profile", "ads_read"], tokenTypes: ["user"], redirectUri: "https://fixture.invalid/platform/oauth/meta-incremental-discovery/callback", authorizeUrl: "https://www.facebook.com/v26.0/dialog/oauth", verified: true, secretReference: "fixture-secret-reference", capabilities: ["legacy.ads_get_account_info"], actions: ["READ"], requiredTasks: [] };
+    const repo = new InMemoryPlatformRepository();
+    await repo.put("operatorIndex", "_index", "1005", { operatorId: "1005", tenantId: "tenant-incremental" });
+    await repo.put("tenants", "tenant-incremental", "tenant-incremental", { id: "tenant-incremental", status: "ACTIVE", migrationState: "READY", policyRevision: 1, registryRevision: 1 });
+    await repo.put("members", "tenant-incremental", "1005", { operatorId: "1005", tenantId: "tenant-incremental", roles: ["connection_admin"], allowedClientIds: ["client-incremental"], revision: 1, disabledAt: null });
+    await repo.put("clients", "tenant-incremental", "client-incremental", { id: "client-incremental", tenantId: "tenant-incremental", status: "ACTIVE", revision: 1, verifiedBusinessIds: [] });
+    const existing = (id: string, name: string): InspectedOAuthToken => ({ accessToken: `synthetic-${id}`, provider: "META_MARKETING", appId: marketing.appId, subjectId: "1005", tokenType: "user", grantedScopes: marketing.scopes, expiresAt: Date.now() + 3600000, assets: [{ type: "AD_ACCOUNT", id, tasks: [], name }] });
+    const exchange = vi.fn().mockResolvedValueOnce(existing("101005", "Existing Account")).mockResolvedValueOnce({ ...existing("101005", "Existing Account"), accessToken: "synthetic-incremental-token", assets: [{ type: "AD_ACCOUNT", id: "101005", tasks: [], name: "Existing Account" }, { type: "AD_ACCOUNT", id: "101006", tasks: [], name: "New Account One" }, { type: "AD_ACCOUNT", id: "101007", tasks: [], name: "New Account Two" }] });
+    const service = new PlatformOAuthService({ repository: repo, challenges: new InMemoryConnectionChallengeStore(), profiles: new ImmutableOAuthProfileRegistry([marketing]), secrets: { get: async () => "synthetic-private-app-secret" }, adapters: { get: () => ({ provider: "META_MARKETING" as const, verified: true, validateProfile: () => {}, exchangeAndInspect: exchange }) }, commitVerifiedConnection: atomicConnectionEnrollment(repo) });
+
+    const first = await service.start("1005", "client-incremental", marketing.id);
+    await service.callback({ operatorId: "1005", clientId: "client-incremental", profileId: marketing.id, ...first, code: "first-code" });
+    expect(await repo.list("connections", "tenant-incremental")).toHaveLength(1);
+
+    const second = await service.start("1005", "client-incremental", marketing.id);
+    await expect(service.callback({ operatorId: "1005", clientId: "client-incremental", profileId: marketing.id, ...second, code: "second-code" })).rejects.toThrow("OAUTH_ASSET_SELECTION_REQUIRED");
+    expect(exchange).toHaveBeenNthCalledWith(2, expect.objectContaining({ requestedAssets: [] }));
+    const proposals = await repo.list("discoveryProposals", "tenant-incremental");
+    const proposal = proposals.find(candidate => (candidate as { consumedAt: number | null }).consumedAt === null) as { assets: Array<{ id: string }> };
+    expect(proposal.assets.map(asset => asset.id)).toEqual(["101006", "101007"]);
+    expect(await repo.get("assets", "tenant-incremental", assetKey("META_MARKETING", marketing.appId, { type: "AD_ACCOUNT", id: "101005" }))).toBeTruthy();
+    expect(await repo.list("connections", "tenant-incremental")).toHaveLength(1);
+  });
+
   it("uses config-specific permissions and atomically installs encrypted credentials with audit", async () => {
     const { repo, service, callback } = await fixture();
     const start = await service.start("1001", "client-fixture", profile.id);
