@@ -2,7 +2,7 @@ import {clientBusinessBound} from "./client-business.js";
 import {z} from "zod";
 import {canonicalJson} from "./policy.js";
 import {decryptToken,type EncryptedPayload} from "../auth/crypto.js";
-import {PlatformDenied,type OperationContext,type MetaAsset,type AuthorizationSnapshot} from "./models.js";
+import {PlatformDenied,type OperationContext,type MetaAsset,type AuthorizationSnapshot,type OperationClass} from "./models.js";
 import type {PlatformRepository,ControlCommit} from "./repository.js";
 export interface OwnerBillingAttestation {id:string;tenantId:string;clientId:string;appId:string;accountKey:string;accountId:string;businessId:string;source:"CLIENT_OWNER_ATTESTATION"|"AGENCY_OWNER_ATTESTATION";approvedBy:string;documentReferenceHash:string;checkedAt:number;expiresAt:number;revokedAt:number|null;revision:number}
 export type AccountClassification = "AGENCY_OWNED" | "CLIENT_OWNED" | "UNVERIFIED";
@@ -50,7 +50,37 @@ export function assertAccountOwnershipEvidence(snapshot:AuthorizationSnapshot,ac
  }
  const refs=account as MetaAsset&{ownerBillingAttestationId?:string;ownershipObservationId?:string},evidence=(snapshot as AuthorizationSnapshot&{financialEvidence?:FinancialEvidence}).financialEvidence,attestations=evidence?.attestations.filter(r=>r.id===refs.ownerBillingAttestationId)??[],observations=evidence?.observations.filter(r=>r.id===refs.ownershipObservationId)??[];
  if(account.type!=="AD_ACCOUNT"||account.provider!=="META_MARKETING"||attestations.length!==1||observations.length!==1)throw new PlatformDenied("EXACT_FINANCIAL_EVIDENCE_REQUIRED");const attestation=attestations[0],observation=observations[0];validateOwnerAttestation(attestation,now);ownershipObservationProof(observation,now);
- if([attestation,observation].some(r=>r.tenantId!==snapshot.tenant.id||r.clientId!==snapshot.client.id||r.appId!==account.appId||r.accountKey!==account.key||r.accountId!==account.id.replace(/^act_/,"")||r.businessId!==attestation.businessId)||observation.attestationId!==attestation.id||observation.expiresAt>attestation.expiresAt|| (classification==="CLIENT_OWNED" && !clientBusinessBound(snapshot.client,attestation.businessId,now,snapshot.businessOwnerEvidence,account.appId)) ||account.ownerBusinessId!==observation.businessId||account.ownershipEvidenceVerifiedAt!==observation.checkedAt||account.ownershipEvidenceSource!==ACCOUNT_OWNERSHIP_SOURCE)throw new PlatformDenied(classification==="CLIENT_OWNED"?"CLIENT_OWNER_BILLING_EVIDENCE_BINDING_INVALID":"OWNER_BILLING_EVIDENCE_BINDING_INVALID");
+ const evidenceCheckedAt=account.ownershipEvidenceVerifiedAt;
+ if([attestation,observation].some(r=>r.tenantId!==snapshot.tenant.id||r.clientId!==snapshot.client.id||r.appId!==account.appId||r.accountKey!==account.key||r.accountId!==account.id.replace(/^act_/,"")||r.businessId!==attestation.businessId)||observation.attestationId!==attestation.id||observation.expiresAt>attestation.expiresAt|| (classification==="CLIENT_OWNED" && !clientBusinessBound(snapshot.client,attestation.businessId,now,snapshot.businessOwnerEvidence,account.appId)) ||account.ownerBusinessId!==observation.businessId||evidenceCheckedAt===undefined||evidenceCheckedAt!==observation.checkedAt||account.ownershipEvidenceSource!==ACCOUNT_OWNERSHIP_SOURCE)throw new PlatformDenied(classification==="CLIENT_OWNED"?"CLIENT_OWNER_BILLING_EVIDENCE_BINDING_INVALID":"OWNER_BILLING_EVIDENCE_BINDING_INVALID");
+}
+
+
+
+
+/**
+ * Authorizes ordinary agency advertising operations from current Meta access
+ * and the selected client binding. Finance/invoice administration keeps the
+ * stricter owner-billing evidence contract; campaign management does not
+ * require a Lumin-created billing attestation or card record.
+ */
+export function assertAgencyAdvertisingAuthorization(
+ snapshot:AuthorizationSnapshot,
+ account:MetaAsset,
+ requiredActions:readonly OperationClass[]=["WRITE_AD_CONFIGURATION"],
+ now=Date.now(),
+):void {
+ if(account.type!=="AD_ACCOUNT"||account.provider!=="META_MARKETING")throw new PlatformDenied("EXACT_CLIENT_AD_ACCOUNT_REQUIRED");
+ if(account.tenantId!==snapshot.tenant.id||account.clientId!==snapshot.client.id||snapshot.client.tenantId!==snapshot.tenant.id||account.revokedAt!==null)throw new PlatformDenied("CLIENT_AD_ACCOUNT_SCOPE_REQUIRED");
+ if(!Number.isSafeInteger(account.verifiedAt)||account.verifiedAt<=0||account.verifiedAt>now||now-account.verifiedAt>300000)throw new PlatformDenied("CURRENT_META_ACCOUNT_AUTHORIZATION_REQUIRED");
+ const ownerBusinessId=account.ownerBusinessId,observedAt=account.ownershipEvidenceVerifiedAt;
+ if(!ownerBusinessId||!/^[0-9]{1,32}$/.test(ownerBusinessId)||account.ownershipEvidenceSource!==ACCOUNT_OWNERSHIP_SOURCE||typeof observedAt!=="number"||!Number.isSafeInteger(observedAt)||observedAt<=0||observedAt>now||now-observedAt>300000)throw new PlatformDenied("CURRENT_META_ACCOUNT_AUTHORIZATION_REQUIRED");
+ const agencyBusinessId=process.env.LUMIN_AGENCY_META_BUSINESS_ID;
+ if(agencyBusinessId&&ownerBusinessId===agencyBusinessId){if(!agencyOwnershipBound(account.tenantId,account.clientId,ownerBusinessId))throw new PlatformDenied("AGENCY_ACCOUNT_CLIENT_SCOPE_MISMATCH");}
+ else if(!clientBusinessBound(snapshot.client,ownerBusinessId,now,snapshot.businessOwnerEvidence,account.appId))throw new PlatformDenied("CLIENT_BUSINESS_ACCESS_UNVERIFIED");
+ const connection=snapshot.connection;
+ if(connection.tenantId!==snapshot.tenant.id||connection.operatorId!==snapshot.member.operatorId||connection.provider!=="META_MARKETING"||connection.appId!==account.appId||connection.revokedAt!==null||(connection.expiresAt!==null&&connection.expiresAt<=now)||!connection.assetKeys.includes(account.key)||!connection.scopes.includes("ads_management"))throw new PlatformDenied("META_ADS_MANAGEMENT_ACCESS_REQUIRED");
+ const grants=snapshot.grants.filter(g=>g.tenantId===snapshot.tenant.id&&g.clientId===snapshot.client.id&&g.assetKey===account.key&&g.connectionId===connection.id&&g.revokedAt===null&&g.verifiedAt>0&&g.verifiedAt<=now&&g.expiresAt>now&&requiredActions.every(action=>g.actions.includes(action)));
+ if(grants.length!==1)throw new PlatformDenied("SCOPED_AD_ACCOUNT_AUTHORIZATION_REQUIRED");
 }
 
 

@@ -26,12 +26,32 @@ export async function selectConnection(repo: PlatformRepository, ctx: OperationC
   const connections = await repo.list("connections", ctx.principal.tenantId);
   const grants = await repo.list("grants", ctx.principal.tenantId);
   const maximumAge = plan.classes.some(c => c !== "READ") ? 5 * 60_000 : 60 * 60_000;
+  const allowStaleReadBootstrap = plan.parameters.provider_read_bootstrap === true && plan.classes.every(c => c === "READ") && ctx.provider === "META_MARKETING" && plan.assets.some(a => a.type === "AD_ACCOUNT");
+  const freshnessWindow = allowStaleReadBootstrap ? 24 * 60 * 60_000 : maximumAge;
   const locks=new Map<string,boolean>();
   for(const c of connections)if(c.tenantId===ctx.principal.tenantId&&c.operatorId===ctx.principal.operatorId&&!locks.has(c.id))locks.set(c.id,await repo.isAppUserLifecycleLocked?.(c.appId,c.operatorId,connectionPrivacyAppUserId(c))??false);
-  const eligible = connections.filter(c => !locks.get(c.id) && credentialSubjectMatches(c,assets) && c.tenantId === ctx.principal.tenantId && c.operatorId === ctx.principal.operatorId && c.provider === ctx.provider && c.revokedAt === null && (c.expiresAt === null || c.expiresAt > now) && c.verifiedAt > 0 && c.verifiedAt <= now && now - c.verifiedAt <= maximumAge && plan.tokenTypes.includes(c.tokenType) && plan.requiredScopes.every(s => c.scopes.includes(s)) && assets.every(a => a.appId === c.appId && c.assetKeys.includes(a.key) && grants.some(g => g.tenantId === c.tenantId && g.clientId === ctx.clientId && g.assetKey === a.key && g.connectionId === c.id && g.revokedAt === null && g.expiresAt > now && g.verifiedAt > 0 && g.verifiedAt <= now && now - g.verifiedAt <= maximumAge && g.capabilities.includes(plan.capability) && plan.classes.every(op => g.actions.includes(op)) && [...(plan.requiredTasks ?? []),...(plan.requiredAssetTasks??[]).filter(r=>r.asset.type===a.type&&r.asset.id.replace(/^act_/, "")===a.id.replace(/^act_/, "")).flatMap(r=>r.tasks)].every(t => g.tasks.includes(t)))));
+  const eligible = connections.filter(c => {
+    const hasCurrentReadEligibility = c.eligibility?.some(e => e.requirement.startsWith("marketing_read_access:") && e.verified && e.expiresAt > now) === true;
+    const canUseStaleBootstrap = allowStaleReadBootstrap && !hasCurrentReadEligibility;
+    return !locks.get(c.id) && credentialSubjectMatches(c, assets) &&
+      c.tenantId === ctx.principal.tenantId && c.operatorId === ctx.principal.operatorId && c.provider === ctx.provider &&
+      c.revokedAt === null && (c.expiresAt === null || c.expiresAt > now) && c.verifiedAt > 0 && c.verifiedAt <= now &&
+      now - c.verifiedAt <= (canUseStaleBootstrap ? freshnessWindow : maximumAge) && plan.tokenTypes.includes(c.tokenType) &&
+      plan.requiredScopes.every(s => c.scopes.includes(s)) && assets.every(a => a.appId === c.appId && c.assetKeys.includes(a.key) &&
+        grants.some(g => g.tenantId === c.tenantId && g.clientId === ctx.clientId && g.assetKey === a.key && g.connectionId === c.id &&
+          g.revokedAt === null &&
+          (g.expiresAt > now || (canUseStaleBootstrap && a.type === "AD_ACCOUNT" && g.expiresAt > now - freshnessWindow)) &&
+          g.verifiedAt > 0 && g.verifiedAt <= now &&
+          now - g.verifiedAt <= (canUseStaleBootstrap && a.type === "AD_ACCOUNT" ? freshnessWindow : maximumAge) &&
+          g.capabilities.includes(plan.capability) && plan.classes.every(op => g.actions.includes(op)) &&
+          [...(plan.requiredTasks ?? []), ...(plan.requiredAssetTasks ?? [])
+            .filter(r => r.asset.type === a.type && r.asset.id.replace(/^act_/, "") === a.id.replace(/^act_/, ""))
+            .flatMap(r => r.tasks)].every(t => g.tasks.includes(t))));
+  });
   for(let i=eligible.length-1;i>=0;i--){try{await assertWhatsAppPhoneUnlocked(repo,eligible[i],assets);}catch(error){if(!(error instanceof PlatformDenied))throw error;eligible.splice(i,1);}}
   if(selectedConnectionId) { const selected = eligible.find(c => c.id === selectedConnectionId); if(!selected) throw new PlatformDenied("SELECTED_CONNECTION_UNAVAILABLE"); return selected; }
   eligible.sort((a,b) => a.scopes.length - b.scopes.length || a.assetKeys.length - b.assetKeys.length || a.id.localeCompare(b.id));
   if(!eligible.length) throw new PlatformDenied("PERMISSION_OR_CONNECTION_REQUIRED");
   return eligible[0];
 }
+

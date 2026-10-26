@@ -6,13 +6,22 @@ import {DOSSIER_TOOL,DOSSIER_FIELDS} from "./legacy-dossier.js";
 import {ERRORS_TOOL,ERROR_ACCOUNT_FIELDS,ERROR_AD_FIELDS,projectAdIssues} from "./legacy-errors.js";
 import {legacyInsightRange} from "./legacy-insight-range.js";
 import { canonicalJson } from "./policy.js";
-import { assertExecutionPermit, getExecutionScope, revalidateExecutionPermit } from "./execution.js";
+import { assertExecutionPermit, getExecutionScope, hasCurrentProviderReadProof, revalidateExecutionPermit } from "./execution.js";
 import { PlatformDenied, type AssetRef, type AssetType } from "./models.js";
 import { platformEnabled } from "./runtime.js";
 import { resolveMetaApiVersion } from "../meta/api-version.js";
 import { ADDITIONAL_LEGACY_READ_CONTRACTS } from "./legacy-read-contracts.js";
 
 export interface LegacyReadStep { path: string; query: Record<string,string|number|boolean>; projection: string[]; root: AssetRef; list: boolean; entityType: AssetType | "INSIGHTS" }
+const PROVIDER_READ_PROBE_FIELDS="id,account_id,business{id},account_status";
+function providerReadProbe(scope:ReturnType<typeof getExecutionScope>,method:string,path:string,query:Record<string,string>):boolean {
+  if(method!=="GET"||scope.context.provider!=="META_MARKETING"||scope.plan.parameters.provider_read_bootstrap!==true)return false;
+  if(scope.snapshot.connection.eligibility?.some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}` && e.verified===true && Number.isFinite(e.checkedAt) && e.checkedAt>0 && e.checkedAt<=Date.now() && Number.isFinite(e.expiresAt) && e.expiresAt>Date.now()))return false;
+  const accountIds=scope.plan.assets.filter(a=>a.type==="AD_ACCOUNT").map(a=>a.id.replace(/^act_/,""));
+  if(!accountIds.length||!/^\/act_\d{1,32}$/.test(path)||!accountIds.includes(path.split("/act_")[1]))return false;
+  if(scope.context.tool==="ads_get_account_info"||scope.context.tool==="ads_get_ad_accounts")return true;
+  return query.fields===PROVIDER_READ_PROBE_FIELDS&&Object.keys(query).length===1;
+}
 const FIELD_ALLOWLIST:Record<string,string[]>={
   AD_ACCOUNT:["id","account_id","name","account_status","currency","timezone_name","business_name","amount_spent","balance","spend_cap","created_time","disable_reason"],
   CAMPAIGN:["id","account_id","name","objective","status","effective_status","buying_type","daily_budget","lifetime_budget","budget_remaining","bid_strategy","special_ad_categories","created_time","updated_time","start_time","stop_time"],
@@ -22,8 +31,12 @@ const FIELD_ALLOWLIST:Record<string,string[]>={
 };
 export function assertLegacyMarketingReadEligibility():void {
   const scope=getExecutionScope(),now=Date.now();
-  if(!scope.snapshot.connection.eligibility?.some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}` && e.verified===true && Number.isFinite(e.checkedAt) && e.checkedAt>0 && e.checkedAt<=now && now-e.checkedAt<=3600000 && Number.isFinite(e.expiresAt) && e.expiresAt>now && /^https:\/\/(developers\.facebook\.com\/|www\.postman\.com\/meta\/|github\.com\/facebook\/)/.test(e.source)))throw new PlatformDenied("UNVERIFIED_MARKETING_READ_ACCESS");
-  if(scope.snapshot.connection.eligibility.some(e=>e.requirement===legacyMarketingReadRequirement()&&e.attestationId))assertManualEligibilityAttestation(legacyMarketingReadEligibilityContract(),scope.snapshot.connection,legacyMarketingReadRequirement(),scope.snapshot.manualEligibilityEvidence,scope.context.clientId,now);
+  const account=scope.plan.assets.find(a=>a.type==="AD_ACCOUNT")?.id;
+  const requirement=`marketing_read_access:${resolveMetaApiVersion()}`;
+  const records=scope.snapshot.connection.eligibility?.filter(e=>e.requirement===requirement)??[];
+  if(!records.length&&account&&hasCurrentProviderReadProof(account,now))return;
+  if(!records.some(e=>e.verified===true && Number.isFinite(e.checkedAt) && e.checkedAt>0 && e.checkedAt<=now && now-e.checkedAt<=3600000 && Number.isFinite(e.expiresAt) && e.expiresAt>now && /^https:\/\/(developers\.facebook\.com\/|www\.postman\.com\/meta\/|github\.com\/facebook\/)/.test(e.source)))throw new PlatformDenied("UNVERIFIED_MARKETING_READ_ACCESS");
+  if(scope.snapshot.connection.eligibility?.some(e=>e.requirement===legacyMarketingReadRequirement()&&e.attestationId))assertManualEligibilityAttestation(legacyMarketingReadEligibilityContract(),scope.snapshot.connection,legacyMarketingReadRequirement(),scope.snapshot.manualEligibilityEvidence,scope.context.clientId,now);
 }
 function assertStepContract(tool:string,step:LegacyReadStep):void {
   const contracts:Record<string,Array<[AssetType[],string,LegacyReadStep["entityType"]]>>={
@@ -73,9 +86,10 @@ export async function assertLegacyReadEgress(method: string,path: string,urlStri
   const url=new URL(urlString);
   if(method!=="GET" || url.origin!=="https://graph.facebook.com" || url.username || url.password || url.hash || url.pathname!==`/${resolveMetaApiVersion()}${path}`) throw new PlatformDenied("LEGACY_READ_ENDPOINT_DENIED");
   const query=queryObject(url);
+  const scope=getExecutionScope();
+  if(providerReadProbe(scope,method,path,query)){await revalidateExecutionPermit(permit);return;}
   const step=stepsFromScope().find(s=>s.path===path&&canonicalJson(Object.fromEntries(Object.entries(s.query).map(([k,v])=>[k,String(v)])))===canonicalJson(query));
   if(!step) throw new PlatformDenied("LEGACY_READ_PLAN_MISMATCH");
-  const scope=getExecutionScope();
   if(!scope.snapshot.assets.some(a=>a.type===step.root.type&&a.id.replace(/^act_/,"")===step.root.id.replace(/^act_/,""))) throw new PlatformDenied("LEGACY_READ_ASSET_NOT_AUTHORIZED");
   if(step.query.hashes!==undefined&&(JSON.parse(String(step.query.hashes)) as string[]).some(hash=>!scope.snapshot.assets.some(a=>a.type==="AD_IMAGE"&&a.id===hash)))throw new PlatformDenied("LEGACY_IMAGE_HASH_UNREGISTERED");
   await revalidateExecutionPermit(permit);
@@ -84,9 +98,21 @@ export async function assertLegacyReadEgress(method: string,path: string,urlStri
 export function projectLegacyReadResponse(path:string,urlString:string,body:unknown): unknown {
   if(!platformEnabled())return body;
   const query=queryObject(new URL(urlString));
+  const scope=getExecutionScope();
+  if(providerReadProbe(scope,"GET",path,query)&&query.fields===PROVIDER_READ_PROBE_FIELDS&&Object.keys(query).length===1){
+    if(!body||typeof body!=="object"||Array.isArray(body))throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_SCHEMA_INVALID");
+    const row=body as Record<string,unknown>,id=typeof row.id==="string"?row.id:"",accountId=typeof row.account_id==="string"?row.account_id:"";
+    const expected=scope.plan.assets.find(a=>a.type==="AD_ACCOUNT")?.id.replace(/^act_/,"");
+    if(!/^act_\d{1,32}$/.test(id)||!/^\d{1,32}$/.test(accountId)||id.replace(/^act_/,"")!==expected||accountId!==expected)throw new PlatformDenied("LEGACY_PROVIDER_READ_PROOF_MISMATCH");
+    const business=typeof row.business==="object"&&row.business!==null&&!Array.isArray(row.business)?row.business as Record<string,unknown>:undefined;
+    if(business&&typeof business.id!=="string")throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_SCHEMA_INVALID");
+    if(row.account_status!==undefined&&(!Number.isSafeInteger(row.account_status)||Number(row.account_status)<0))throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_SCHEMA_INVALID");
+    const safe:Record<string,unknown>={id,account_id:accountId,...(business?{business:{id:String(business.id),...(typeof business.name==="string"?{name:business.name}: {})}}:{}),...(row.account_status!==undefined?{account_status:row.account_status}: {})};
+    assertNoCredentialShapedString(JSON.stringify(safe));
+    return safe;
+  }
   const step=stepsFromScope().find(s=>s.path===path&&canonicalJson(Object.fromEntries(Object.entries(s.query).map(([k,v])=>[k,String(v)])))===canonicalJson(query));
   if(!step)throw new PlatformDenied("LEGACY_READ_PLAN_MISMATCH");
-  const scope=getExecutionScope();
   const allowedAssets=scope.snapshot.assets;
   const scalar=(value:unknown):boolean=>{if(typeof value==="string"){assertNoCredentialShapedString(value);if(redactCredentials(value)!==value)throw new PlatformDenied("LEGACY_CREDENTIAL_SHAPED_OUTPUT_DENIED");return Buffer.byteLength(value,"utf8")<=2000;}return value===null||typeof value==="number"&&Number.isFinite(value)||typeof value==="boolean";};
   const project=(input:unknown):Record<string,unknown>=>{
@@ -132,3 +158,4 @@ export function projectLegacyReadResponse(path:string,urlString:string,body:unkn
   if(page.paging!==undefined){if(!page.paging||typeof page.paging!=="object"||Array.isArray(page.paging))throw new PlatformDenied("LEGACY_PAGING_SCHEMA_INVALID");if(Object.prototype.hasOwnProperty.call(page.paging,"next")){const next=page.paging.next;if(typeof next!=="string"||!next.length||next.length>8192)throw new PlatformDenied("LEGACY_PAGING_SCHEMA_INVALID");let u:URL;try{u=new URL(next);}catch{throw new PlatformDenied("LEGACY_PAGING_SCHEMA_INVALID");}if(u.protocol!=="https:"||u.username||u.password)throw new PlatformDenied("LEGACY_PAGING_SCHEMA_INVALID");}}
   return {data:page.data.map(project),lumin_page:{complete:!page.paging?.next,truncated:!!page.paging?.next,reason:page.paging?.next?"Strict read returns one bounded page; no provider next URL is followed or exposed.":"No next page returned by provider."}};
 }
+

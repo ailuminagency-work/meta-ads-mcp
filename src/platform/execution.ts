@@ -26,7 +26,7 @@ import { decryptCredential, selectConnection, assertWhatsAppPhoneUnlocked } from
 import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, normalizeSafeDiff, revisionHash } from "./policy.js";
 
 export interface ExecutionPermit { readonly operationId: string; readonly context: Readonly<OperationContext>; readonly assetKeys: readonly string[]; readonly connectionId: string; readonly planHash: string }
-interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; terminalHash?: string; finishing?: Promise<void>; createdHash?:string; createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
+interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; providerReadProof?:{accountId:string;checkedAt:number;expiresAt:number;providerBusinessId?:string}; terminalHash?: string; finishing?: Promise<void>; createdHash?:string;createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
 const permits = new WeakMap<ExecutionPermit, PermitState>();
 const execution = new AsyncLocalStorage<ExecutionPermit>();
 export async function authorizeOperation(repo: PlatformRepository, context: OperationContext, inputPlan: OperationPlan, options: { writesEnabled: boolean; approvalId?: string; selectedConnectionId?: string; now?: number; operationId?: string }): Promise<ExecutionPermit> {
@@ -40,10 +40,16 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
   if(!tenant || !member || !client) throw new PlatformDenied("PLATFORM_MEMBERSHIP_REQUIRED");
   if(member.operatorId !== ctx.principal.operatorId || member.tenantId !== ctx.principal.tenantId || member.disabledAt !== null || !member.allowedClientIds.includes(ctx.clientId)) throw new PlatformDenied("CLIENT_MEMBERSHIP_REQUIRED");
   const maximumAge = plan.classes.some(c=>c!=="READ") ? 5 * 60_000 : 60 * 60_000;
-  const assets = await resolveAuthorizedAssets(repo, ctx, plan.assets, now,maximumAge);
+  const allowStaleReadBootstrap = plan.parameters.provider_read_bootstrap === true && plan.classes.every(c => c === "READ");
+  const assets = await resolveAuthorizedAssets(repo, ctx, plan.assets, now,maximumAge,allowStaleReadBootstrap);
   const connection = await selectConnection(repo, ctx, plan, assets, now, options.selectedConnectionId);
   productVersion(connection.provider);
-  const grants = (await repo.list("grants", ctx.principal.tenantId)).filter(g => assets.some(a => a.key === g.assetKey) && g.clientId === ctx.clientId && g.connectionId === connection.id && g.revokedAt === null && g.expiresAt > now);
+  const grants = (await repo.list("grants", ctx.principal.tenantId)).filter(g => {
+    const boundAsset = assets.find(a => a.key === g.assetKey);
+    const allowExpiredBootstrap = allowStaleReadBootstrap && boundAsset?.type === "AD_ACCOUNT" && g.expiresAt > now - 24 * 60 * 60_000;
+    return Boolean(boundAsset) && g.clientId === ctx.clientId && g.connectionId === connection.id && g.revokedAt === null &&
+      (g.expiresAt > now || allowExpiredBootstrap);
+  });
   const snapshot: AuthorizationSnapshot = {tenant,member,client,assets,connection,grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client),financialEvidence:await loadOwnershipEvidence(repo,ctx,assets),manualEligibilityEvidence:await loadManualEligibilityEvidence(repo,ctx,connection,[...(connection.appPromotionProfile&&plan.assets.some(a=>a.type==="APP")?[appPurchaseRequirement(connection.appPromotionProfile.bindingHash)]:[]),...Object.keys(PRODUCT_CONTRACTS.find(c=>c.tool===ctx.tool&&c.provider===ctx.provider)?.eligibilityPolicies??{}),...(ctx.provider==="META_MARKETING"?[legacyMarketingReadRequirement(),...(ctx.tool.startsWith("ads_")&&plan.classes.some(c=>c!=="READ")?[legacyMarketingWriteRequirement()]:[])]:[])])};
   const decision = evaluatePolicy(ctx, plan, snapshot, options);
   if(decision.decision === "DENY") throw new PlatformDenied(decision.reason);
@@ -96,7 +102,13 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
   const publicContext = structuredClone(ctx);
   Object.freeze(publicContext.principal); Object.freeze(publicContext);
   const permit: ExecutionPermit = Object.freeze({operationId, context: publicContext, assetKeys: Object.freeze(assets.map(a => a.key)), connectionId: connection.id, planHash});
-  permits.set(permit, {approvalExpected,authAppId:process.env.META_APP_ID,repo,context:ctx,plan,snapshot,connection,expiresAt: Math.min(now+60_000,approvalDeadline,...(snapshot.manualEligibilityEvidence?.attestations.map(r=>r.expiresAt)??[]),...businessOwnerDeadlines(snapshot),connection.expiresAt ?? Infinity,connection.verifiedAt+maximumAge,...assets.map(a=>a.verifiedAt+maximumAge),...grants.flatMap(g=>[g.expiresAt,g.verifiedAt+maximumAge]),...(mutation?[...snapshot.financialEvidence!.attestations.map(r=>r.expiresAt),...snapshot.financialEvidence!.observations.map(r=>r.expiresAt)]:[])),mutation,completed:false,mutationClaimed:false});
+  const freshnessWindow = allowStaleReadBootstrap ? 24 * 60 * 60_000 : maximumAge;
+  const grantDeadlines = grants.flatMap(g => {
+    const boundAsset = assets.find(a => a.key === g.assetKey);
+    const expiredBootstrap = allowStaleReadBootstrap && boundAsset?.type === "AD_ACCOUNT" && g.expiresAt <= now;
+    return expiredBootstrap ? [g.verifiedAt + freshnessWindow] : [g.expiresAt, g.verifiedAt + freshnessWindow];
+  });
+  permits.set(permit, {approvalExpected,authAppId:process.env.META_APP_ID,repo,context:ctx,plan,snapshot,connection,expiresAt: Math.min(now+60_000,approvalDeadline,...(snapshot.manualEligibilityEvidence?.attestations.map(r=>r.expiresAt)??[]),...businessOwnerDeadlines(snapshot),connection.expiresAt ?? Infinity,connection.verifiedAt+freshnessWindow,...assets.map(a=>a.verifiedAt+freshnessWindow),...grantDeadlines,...(mutation?[...snapshot.financialEvidence!.attestations.map(r=>r.expiresAt),...snapshot.financialEvidence!.observations.map(r=>r.expiresAt)]:[])),mutation,completed:false,mutationClaimed:false});
   return permit;
 }
 export function runWithExecutionPermit<T>(permit: ExecutionPermit, fn: () => T): T { validate(permit); return execution.run(permit,fn); }
@@ -106,6 +118,50 @@ export function getExecutionScope(): {context: OperationContext; plan: Operation
   const permit = execution.getStore(); if(!permit) throw new PlatformDenied("EXECUTION_PERMIT_REQUIRED");
   const state = validate(permit);
   return structuredClone({context:state.context,plan:state.plan,snapshot:state.snapshot});
+}
+
+/**
+ * A successful bounded provider read is an execution-scoped proof for the
+ * exact selected connection and account. It is intentionally held only for
+ * the lifetime of the permit; callers cannot inject or persist it.
+ */
+export function recordProviderReadProof(accountId:string, checkedAt=Date.now(), providerBusinessId?: string, ttlMs=300000):void {
+  const permit=execution.getStore(), state=permit?permits.get(permit):undefined;
+  if(!state||state.mutation||state.context.provider!=="META_MARKETING"||!/^\d{1,32}$/.test(accountId.replace(/^act_/,""))||!Number.isSafeInteger(checkedAt)||checkedAt<=0||!Number.isSafeInteger(ttlMs)||ttlMs<1000||ttlMs>300000)throw new PlatformDenied("PROVIDER_READ_PROOF_CONTEXT_REQUIRED");
+  const account=accountId.replace(/^act_/,"");
+  if(!state.snapshot.assets.some(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/,"")===account)||!state.plan.assets.some(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/,"")===account))throw new PlatformDenied("PROVIDER_READ_PROOF_ACCOUNT_BINDING_REQUIRED");
+  if(providerBusinessId!==undefined && !/^\d{1,32}$/.test(providerBusinessId))throw new PlatformDenied("PROVIDER_READ_PROOF_BUSINESS_BINDING_REQUIRED");
+  state.providerReadProof={accountId:account,checkedAt,expiresAt:Math.min(checkedAt+ttlMs,state.connection.expiresAt??checkedAt+ttlMs)};
+  state.providerReadProof.providerBusinessId=providerBusinessId;
+}
+
+export function hasCurrentProviderReadProof(accountId:string, now=Date.now()):boolean {
+  const permit=execution.getStore(), state=permit?permits.get(permit):undefined, proof=state?.providerReadProof;
+  return !!state&&!state.mutation&&!!proof&&proof.accountId===accountId.replace(/^act_/,"")&&Number.isSafeInteger(now)&&now>=proof.checkedAt&&now<proof.expiresAt&&state.connection.revokedAt===null;
+}
+/** Persist a bounded Graph read as short-lived, connection-bound evidence. */
+export async function persistProviderReadEligibility(accountId:string, checkedAt=Date.now()):Promise<void> {
+  const permit=execution.getStore(), state=permit?permits.get(permit):undefined;
+  if(!state||state.mutation||state.context.provider!=="META_MARKETING"||!hasCurrentProviderReadProof(accountId,checkedAt))throw new PlatformDenied("PROVIDER_READ_EVIDENCE_CONTEXT_REQUIRED");
+  const normalized=accountId.replace(/^act_/ ,"");
+  const target=state.snapshot.assets.find(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/ ,"")===normalized&&state.connection.assetKeys.includes(a.key));
+  if(!target)throw new PlatformDenied("PROVIDER_READ_EVIDENCE_ACCOUNT_BINDING_REQUIRED");
+  const providerBusinessId=(state.providerReadProof as {providerBusinessId?:string}|undefined)?.providerBusinessId;
+  if(target.ownerBusinessId && providerBusinessId !== target.ownerBusinessId)throw new PlatformDenied("PROVIDER_READ_EVIDENCE_OWNER_MISMATCH");
+  const requirement=legacyMarketingReadRequirement(),source="https://developers.facebook.com/docs/marketing-api/";
+  const existingRows=state.connection.eligibility?.filter(e=>e.requirement===requirement)??[];
+  const trustedSource=/^https:\/\/(developers\.facebook\.com\/|www\.postman\.com\/meta\/|github\.com\/facebook\/)/;
+  const existing=existingRows.find(e=>e.verified&&trustedSource.test(e.source)&&e.checkedAt<=checkedAt&&e.expiresAt>checkedAt);
+  if(existing)return;
+  if(existingRows.some(e=>e.verified!==true || e.attestationId || !trustedSource.test(e.source) || !Number.isFinite(e.expiresAt) || e.expiresAt>checkedAt))throw new PlatformDenied("UNVERIFIED_MARKETING_READ_ACCESS");
+  const expiresAt=Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity);
+  if(!Number.isSafeInteger(expiresAt)||expiresAt<=checkedAt)throw new PlatformDenied("PROVIDER_READ_EVIDENCE_EXPIRED");
+  const nextConnection={...state.connection,eligibility:[...(state.connection.eligibility??[]),{requirement,source,checkedAt,expiresAt,verified:true}],verifiedAt:checkedAt,revision:state.connection.revision+1};
+  const nextAssets=state.snapshot.assets.map(a=>a.key===target.key?{...a,verifiedAt:checkedAt,revision:a.revision+1}:a);
+  const nextGrants=state.snapshot.grants.map(g=>g.assetKey===target.key&&g.connectionId===state.connection.id?{...g,verifiedAt:checkedAt,expiresAt:Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity),revision:g.revision+1}:g);
+  const expected=[{collection:"tenants" as const,id:state.snapshot.tenant.id,canonical:canonicalJson(state.snapshot.tenant)},{collection:"members" as const,id:state.snapshot.member.operatorId,canonical:canonicalJson(state.snapshot.member)},{collection:"clients" as const,id:state.snapshot.client.id,canonical:canonicalJson(state.snapshot.client)},{collection:"connections" as const,id:state.connection.id,canonical:canonicalJson(state.connection)},...state.snapshot.assets.map(a=>({collection:"assets" as const,id:a.key,canonical:canonicalJson(a)})),...state.snapshot.grants.map(g=>({collection:"grants" as const,id:g.id,canonical:canonicalJson(g)}))];
+  await state.repo.commitControlPlane({tenantId:state.context.principal.tenantId,expected,writes:[{collection:"connections",id:state.connection.id,value:nextConnection,createOnly:false},{collection:"assets",id:target.key,value:nextAssets.find(a=>a.key===target.key)!,createOnly:false},...nextGrants.filter(g=>g.assetKey===target.key&&g.connectionId===state.connection.id).map(g=>({collection:"grants" as const,id:g.id,value:g,createOnly:false}))],audit:{id:randomUUID(),tenantId:state.context.principal.tenantId,clientId:state.context.clientId,actorId:state.context.principal.operatorId,event:"PROVIDER_READ_ELIGIBILITY_RECORDED",timestamp:checkedAt,subjectId:state.connection.id,planHash:permit!.planHash}});
+  state.connection=nextConnection; state.snapshot.connection=nextConnection; state.snapshot.assets=nextAssets; state.snapshot.grants=nextGrants; state.expiresAt=Math.min(checkedAt+60_000,state.connection.expiresAt??Infinity,checkedAt+3600000,...nextGrants.filter(g=>g.connectionId===state.connection.id).map(g=>g.expiresAt));
 }
 export async function assertCatalogCampaignReadResponseCurrent(marketingPermit:ExecutionPermit,catalogPermit:ExecutionPermit):Promise<void>{
  const marketing=permits.get(marketingPermit),catalog=permits.get(catalogPermit),states=[marketing,catalog];
@@ -316,3 +372,4 @@ export async function finishDeletedAd(permit:ExecutionPermit,id:string):Promise<
  const state=permits.get(permit);if(!state||!state.mutation||!state.mutationClaimed||state.context.tool!=="marketing_delete_paused_ad"||state.context.provider!=="META_MARKETING"||!/^\d{1,32}$/.test(id))throw new PlatformDenied("CLAIMED_DELETED_AD_PERMIT_REQUIRED");const hash=canonicalJson({id});if(state.deletedHash&&state.deletedHash!==hash||!state.deletedHash&&state.terminalHash)throw new PlatformDenied("OPERATION_ALREADY_FINISHED");if(state.completed)return state.deletedResult===true;if(state.finishing){await state.finishing;return state.deletedResult===true;}state.deletedHash=hash;state.terminalHash=canonicalJson({deleted:hash});
  const finish=async()=>{const {snapshot,context:ctx}=state,operation=await state.repo.get("operations",ctx.principal.tenantId,permit.operationId),asset=snapshot.assets.find(a=>a.type==="AD"&&a.id===id),now=Date.now();if(!operation||!asset||asset.deletionClaim?.operationId!==operation.id)throw new PlatformDenied("DELETED_AD_CLAIM_BINDING_REQUIRED");const grants=(await state.repo.list("grants",ctx.principal.tenantId)).filter(g=>g.assetKey===asset.key&&g.clientId===ctx.clientId&&g.revokedAt===null),connections=await Promise.all([...new Set(grants.map(g=>g.connectionId))].map(id=>state.repo.get("connections",ctx.principal.tenantId,id)));if(connections.some(c=>!c))throw new PlatformDenied("DELETED_AD_CONNECTION_SNAPSHOT_REQUIRED");const before=connections as Connection[],expectedRecords=[...(state.readCredentialExpected?[state.readCredentialExpected]:[]),...(state.approvalExpected??[]),{collection:"tenants" as const,id:snapshot.tenant.id,canonical:canonicalJson(snapshot.tenant)},{collection:"members" as const,id:snapshot.member.operatorId,canonical:canonicalJson(snapshot.member)},{collection:"clients" as const,id:snapshot.client.id,canonical:canonicalJson(snapshot.client)},...snapshot.assets.map(a=>({collection:"assets" as const,id:a.key,canonical:canonicalJson(a)})),...snapshot.grants.filter(g=>!grants.some(row=>row.id===g.id)).map(g=>({collection:"grants" as const,id:g.id,canonical:canonicalJson(g)})),...grants.map(g=>({collection:"grants" as const,id:g.id,canonical:canonicalJson(g)})),...before.map(c=>({collection:"connections" as const,id:c.id,canonical:canonicalJson(c)})),...ownershipExpectedRecords(snapshot.financialEvidence!),...manualEligibilityExpected(snapshot.manualEligibilityEvidence),...clientBusinessExpected(snapshot.businessOwnerEvidence)];const audit=(result:"SUCCEEDED"|"PARTIAL"):AuditRecord=>({id:operation.id+":result",tenantId:operation.tenantId,clientId:operation.clientId,actorId:operation.actorId,tool:operation.tool,operationId:operation.id,event:result,timestamp:now,assetKeys:[...permit.assetKeys],planHash:operation.planHash,approvalId:operation.approvalId,beforeEvidence:"UNKNOWN",afterSummary:[{field:"status",value:"DELETED"}]});let registered=true;try{await state.repo.finishOperation({tenantId:operation.tenantId,operationId:operation.id,result:"SUCCEEDED",audit:audit("SUCCEEDED"),deleted:{assetBefore:asset,assetAfter:{...asset,revokedAt:now,revision:asset.revision+1},grantsBefore:grants,grantsAfter:grants.map(g=>({...g,revokedAt:now,revision:g.revision+1})),connectionsBefore:before,connectionsAfter:before.map(c=>({...c,assetKeys:c.assetKeys.filter(key=>key!==asset.key),revision:c.revision+1})),expectedRecords,authorizationExpiresAt:state.expiresAt}});}catch(error){if(error instanceof PlatformDenied&&["DELETED_AD_ATOMIC_COMMIT_REJECTED","DELETED_AD_AUTHORIZATION_CHANGED"].includes(error.reason)){registered=false;try{await state.repo.finishOperation({tenantId:operation.tenantId,operationId:operation.id,result:"PARTIAL",audit:audit("PARTIAL")});}catch{throw new PlatformDenied("DELETED_AD_COMPLETION_RECONCILIATION_HOLD");}}else throw new PlatformDenied("DELETED_AD_COMPLETION_RECONCILIATION_HOLD");}state.deletedResult=registered;state.completed=true;state.terminalHash=canonicalJson({deleted:hash,registered});};state.finishing=finish();try{await state.finishing;}finally{state.finishing=undefined;}return state.deletedResult===true;
 }
+
