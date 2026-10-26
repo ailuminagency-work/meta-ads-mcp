@@ -53,6 +53,8 @@ import {validateMediaControl} from "./media-enrollment-validation.js";
 import type {MediaProposal} from "./media-enrollment-types.js";
 import {validateDiscoveryControl} from "./discovery-validation.js";
 import type {DiscoveryProposal} from "./discovery-types.js";
+import {validateClientAssetReassociationControl} from "./client-asset-reassociation.js";
+import type {ClientAssetReassociationProof} from "./client-asset-reassociation.js";
 import {validCreatedProductId,publishedProductOwnerType} from "./product-identifiers.js";
 import {PRODUCT_CONTRACTS} from "./products/contracts.js";
 import { createHash } from "node:crypto";
@@ -67,7 +69,7 @@ export type Collection = keyof Records;
 export interface Preparation {creativeRepointClaim?:{before:MetaAsset;after:MetaAsset}; selectedConnectionId?:string; operation: Operation; audit: AuditRecord; approvalId?: string; expectedRevisionHash: string; now: number; deletionClaim?:{before:MetaAsset;after:MetaAsset}; publicationClaim?:{before:MetaAsset;after:MetaAsset}; publicationClaims?:Array<{before:MetaAsset;after:MetaAsset}>; expectedRecords: { collection: Collection; id: string; canonical: string }[] }
 export interface CreatedCompletion { asset: MetaAsset; grant: AssetGrant; connectionBefore: Connection; connectionAfter: Connection; expectedRecords: Preparation["expectedRecords"]; authorizationExpiresAt: number }
 export interface Completion { tenantId: string; operationId: string; result: "SUCCEEDED" | "FAILED" | "UNKNOWN" | "PARTIAL"; audit: AuditRecord; created?: CreatedCompletion; deleted?:DeletedAdCompletion;repointed?:RepointedAdCompletion }
-export interface ControlCommit {signalDiscoveryProof?:SignalDiscoveryControlProof;appPromotionProof?:AppPromotionControlProof;trackingProof?:TrackingControlProof;batchProof?:BatchControlProof;setupProof?:SetupControlProof;setupPhoneLock?:{key:string;commandId:string;operation:"CLAIM"|"RELEASE"};researchProof?:ResearchControlProof;researchFinancialProof?:ResearchFinancialProof;businessOwnerProof?:BusinessOwnerControlProof;tenantId:string;expected:Array<{collection:Collection;id:string;canonical:string}>;writes:Array<{collection:"signalDiscoveryProposals"|"appPromotionProposals"|"trackingChangeJobs"|"pausedAdBatchJobs"|"businessOwnerAttestations"|"researchFinancialCheckpoints"|"researchJobs"|"researchBudgets"|"researchApprovals"|"clients"|"members"|"manualEligibilityAttestations"|"credentials"|"connections"|"grants"|"approvals"|"approvalRequests"|"assets"|"discoveryProposals"|"mediaProposals"|"videoProposals"|"attachmentProposals"|"whatsappSetupLeases"|"whatsappSetupCommands"|"targetingLookups"|"compatibilityObservations"|"pageInspectionDelegations"|"hashtagQuotas"|"ownerBillingAttestations"|"accountOwnershipObservations";id:string;value:unknown;createOnly:boolean}>;audit:ControlAudit}
+export interface ControlCommit {oauthDiscoveryProof?:{proposalId:string;selectedAssetId:string};signalDiscoveryProof?:SignalDiscoveryControlProof;appPromotionProof?:AppPromotionControlProof;trackingProof?:TrackingControlProof;batchProof?:BatchControlProof;setupProof?:SetupControlProof;setupPhoneLock?:{key:string;commandId:string;operation:"CLAIM"|"RELEASE"};researchProof?:ResearchControlProof;researchFinancialProof?:ResearchFinancialProof;businessOwnerProof?:BusinessOwnerControlProof;clientAssetReassociationProof?:ClientAssetReassociationProof;tenantId:string;expected:Array<{collection:Collection;id:string;canonical:string}>;writes:Array<{collection:"signalDiscoveryProposals"|"appPromotionProposals"|"trackingChangeJobs"|"pausedAdBatchJobs"|"businessOwnerAttestations"|"researchFinancialCheckpoints"|"researchJobs"|"researchBudgets"|"researchApprovals"|"clients"|"members"|"manualEligibilityAttestations"|"credentials"|"connections"|"grants"|"approvals"|"approvalRequests"|"assets"|"discoveryProposals"|"mediaProposals"|"videoProposals"|"attachmentProposals"|"whatsappSetupLeases"|"whatsappSetupCommands"|"targetingLookups"|"compatibilityObservations"|"pageInspectionDelegations"|"hashtagQuotas"|"ownerBillingAttestations"|"accountOwnershipObservations";id:string;value:unknown;createOnly:boolean}>;audit:ControlAudit}
 export interface PlatformRepository {
   assertCatalogCampaignReadResponseCurrent?(input:CatalogCampaignReadResponseCheckpoint):Promise<void>;
   assertAdCommentsReadResponseCurrent?(input:AdCommentsReadResponseCheckpoint):Promise<void>;
@@ -121,6 +123,26 @@ function controlPrivacyRecords(input:ControlCommit,allIdentities:Array<{appId:st
  });
  return [...records,...privacyRecords(allIdentities,input.tenantId,[{collection:"controlAudit",id:input.audit.id}])];
 }
+function validateProviderReadEligibilityControl(input:ControlCommit):void {
+  if(input.audit.event!=="PROVIDER_READ_ELIGIBILITY_RECORDED")return;
+  const connectionWrites=input.writes.filter(w=>w.collection==="connections"),assetWrites=input.writes.filter(w=>w.collection==="assets"),grantWrites=input.writes.filter(w=>w.collection==="grants");
+  if(connectionWrites.length!==1||assetWrites.length!==1||grantWrites.length<1||input.writes.length!==1+1+grantWrites.length||connectionWrites[0].createOnly||assetWrites[0].createOnly||grantWrites.some(w=>w.createOnly))throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  const connection=connectionWrites[0].value as Connection,priorConnectionText=input.expected.find(e=>e.collection==="connections"&&e.id===connection.id)?.canonical;
+  const asset=assetWrites[0].value as MetaAsset,priorAssetText=input.expected.find(e=>e.collection==="assets"&&e.id===asset.key)?.canonical;
+  if(!priorConnectionText||!priorAssetText||asset.type!=="AD_ACCOUNT"||asset.tenantId!==input.tenantId||asset.clientId!==input.audit.clientId||asset.revokedAt!==null||!Number.isSafeInteger(input.audit.timestamp)||input.audit.timestamp<=0||input.audit.timestamp>Date.now())throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  const priorConnection=JSON.parse(priorConnectionText) as Connection,priorAsset=JSON.parse(priorAssetText) as MetaAsset;
+  const {verifiedAt:_priorAssetVerifiedAt,revision:priorAssetRevision,...priorAssetStable}=priorAsset,{verifiedAt:nextAssetVerifiedAt,revision:nextAssetRevision,...nextAssetStable}=asset;
+  if(canonicalJson(priorAssetStable)!==canonicalJson(nextAssetStable)||nextAssetVerifiedAt!==input.audit.timestamp||nextAssetRevision!==priorAssetRevision+1)throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  const {eligibility:priorEligibility,verifiedAt:_priorConnectionVerifiedAt,revision:priorConnectionRevision,...priorConnectionStable}=priorConnection,{eligibility:nextEligibility,verifiedAt:nextConnectionVerifiedAt,revision:nextConnectionRevision,...nextConnectionStable}=connection;
+  const preservedEligibility=(priorEligibility??[]).every(oldEntry=>nextEligibility?.some(newEntry=>canonicalJson(newEntry)===canonicalJson(oldEntry)))
+  if(canonicalJson(priorConnectionStable)!==canonicalJson(nextConnectionStable)||nextConnectionVerifiedAt!==input.audit.timestamp||nextConnectionRevision!==priorConnectionRevision+1||!preservedEligibility||!nextEligibility||nextEligibility.length!==((priorEligibility??[]).length+1)||!nextEligibility.some(e=>e.verified===true&&e.checkedAt===input.audit.timestamp&&e.expiresAt>input.audit.timestamp))throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  for(const write of grantWrites){
+    const grant=write.value as AssetGrant,priorGrantText=input.expected.find(e=>e.collection==="grants"&&e.id===grant.id)?.canonical;
+    if(!priorGrantText||grant.assetKey!==asset.key||grant.connectionId!==connection.id||grant.tenantId!==input.tenantId||grant.clientId!==input.audit.clientId||grant.revokedAt!==null||grant.verifiedAt!==input.audit.timestamp||grant.expiresAt<=input.audit.timestamp)throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+    const priorGrant=JSON.parse(priorGrantText) as AssetGrant,{verifiedAt:_oldVerifiedAt,expiresAt:_oldExpiresAt,revision:oldRevision,...oldStable}=priorGrant,{verifiedAt:newVerifiedAt,expiresAt:newExpiresAt,revision:newRevision,...newStable}=grant;
+    if(canonicalJson(oldStable)!==canonicalJson(newStable)||newVerifiedAt!==input.audit.timestamp||newRevision!==oldRevision+1||newExpiresAt>(connection.expiresAt??Infinity))throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  }
+}
 function checkControlCommit(input:ControlCommit):void {
   if(!input.tenantId || input.audit.tenantId!==input.tenantId || !input.audit.id || input.writes.length<1 || input.writes.length>100 || input.expected.length<3 || input.expected.length>300)throw new PlatformDenied("INVALID_CONTROL_COMMIT");
   const keys=new Set<string>();
@@ -130,6 +152,7 @@ function checkControlCommit(input:ControlCommit):void {
   validateTrackingControl(input);
   validateBatchControl(input);
   validateClientEnrollmentControl(input);
+  validateClientAssetReassociationControl(input);
   validateBusinessOwnerControl(input);
   validateManualEligibilityControl(input);
   validateResearchControl(input);
@@ -138,8 +161,9 @@ function checkControlCommit(input:ControlCommit):void {
   validateHashtagQuotaControl(input);
   validateDiscoveryControl(input);
   validateTargetingLookupControl(input); validateCompatibilityControl(input); validatePageInspectionEnrollment(input); validateMediaControl(input); validateVideoControl(input); validateAttachmentControl(input); validateSetupControl(input);
+  validateProviderReadEligibilityControl(input);
   const assetWrites=input.writes.filter(w=>w.collection==="assets");
-  if(assetWrites.length && !["SIGNAL_ASSET_ENROLLED","APP_PROMOTION_ENROLLED","CLIENT_ENROLLED","ASSET_ENROLLED","MEDIA_ENROLLED","VIDEO_ENROLLED","ATTACHMENT_ENROLLED","OWNER_BILLING_ATTESTED","ACCOUNT_OWNER_OBSERVED"].includes(input.audit.event)){
+  if(assetWrites.length && !["SIGNAL_ASSET_ENROLLED","APP_PROMOTION_ENROLLED","CLIENT_ENROLLED","CLIENT_ASSET_REASSOCIATED","ASSET_ENROLLED","MEDIA_ENROLLED","VIDEO_ENROLLED","ATTACHMENT_ENROLLED","OWNER_BILLING_ATTESTED","ACCOUNT_OWNER_OBSERVED","PROVIDER_READ_ELIGIBILITY_RECORDED"].includes(input.audit.event)){
     if(input.audit.event!=="ASSET_OBSERVED" || input.writes.length!==assetWrites.length)throw new PlatformDenied("ASSET_OBSERVATION_CONTROL_REQUIRED");
     for(const write of assetWrites){
       const next=write.value as MetaAsset,priorText=input.expected.find(e=>e.collection==="assets" && e.id===next.key)?.canonical;
@@ -332,7 +356,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     if((input.audit.event.startsWith("APP_PROMOTION_")||input.audit.event.startsWith("SIGNAL_DISCOVERY_")||input.audit.event==="SIGNAL_ASSET_ENROLLED")){const authApp=process.env.META_APP_ID;if(!authApp||!/^\d{1,100}$/.test(authApp))throw new PlatformDenied("APP_PROMOTION_AUTH_APP_REQUIRED");const identities=[...input.expected.filter(e=>e.collection==="members").map(e=>({appId:authApp,operatorId:e.id,subject:e.id})),...controlConnections(input).map(c=>({appId:c.appId,operatorId:c.operatorId,subject:connectionPrivacyAppUserId(c)}))];if(identities.some(i=>this.enrollmentLocks.has(enrollmentLockKey(i.appId,i.operatorId))||this.privacySubjectLocks.has(privacySubjectHash(i.appId,i.subject))))throw new PlatformDenied("APP_PROMOTION_CONTROL_DEPENDENCY_LOCKED");}
     if([...privacyIdentities(controlConnections(input),[input.audit.actorId]),...setupControlIdentities(input),...batchControlIdentities(input),...trackingControlIdentities(input)].some(i=>this.privacySubjectLocks.has(privacySubjectHash(i.appId,i.appUserId))))throw new PlatformDenied("APP_USER_PRIVACY_LOCKED");
     if(["ACCOUNT_OWNER_OBSERVED","TRACKING_CHANGE_CHANGED","PAUSED_AD_BATCH_CHANGED"].includes(input.audit.event) && input.expected.filter(e=>e.collection==="connections").some(e=>{const c=JSON.parse(e.canonical) as Connection;return this.enrollmentLocks.has(enrollmentLockKey(c.appId,c.operatorId));}))throw new PlatformDenied("APP_USER_LIFECYCLE_ENROLLMENT_LOCKED");
-    if(["CONNECTION_ENROLLED","ASSET_ENROLLED","MEDIA_ENROLLED","VIDEO_ENROLLED","COMPATIBILITY_OBSERVED"].includes(input.audit.event) && input.writes.some(w=>w.collection==="connections" && this.enrollmentLocks.has(enrollmentLockKey((w.value as Connection).appId,(w.value as Connection).operatorId))))throw new PlatformDenied("APP_USER_LIFECYCLE_ENROLLMENT_LOCKED");
+    if(["CONNECTION_ENROLLED","ASSET_ENROLLED","MEDIA_ENROLLED","VIDEO_ENROLLED","COMPATIBILITY_OBSERVED","CLIENT_ASSET_REASSOCIATED"].includes(input.audit.event) && input.writes.some(w=>w.collection==="connections" && this.enrollmentLocks.has(enrollmentLockKey((w.value as Connection).appId,(w.value as Connection).operatorId))))throw new PlatformDenied("APP_USER_LIFECYCLE_ENROLLMENT_LOCKED");
     for(const expected of input.expected) if(canonicalJson(this.records.get(key(expected.collection,input.tenantId,expected.id)) ?? null)!==expected.canonical) throw new PlatformDenied("CONTROL_AUTHORIZATION_CHANGED");
     if(this.records.has(key("controlAudit",input.tenantId,input.audit.id)))throw new PlatformDenied("CONTROL_AUDIT_ALREADY_EXISTS");
     for(const write of input.writes) if(write.createOnly && this.records.has(key(write.collection,input.tenantId,write.id)))throw new PlatformDenied("CONTROL_RECORD_ALREADY_EXISTS");
@@ -486,7 +510,7 @@ export class FirestorePlatformRepository implements PlatformRepository {
       const audit=await tx.get(auditRef);
       const provenanceIdentities=[...privacyIdentities(controlConnections(input),[input.audit.actorId,...input.writes.flatMap(w=>{const v=w.value as {actorId?:string;operatorId?:string;approverId?:string;approvedBy?:string};return [v.actorId,v.operatorId,v.approverId,v.approvedBy].filter((id):id is string=>typeof id==="string");})]),...setupControlIdentities(input),...batchControlIdentities(input),...trackingControlIdentities(input)];
       const privacyLocks=await Promise.all(provenanceIdentities.map(i=>tx.get(this.db.collection("platform_meta_privacy_subject_locks").doc(privacySubjectHash(i.appId,i.appUserId)))));if(privacyLocks.some(lock=>lock.exists))throw new PlatformDenied("APP_USER_PRIVACY_LOCKED");
-      if(["CONNECTION_ENROLLED","ASSET_ENROLLED","MEDIA_ENROLLED","VIDEO_ENROLLED","COMPATIBILITY_OBSERVED","ACCOUNT_OWNER_OBSERVED","TRACKING_CHANGE_CHANGED","PAUSED_AD_BATCH_CHANGED"].includes(input.audit.event)){
+      if(["CONNECTION_ENROLLED","ASSET_ENROLLED","MEDIA_ENROLLED","VIDEO_ENROLLED","COMPATIBILITY_OBSERVED","CLIENT_ASSET_REASSOCIATED","ACCOUNT_OWNER_OBSERVED","TRACKING_CHANGE_CHANGED","PAUSED_AD_BATCH_CHANGED"].includes(input.audit.event)){
         const ids=[...new Set([...input.writes.filter(w=>w.collection==="connections").map(w=>w.value as Connection),...(["ACCOUNT_OWNER_OBSERVED","TRACKING_CHANGE_CHANGED","PAUSED_AD_BATCH_CHANGED"].includes(input.audit.event)?input.expected.filter(e=>e.collection==="connections").map(e=>JSON.parse(e.canonical) as Connection):[])].map(c=>enrollmentLockKey(c.appId,c.operatorId)))];
         const locks=await Promise.all(ids.map(id=>tx.get(this.db.collection("platform_lifecycle_locks").doc(id))));
         if(locks.some(lock=>lock.exists))throw new PlatformDenied("APP_USER_LIFECYCLE_ENROLLMENT_LOCKED");
@@ -589,3 +613,4 @@ export class FirestorePlatformRepository implements PlatformRepository {
     });
   }
 }
+

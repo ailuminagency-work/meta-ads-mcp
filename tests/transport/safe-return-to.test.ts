@@ -102,15 +102,17 @@ describe("validateMetaAuthReturn", () => {
     ).resolves.toBe(returnTo);
   });
 
-  describe("the standalone connections path", () => {
-    // /auth/connections must be reachable after login even though it is not an
-    // OAuth request. The allowlist is exact-match and query-less on purpose.
+  describe("standalone agency landing paths", () => {
+    // These pages must be reachable after login even though they are not MCP
+    // OAuth requests. The allowlist is exact-match and query-less on purpose.
     const getClient = makeGetClient({ "claude-client": claudeClient });
 
-    it("accepts the exact connections path", async () => {
-      await expect(
-        validateMetaAuthReturn("/auth/connections", getClient),
-      ).resolves.toBe("/auth/connections");
+    it.each([
+      "/auth/connections",
+      "/platform/connections/",
+      "/platform/clients/",
+    ])("accepts the exact path %s", async (path) => {
+      await expect(validateMetaAuthReturn(path, getClient)).resolves.toBe(path);
     });
 
     it.each([
@@ -123,6 +125,11 @@ describe("validateMetaAuthReturn", () => {
       ["traversal to another auth route", "/auth/connections/../auth/logout"],
       ["a trailing slash", "/auth/connections/"],
       ["an encoded separator", "/auth/connections%3Fx=1"],
+      ["a client-management query string", "/platform/clients/?x=1"],
+      ["a client-management descendant", "/platform/clients/new"],
+      ["a platform-connections query string", "/platform/connections/?x=1"],
+      ["a platform-connections descendant", "/platform/connections/extra"],
+      ["a traversal into clients", "/platform/connections/../clients/"],
     ])("rejects %s", async (_label, input) => {
       await expect(validateMetaAuthReturn(input, getClient)).resolves.toBeNull();
     });
@@ -190,3 +197,4 @@ describe("backslash origin escapes", () => {
     expect(safeReturnTo("https://evil.example/x", "/auth/connections")).toBe("/auth/connections");
   });
 });
+

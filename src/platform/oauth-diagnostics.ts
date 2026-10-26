@@ -129,3 +129,4 @@ export function oauthFailureCategory(error:unknown):string {
 export function logOAuthFailure(stage:"callback"|"provider_exchange",error:unknown):void {
  logger.warn({event:"platform_oauth_failure",stage,reason:oauthFailureCategory(error)},"Platform OAuth failed");
 }
+

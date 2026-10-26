@@ -7,7 +7,7 @@ import {buildLegacyVideoCreative,marketingVideoCreativeEnabled} from "./legacy-v
 import {applyCampaignBudget,applyAdsetBudget,marketingCboEnabled,type MarketingBudgetMode} from "./legacy-cbo.js";
 import {createHash} from "node:crypto";
 import {productRateController} from "./clients.js";
-import {assertAccountOwnershipEvidence} from "./ownership-evidence.js";
+import {assertAgencyAdvertisingAuthorization} from "./ownership-evidence.js";
 import { assertNoCredentialShapedString } from "./input-safety.js";
 import { z } from "zod";
 import { resolveMetaApiVersion } from "../meta/api-version.js";
@@ -114,7 +114,7 @@ export function validateLegacyWriteSnapshot(plan:OperationPlan,snapshot:Authoriz
   const accounts=snapshot.assets.filter(a=>a.type==="AD_ACCOUNT");
   const account=accounts.length===1?accounts[0]:undefined;
   if(!account)throw new PlatformDenied("EXACT_FINANCIAL_EVIDENCE_REQUIRED");
-  assertAccountOwnershipEvidence(snapshot,account,now);
+  assertAgencyAdvertisingAuthorization(snapshot,account,plan.classes.filter(c=>["WRITE_AD_CONFIGURATION","WRITE_BUDGET","ACTIVATE_SPEND"].includes(c)) as ("WRITE_AD_CONFIGURATION"|"WRITE_BUDGET"|"ACTIVATE_SPEND")[],now);
   const reaches=(ref:AssetRef,seen=new Set<string>()):boolean=>{
     const a=snapshot.assets.find(a=>a.type===ref.type&&a.id.replace(/^act_/,"")===ref.id.replace(/^act_/,""));
     if(!a||seen.has(a.key))return false;if(a.key===account.key)return true;
@@ -189,3 +189,4 @@ export async function executeStrictLegacyWrite(tool:string,input:Record<string,u
   const registered=await finishCreatedAsset(permit,{id:result.id,type,parent});
   return {content:[{type:"text",text:JSON.stringify({status:registered?"SUCCEEDED":"PARTIAL",created_id:result.id,requested_status:type==="CREATIVE"?"NOT_APPLICABLE":"PAUSED",effective_status:type==="CREATIVE"?"NOT_APPLICABLE":"UNVERIFIED",registered,auto_chain:false,next_action:registered?"Any subsequent operation requires a new authorization and human approval.":"Trusted provenance reconciliation required before this created asset can be used."})}]};
 }
+
