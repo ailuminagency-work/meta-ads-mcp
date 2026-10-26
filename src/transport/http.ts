@@ -26,6 +26,7 @@ import {environmentDiscoveryRouter} from "../platform/discovery-runtime.js";
 import { createApprovalRouter } from "../platform/approval-router.js";
 import { environmentSourceIngressRouter } from "../platform/source-ingress.js";
 import {environmentOperationalRouter} from "../platform/operational-runtime.js";
+import {environmentRuntimeDiagnosticsRouter} from "../platform/runtime-diagnostics-runtime.js";
 import { platformConnectionRouters } from "../platform/connection-runtime.js";
 import { initializeMessagingPolicyRuntime } from "../platform/messaging-runtime.js";
 import { initializeEnvironmentWebhooks } from "../platform/events/environment.js";
@@ -591,6 +592,7 @@ export async function startHttpTransport(
   environmentHealthEventStorage();
   const operationalRouter=environmentOperationalRouter(serverUrl.origin);
   if(operationalRouter)app.use("/platform/operations",operationalRouter);
+  if(platformEnabled())app.use("/platform/runtime/diagnostics",environmentRuntimeDiagnosticsRouter());
   const businessOwnerRouter=environmentBusinessOwnerRouter(serverUrl.origin);
   if(businessOwnerRouter) app.use("/platform/business-owner",businessOwnerRouter);
   const researchReviewRouter=environmentResearchReviewRouter(serverUrl.origin);
