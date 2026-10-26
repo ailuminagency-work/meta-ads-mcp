@@ -16,7 +16,7 @@ import { platformEnabled } from "../platform/runtime.js";
 import { assertLegacyReadEgress, projectLegacyReadResponse } from "../platform/legacy-egress.js";
 import { PlatformDenied } from "../platform/models.js";
 import { BodyTooLargeError, readBodyWithLimit } from "../utils/bounded-body.js";
-import { assertExecutionPermit, withConnectionCredential } from "../platform/execution.js";
+import { assertExecutionPermit, getExecutionScope, persistProviderReadEligibility, recordProviderReadProof, withConnectionCredential } from "../platform/execution.js";
 
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
@@ -329,7 +329,16 @@ export class MetaApiClient {
           throw lastError;
         }
 
-        return projectLegacyReadResponse(path,url,body) as T;
+        const projected=projectLegacyReadResponse(path,url,body) as T;
+        const requestUrl=new URL(url);
+        const scope=platformEnabled()?getExecutionScope():undefined;
+        if(scope?.plan.parameters.provider_read_bootstrap===true && path.match(/^\/act_\d{1,32}$/) && requestUrl.searchParams.get("fields")?.split(",").some(field=>field==="business"||field.startsWith("business{"))===true){
+          const accountId=path.slice(5),checkedAt=Date.now(),bodyRecord=body as Record<string,unknown>,actualId=typeof bodyRecord.id==="string"?bodyRecord.id.replace(/^act_/ ,""):"",actualAccountId=typeof bodyRecord.account_id==="string"?bodyRecord.account_id.replace(/^act_/ ,""):"",business=bodyRecord.business as Record<string,unknown>|undefined,providerBusinessId=typeof business?.id==="string"?business.id:undefined;
+          if(actualId!==accountId||(actualAccountId!==""&&actualAccountId!==accountId))throw new PlatformDenied("PROVIDER_READ_PROOF_ACCOUNT_MISMATCH");
+          recordProviderReadProof(accountId,checkedAt,providerBusinessId);
+          await persistProviderReadEligibility(accountId,checkedAt);
+        }
+        return projected;
       } catch (error) {
         if(error instanceof PlatformDenied)throw error;
         if(platformEnabled()&&(error instanceof BodyTooLargeError||error instanceof SyntaxError))throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_INVALID_OR_TOO_LARGE");
@@ -509,3 +518,4 @@ function guessBucType(method: string, path: string): string {
  * Singleton client instance used by all tools.
  */
 export const metaApiClient = new MetaApiClient();
+

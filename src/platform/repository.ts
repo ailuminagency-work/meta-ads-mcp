@@ -121,6 +121,26 @@ function controlPrivacyRecords(input:ControlCommit,allIdentities:Array<{appId:st
  });
  return [...records,...privacyRecords(allIdentities,input.tenantId,[{collection:"controlAudit",id:input.audit.id}])];
 }
+function validateProviderReadEligibilityControl(input:ControlCommit):void {
+  if(input.audit.event!=="PROVIDER_READ_ELIGIBILITY_RECORDED")return;
+  const connectionWrites=input.writes.filter(w=>w.collection==="connections"),assetWrites=input.writes.filter(w=>w.collection==="assets"),grantWrites=input.writes.filter(w=>w.collection==="grants");
+  if(connectionWrites.length!==1||assetWrites.length!==1||grantWrites.length<1||input.writes.length!==1+1+grantWrites.length||connectionWrites[0].createOnly||assetWrites[0].createOnly||grantWrites.some(w=>w.createOnly))throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  const connection=connectionWrites[0].value as Connection,priorConnectionText=input.expected.find(e=>e.collection==="connections"&&e.id===connection.id)?.canonical;
+  const asset=assetWrites[0].value as MetaAsset,priorAssetText=input.expected.find(e=>e.collection==="assets"&&e.id===asset.key)?.canonical;
+  if(!priorConnectionText||!priorAssetText||asset.type!=="AD_ACCOUNT"||asset.tenantId!==input.tenantId||asset.clientId!==input.audit.clientId||asset.revokedAt!==null||!Number.isSafeInteger(input.audit.timestamp)||input.audit.timestamp<=0||input.audit.timestamp>Date.now())throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  const priorConnection=JSON.parse(priorConnectionText) as Connection,priorAsset=JSON.parse(priorAssetText) as MetaAsset;
+  const {verifiedAt:_priorAssetVerifiedAt,revision:priorAssetRevision,...priorAssetStable}=priorAsset,{verifiedAt:nextAssetVerifiedAt,revision:nextAssetRevision,...nextAssetStable}=asset;
+  if(canonicalJson(priorAssetStable)!==canonicalJson(nextAssetStable)||nextAssetVerifiedAt!==input.audit.timestamp||nextAssetRevision!==priorAssetRevision+1)throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  const {eligibility:priorEligibility,verifiedAt:_priorConnectionVerifiedAt,revision:priorConnectionRevision,...priorConnectionStable}=priorConnection,{eligibility:nextEligibility,verifiedAt:nextConnectionVerifiedAt,revision:nextConnectionRevision,...nextConnectionStable}=connection;
+  const preservedEligibility=(priorEligibility??[]).every(oldEntry=>nextEligibility?.some(newEntry=>canonicalJson(newEntry)===canonicalJson(oldEntry)))
+  if(canonicalJson(priorConnectionStable)!==canonicalJson(nextConnectionStable)||nextConnectionVerifiedAt!==input.audit.timestamp||nextConnectionRevision!==priorConnectionRevision+1||!preservedEligibility||!nextEligibility||nextEligibility.length!==((priorEligibility??[]).length+1)||!nextEligibility.some(e=>e.verified===true&&e.checkedAt===input.audit.timestamp&&e.expiresAt>input.audit.timestamp))throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  for(const write of grantWrites){
+    const grant=write.value as AssetGrant,priorGrantText=input.expected.find(e=>e.collection==="grants"&&e.id===grant.id)?.canonical;
+    if(!priorGrantText||grant.assetKey!==asset.key||grant.connectionId!==connection.id||grant.tenantId!==input.tenantId||grant.clientId!==input.audit.clientId||grant.revokedAt!==null||grant.verifiedAt!==input.audit.timestamp||grant.expiresAt<=input.audit.timestamp)throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+    const priorGrant=JSON.parse(priorGrantText) as AssetGrant,{verifiedAt:_oldVerifiedAt,expiresAt:_oldExpiresAt,revision:oldRevision,...oldStable}=priorGrant,{verifiedAt:newVerifiedAt,expiresAt:newExpiresAt,revision:newRevision,...newStable}=grant;
+    if(canonicalJson(oldStable)!==canonicalJson(newStable)||newVerifiedAt!==input.audit.timestamp||newRevision!==oldRevision+1||newExpiresAt>(connection.expiresAt??Infinity))throw new PlatformDenied("PROVIDER_READ_ELIGIBILITY_CONTROL_REQUIRED");
+  }
+}
 function checkControlCommit(input:ControlCommit):void {
   if(!input.tenantId || input.audit.tenantId!==input.tenantId || !input.audit.id || input.writes.length<1 || input.writes.length>100 || input.expected.length<3 || input.expected.length>300)throw new PlatformDenied("INVALID_CONTROL_COMMIT");
   const keys=new Set<string>();
@@ -138,8 +158,9 @@ function checkControlCommit(input:ControlCommit):void {
   validateHashtagQuotaControl(input);
   validateDiscoveryControl(input);
   validateTargetingLookupControl(input); validateCompatibilityControl(input); validatePageInspectionEnrollment(input); validateMediaControl(input); validateVideoControl(input); validateAttachmentControl(input); validateSetupControl(input);
+  validateProviderReadEligibilityControl(input);
   const assetWrites=input.writes.filter(w=>w.collection==="assets");
-  if(assetWrites.length && !["SIGNAL_ASSET_ENROLLED","APP_PROMOTION_ENROLLED","CLIENT_ENROLLED","ASSET_ENROLLED","MEDIA_ENROLLED","VIDEO_ENROLLED","ATTACHMENT_ENROLLED","OWNER_BILLING_ATTESTED","ACCOUNT_OWNER_OBSERVED"].includes(input.audit.event)){
+  if(assetWrites.length && !["SIGNAL_ASSET_ENROLLED","APP_PROMOTION_ENROLLED","CLIENT_ENROLLED","ASSET_ENROLLED","MEDIA_ENROLLED","VIDEO_ENROLLED","ATTACHMENT_ENROLLED","OWNER_BILLING_ATTESTED","ACCOUNT_OWNER_OBSERVED","PROVIDER_READ_ELIGIBILITY_RECORDED"].includes(input.audit.event)){
     if(input.audit.event!=="ASSET_OBSERVED" || input.writes.length!==assetWrites.length)throw new PlatformDenied("ASSET_OBSERVATION_CONTROL_REQUIRED");
     for(const write of assetWrites){
       const next=write.value as MetaAsset,priorText=input.expected.find(e=>e.collection==="assets" && e.id===next.key)?.canonical;
@@ -589,3 +610,4 @@ export class FirestorePlatformRepository implements PlatformRepository {
     });
   }
 }
+
