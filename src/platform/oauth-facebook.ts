@@ -239,17 +239,17 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
       if(requested.some(a=>a.type==="BUSINESS")){const selected=studyRegisteredScope(registeredAssets??[],requested,this.now()),businessId=selected.business.id,accountId=selected.account.id.replace(/^act_/,""),campaignIds=selected.campaigns.map(c=>c.id),businesses=await this.get("/me/businesses",{fields:"id",limit:"100"},token),ownedAccounts=await this.get("/"+businessId+"/owned_ad_accounts",{fields:"id,account_id",limit:"100"},token),account=await this.get("/act_"+accountId,{fields:"id,account_id,business{id},user_tasks"},token),campaigns=[];for(const id of campaignIds)campaigns.push(await this.get("/"+id,{fields:"id,account_id,status"},token));verifyStudyBusinessAccess(businessId,accountId,{businesses,ownedAccounts,account,campaigns},campaignIds);return requested.map(a=>({type:a.type,id:a.id.replace(/^act_/,""),tasks:[]}));}
       if(requested.some(a=>a.type==="PAGE"))return this.proveControlAssets(token,registeredAssets??[],mode);
       const result:InspectedOAuthToken["assets"]=[];
-      if(!requested.length){
-        const discovered=parse(z.object({data:z.array(z.object({id:z.string().regex(/^act_\d{1,100}$/),account_id:ID})).max(98),paging:z.unknown().optional()}),await this.get("/me/adaccounts",{fields:"id,account_id",limit:"98"},token));
-        for(const asset of discovered.data)result.push({type:"AD_ACCOUNT",id:asset.account_id,tasks:[]});
+        if(!requested.length){
+          const discovered=parse(z.object({data:z.array(z.object({id:z.string().regex(/^act_\d{1,100}$/),account_id:ID,name:z.string().trim().min(1).max(200).optional(),business:z.object({id:ID,name:z.string().trim().min(1).max(200).optional()}).strict().nullable().optional()}).strict()).max(98),paging:z.unknown().optional()}),await this.get("/me/adaccounts",{fields:"id,account_id,name,business{id,name}",limit:"98"},token));
+          for(const asset of discovered.data)result.push({type:"AD_ACCOUNT",id:asset.account_id,tasks:[],...(asset.name?{name:asset.name}:{}),...(asset.business?.id?{businessId:asset.business.id}:{}),...(asset.business?.name?{businessName:asset.business.name}:{})});
         if(!result.length)throw new PlatformDenied("FACEBOOK_NO_AUTHORIZED_AD_ACCOUNTS");
         return result;
       }
       for(const asset of requested){
         const id=asset.id.replace(/^act_/,"");
-        const object=parse(z.object({id:z.string().regex(/^act_\d{1,100}$/),account_id:ID}),await this.get(`/act_${id}`,{fields:"id,account_id"},token));
+          const object=parse(z.object({id:z.string().regex(/^act_\d{1,100}$/),account_id:ID,name:z.string().trim().min(1).max(200).optional(),business:z.object({id:ID,name:z.string().trim().min(1).max(200).optional()}).strict().nullable().optional()}).strict(),await this.get(`/act_${id}`,{fields:"id,account_id,name,business{id,name}"},token));
         if(object.id!==`act_${id}`||object.account_id!==id)throw new PlatformDenied("FACEBOOK_ASSET_READ_PROOF_MISMATCH");
-        result.push({type:"AD_ACCOUNT",id,tasks:[]});
+          result.push({type:"AD_ACCOUNT",id,tasks:[],...(object.name?{name:object.name}:{}),...(object.business?.id?{businessId:object.business.id}:{}),...(object.business?.name?{businessName:object.business.name}:{})});
       }
       return result;
     }
@@ -303,4 +303,5 @@ export class FacebookBusinessOAuthAdapter implements VerifiedProviderAdapter {
   }
 
 }
+
 

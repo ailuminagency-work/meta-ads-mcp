@@ -20,6 +20,7 @@ import {encryptPageInspectionDelegation,pageInspectionDelegationMetadata,type Pa
 import {facebookActualScopesMatch} from "./oauth-facebook.js";
 import {decryptOAuthDiscoveryInspection,encryptOAuthDiscoveryInspection,oauthDiscoveryHash,type OAuthDiscoveryProposal} from "./oauth-discovery.js";
 import {assetKey} from "./assets.js";
+import {prepareClientAssetReassociation} from "./client-asset-reassociation.js";
 
 export interface TrustedOAuthProfile extends ConnectionProfile {
   appPromotionBinding?:import("./app-promotion-contract.js").AppPromotionBinding;
@@ -57,6 +58,13 @@ export function createPageInspectionProfileVerifier(registry:ImmutableOAuthProfi
  if(!deploymentRegistries.has(registry))throw new PlatformDenied("IMMUTABLE_DEPLOYMENT_OAUTH_PROFILES_REQUIRED");
  return async record=>{const profile=await registry.get(record.profileId);if(!profile||profile.provider!==record.provider||profile.appId!==record.appId||profile.tokenTypes.length!==1||profile.tokenTypes[0]!=="page"||createHash("sha256").update(canonicalJson(profile)).digest("hex")!==record.profileHash||canonicalJson([...profile.scopes].sort())!==canonicalJson([...record.scopes].sort()))throw new PlatformDenied("PAGE_INSPECTION_CURRENT_PROFILE_REQUIRED");};
 }
+export interface OAuthDiscoveredAsset extends AssetRef {
+  tasks: string[];
+  /** Provider-supplied display metadata only; never an authorization signal. */
+  name?: string;
+  businessId?: string;
+  businessName?: string;
+}
 export interface InspectedOAuthToken {
   metaAppUserId?:string;
   pageInspection?:{accessToken:string;appId:string;userSubjectId:string;grantedScopes:string[];expiresAt:number};
@@ -69,10 +77,10 @@ export interface InspectedOAuthToken {
   tokenType: Connection["tokenType"];
   grantedScopes: string[];
   expiresAt: number;
-  assets: Array<AssetRef & { tasks: string[] }>;
+  assets: OAuthDiscoveredAsset[];
 }
 export class OAuthAssetSelectionRequired extends PlatformDenied {
-  constructor(public readonly proposalId:string,public readonly assets:AssetRef[]){super("OAUTH_ASSET_SELECTION_REQUIRED");this.name="OAuthAssetSelectionRequired";}
+  constructor(public readonly proposalId:string,public readonly assets:OAuthDiscoveredAsset[]){super("OAUTH_ASSET_SELECTION_REQUIRED");this.name="OAuthAssetSelectionRequired";}
 }
 const inspectedTokenSchema = z.object({
   metaAppUserId:z.string().regex(/^\d{1,100}$/).optional(),
@@ -85,7 +93,7 @@ const inspectedTokenSchema = z.object({
   tokenType: z.enum(["user", "page", "system_user", "business_integration_system_user", "instagram", "threads"]),
   grantedScopes: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,100}$/)).min(1).max(100),
   expiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  assets: z.array(z.object({ type: z.enum(["BUSINESS", "AD_ACCOUNT", "PAGE", "INSTAGRAM_ACCOUNT", "DATASET", "PIXEL", "CATALOG", "WABA", "WHATSAPP_ACCOUNT","MESSAGING_ACCOUNT","WHATSAPP_PHONE", "THREADS_ACCOUNT", "APP","CAMPAIGN","AD_SET","CREATIVE","AD","AD_IMAGE","AD_VIDEO","LEAD_FORM","AUDIENCE"]), id: z.string().regex(/^(?:(?:act_)?[0-9]{1,100}|[a-f0-9]{32})$/), tasks: z.array(z.string().regex(/^[A-Z_]{1,100}$/)).max(100) }).strict().refine(asset => asset.type==="AD_IMAGE"?/^[a-f0-9]{32}$/.test(asset.id):/^(?:act_)?[0-9]{1,100}$/.test(asset.id)&&(asset.type === "AD_ACCOUNT" || !asset.id.startsWith("act_")))).min(1).max(98),
+  assets: z.array(z.object({ type: z.enum(["BUSINESS", "AD_ACCOUNT", "PAGE", "INSTAGRAM_ACCOUNT", "DATASET", "PIXEL", "CATALOG", "WABA", "WHATSAPP_ACCOUNT","MESSAGING_ACCOUNT","WHATSAPP_PHONE", "THREADS_ACCOUNT", "APP","CAMPAIGN","AD_SET","CREATIVE","AD","AD_IMAGE","AD_VIDEO","LEAD_FORM","AUDIENCE"]), id: z.string().regex(/^(?:(?:act_)?[0-9]{1,100}|[a-f0-9]{32})$/), tasks: z.array(z.string().regex(/^[A-Z_]{1,100}$/)).max(100), name: z.string().trim().min(1).max(200).optional(), businessId: z.string().regex(/^\d{1,100}$/).optional(), businessName: z.string().trim().min(1).max(200).optional() }).strict().refine(asset => asset.type==="AD_IMAGE"?/^[a-f0-9]{32}$/.test(asset.id):/^(?:act_)?[0-9]{1,100}$/.test(asset.id)&&(asset.type === "AD_ACCOUNT" || !asset.id.startsWith("act_")))).min(1).max(98),
 }).strict();
 export interface VerifiedProviderAdapter {
   provider: Connection["provider"];
@@ -207,8 +215,24 @@ export class PlatformOAuthService {
     const inspected=decryptOAuthDiscoveryInspection(raw),selected=raw.assets.find(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/,"")===assetId);
     if(!selected||inspected.expiresAt<=this.now()||inspected.subjectId!==operatorId||inspected.assets.some(a=>a.type!=="AD_ACCOUNT"))throw new PlatformDenied("OAUTH_DISCOVERY_SELECTION_NOT_AUTHORIZED");
     adapter.validateEnrollmentContext?.({profile,principal,clientId:raw.clientId,client:initial.client,businessOwnerEvidence:initial.businessOwnerEvidence});
-    const now=this.now(),key=assetKey(profile.provider,profile.appId,selected),existing=await this.deps.repository.get("assets",principal.tenantId,key);if(existing)throw new PlatformDenied("OAUTH_DISCOVERY_ASSET_ALREADY_ENROLLED");
-    const asset:MetaAsset={key,id:selected.id.replace(/^act_/,""),type:"AD_ACCOUNT",tenantId:principal.tenantId,clientId:raw.clientId,provider:"META_MARKETING",appId:profile.appId,parents:[],verifiedAt:raw.checkedAt,revokedAt:null,revision:1};
+    const now=this.now(),key=assetKey(profile.provider,profile.appId,selected),existing=await this.deps.repository.get("assets",principal.tenantId,key);
+    if(existing){
+      if(existing.clientId===raw.clientId)throw new PlatformDenied("OAUTH_DISCOVERY_ASSET_ALREADY_ENROLLED");
+      if(!selected.businessId||existing.type!=="AD_ACCOUNT"||existing.provider!=="META_MARKETING"||existing.appId!==profile.appId||existing.revokedAt!==null)throw new PlatformDenied("OAUTH_REASSOCIATION_PROVIDER_OWNERSHIP_REQUIRED");
+      const [oldClient,connections,grants]=await Promise.all([
+        this.deps.repository.get("clients",principal.tenantId,existing.clientId),
+        this.deps.repository.list("connections",principal.tenantId),
+        this.deps.repository.list("grants",principal.tenantId),
+      ]);
+      const connectionMatches=connections.filter(c=>c.tenantId===principal.tenantId&&c.provider==="META_MARKETING"&&c.appId===profile.appId&&c.assetKeys.includes(existing.key)&&c.operatorId===operatorId&&c.revokedAt===null);
+      if(!oldClient||connectionMatches.length!==1)throw new PlatformDenied("OAUTH_REASSOCIATION_SOURCE_STATE_INVALID");
+      const connection=connectionMatches[0],grantMatches=grants.filter(g=>g.tenantId===principal.tenantId&&g.clientId===existing.clientId&&g.assetKey===existing.key&&g.connectionId===connection.id&&g.revokedAt===null);
+      if(grantMatches.length!==1||connection.expiresAt===null||connection.expiresAt<=now)throw new PlatformDenied("OAUTH_REASSOCIATION_SOURCE_STATE_INVALID");
+      const commit=prepareClientAssetReassociation({tenant:await this.deps.repository.get("tenants",principal.tenantId,principal.tenantId).then(value=>{if(!value)throw new PlatformDenied("OAUTH_REASSOCIATION_TENANT_REQUIRED");return value;}),member:await this.deps.repository.get("members",principal.tenantId,operatorId).then(value=>{if(!value)throw new PlatformDenied("OAUTH_REASSOCIATION_MEMBER_REQUIRED");return value;}),oldClient,asset:existing,connection,grant:grantMatches[0],targetClient:initial.client,targetClientId:raw.clientId,providerEvidence:{accountId:selected.id.replace(/^act_/,""),ownerBusinessId:selected.businessId,appId:profile.appId,provider:"META_MARKETING",checkedAt:raw.checkedAt,expiresAt:Math.min(raw.expiresAt,connection.expiresAt,raw.checkedAt+300000),source:"https://developers.facebook.com/docs/marketing-api/"},discoveryProposal:raw,auditId:randomUUID(),planHash:raw.planHash,verificationAt:now});
+      await this.deps.repository.commitControlPlane(commit);
+      return {connectionId:connection.id,assetCount:1,provider:profile.provider};
+    }
+    const asset:MetaAsset={key,id:selected.id.replace(/^act_/,""),type:"AD_ACCOUNT",tenantId:principal.tenantId,clientId:raw.clientId,provider:"META_MARKETING",appId:profile.appId,parents:[],verifiedAt:raw.checkedAt,revokedAt:null,revision:1,...(selected.businessId?{ownerBusinessId:selected.businessId}: {})};
     const connectionId=randomUUID(),credentialId=randomUUID(),credential=encryptCredential({id:credentialId,tenantId:principal.tenantId,operatorId,provider:profile.provider,appId:profile.appId,keyVersion:"primary"},inspected.accessToken);
     const connection:ConnectionEnrollment["connection"]={id:connectionId,metaAppUserId:inspected.subjectId,tenantId:principal.tenantId,operatorId,provider:profile.provider,authStrategy:profile.strategy,credentialId,appId:profile.appId,tokenType:"user",subjectId:inspected.subjectId,scopes:[...inspected.grantedScopes],assetKeys:[asset.key],expiresAt:inspected.expiresAt,revokedAt:null,verifiedAt:now,revision:1};
     const grant:AssetGrant={id:randomUUID(),tenantId:principal.tenantId,clientId:raw.clientId,assetKey:asset.key,connectionId,capabilities:[...profile.capabilities],actions:[...profile.actions],tasks:[],verifiedAt:raw.checkedAt,expiresAt:inspected.expiresAt,revokedAt:null,revision:1};
@@ -224,19 +248,25 @@ export class PlatformOAuthService {
     const marketingPage=profile.provider==="META_MARKETING"&&profile.tokenTypes.length===1&&profile.tokenTypes[0]==="page";
     const whatsappBisu=profile.provider==="META_WHATSAPP"&&profile.tokenTypes.length===1&&profile.tokenTypes[0]==="business_integration_system_user";
     const marketingUser=profile.provider==="META_MARKETING"&&profile.tokenTypes.length===1&&profile.tokenTypes[0]==="user",businessUser=profile.provider==="META_BUSINESS";
-    const registeredAssets=(await this.deps.repository.list("assets", initial.principal.tenantId)).filter(a=>a.tenantId===initial.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null),marketingControlUser=marketingUser&&usesRegisteredMarketingAdProof(profile),controlProof=marketingControlUser?marketingControlOAuthProof(registeredAssets,this.now()):undefined;
+    const registeredAssets=(await this.deps.repository.list("assets", initial.principal.tenantId)).filter(a=>a.tenantId===initial.principal.tenantId&&a.clientId===input.clientId&&a.provider===profile.provider&&a.appId===profile.appId&&a.revokedAt===null),existingConnections=(await this.deps.repository.list("connections", initial.principal.tenantId)).filter(c=>c.tenantId===initial.principal.tenantId&&c.operatorId===input.operatorId&&c.provider===profile.provider&&c.appId===profile.appId&&c.revokedAt===null),marketingControlUser=marketingUser&&usesRegisteredMarketingAdProof(profile),controlProof=marketingControlUser?marketingControlOAuthProof(registeredAssets,this.now()):undefined;
     const studyRefs=marketingUser&&profile.capabilities.includes(MARKETING_STUDY_CAPABILITY)?studyProfileRootRefs(profile.studyRootIds):undefined,studyCandidates=studyRefs?registeredAssets.filter(a=>studyRefs.some(ref=>ref.type===a.type&&ref.id===a.id.replace(/^act_/,""))):undefined,studyProof=studyCandidates?studyRegisteredScope(studyCandidates,studyRefs!,this.now()):undefined;
     const invoiceRefs=marketingUser&&profile.capabilities.includes(INVOICE_METADATA_CAPABILITY)?invoiceProfileRootRefs(profile.invoiceRootIds):undefined,invoiceCandidates=invoiceRefs?registeredAssets.filter(a=>invoiceRefs.some(ref=>ref.type===a.type&&ref.id===a.id.replace(/^act_/,''))):undefined,invoiceProof=invoiceCandidates?invoiceRegisteredScope(invoiceCandidates,invoiceRefs!,this.now()):undefined;
     const crmRoots=isCrmOAuthProfile(profile)?crmOAuthRoots(profile,registeredAssets,this.now()):undefined;
     const signalDatasetRoots=isSignalDatasetOAuthProfile(profile)?signalDatasetOAuthRoots(profile,registeredAssets,this.now()):undefined;
     const appPromotionRoots=isAppPromotionOAuthProfile(profile)?appPromotionOAuthRoots(profile,registeredAssets,this.now()):undefined;
     const requestedAssets = crmRoots?crmRoots.map(a=>({type:a.type,id:a.id})):signalDatasetRoots?signalDatasetRoots.map(a=>({type:a.type,id:a.id})):appPromotionRoots?appPromotionRoots.map(a=>({type:a.type,id:a.id})):invoiceProof?[invoiceProof.business,...invoiceProof.accounts].map(a=>({type:a.type,id:a.id})):studyProof?[studyProof.business,studyProof.account,...studyProof.campaigns].map(a=>({type:a.type,id:a.id})):controlProof?controlProof.assets.map(a=>({type:a.type,id:a.id})):registeredAssets.filter(asset => asset.tenantId === initial.principal.tenantId && asset.clientId === input.clientId && asset.provider === profile.provider && asset.appId === profile.appId && asset.revokedAt === null && (!marketingUser||(marketingControlUser?["AD_ACCOUNT","PAGE"].includes(asset.type):asset.type==="AD_ACCOUNT")) && (!businessUser||asset.type==="BUSINESS") && (!marketingPage||["PAGE","AD_ACCOUNT"].includes(asset.type)) && (profile.provider!=="META_INSTAGRAM_FACEBOOK_LOGIN"||["PAGE","INSTAGRAM_ACCOUNT"].includes(asset.type)) && (!whatsappBisu||["WHATSAPP_ACCOUNT","MESSAGING_ACCOUNT","WHATSAPP_PHONE"].includes(asset.type)) && (!asset.parents.length || (profile.provider==="META_INSTAGRAM_FACEBOOK_LOGIN" && asset.type==="INSTAGRAM_ACCOUNT" && asset.parents.length===1 && asset.parents[0].type==="PAGE") || (whatsappBisu&&asset.type==="MESSAGING_ACCOUNT"&&asset.parents.length===1&&asset.parents[0].type==="WHATSAPP_ACCOUNT") || (whatsappBisu&&asset.type==="WHATSAPP_PHONE"&&asset.parents.length===2&&asset.parents.some(p=>p.type==="WHATSAPP_ACCOUNT")&&asset.parents.some(p=>p.type==="MESSAGING_ACCOUNT")))).map(asset => ({ type: asset.type, id: asset.id }));
-    const discoveryMode=PlatformOAuthService.usesDirectReadOnlyScopes(profile)&&requestedAssets.length===0;
+    // Direct Meta read-only authorization is discovery-capable on every start.
+    // This is required for incremental onboarding: an existing connection for
+    // one account must not prevent the operator from discovering another
+    // account that Meta authorizes for the same client. When discovery returns
+    // only already-enrolled roots, the normal reauthorization path below is
+    // retained. Other profiles remain registry-root bound.
+    const discoveryMode=PlatformOAuthService.usesDirectReadOnlyScopes(profile);
     if ((!discoveryMode && !requestedAssets.length) || requestedAssets.length > 98) throw new PlatformDenied("REGISTERED_CLIENT_ROOTS_REQUIRED");
     let inspectedTokens:InspectedOAuthToken[];
     try {
       const appSecret=await this.deps.secrets.get(profile.secretReference);if(!appSecret)throw new Error();
-      const exchange={code:input.code,profile,appSecret,requestedAssets,...(crmRoots?{registeredAssets:structuredClone(crmRoots)}:signalDatasetRoots?{registeredAssets:structuredClone(signalDatasetRoots)}:appPromotionRoots?{registeredAssets:structuredClone(appPromotionRoots)}:invoiceProof?{registeredAssets:structuredClone([invoiceProof.business,...invoiceProof.accounts])}:studyProof?{registeredAssets:structuredClone([studyProof.business,studyProof.account,...studyProof.campaigns])}:controlProof?{registeredAssets:structuredClone(controlProof.assets)}:{}),expectedOperatorId:input.operatorId};
+      const exchange={code:input.code,profile,appSecret,requestedAssets:discoveryMode?[]:requestedAssets,...(crmRoots?{registeredAssets:structuredClone(crmRoots)}:signalDatasetRoots?{registeredAssets:structuredClone(signalDatasetRoots)}:appPromotionRoots?{registeredAssets:structuredClone(appPromotionRoots)}:invoiceProof?{registeredAssets:structuredClone([invoiceProof.business,...invoiceProof.accounts])}:studyProof?{registeredAssets:structuredClone([studyProof.business,studyProof.account,...studyProof.campaigns])}:controlProof?{registeredAssets:structuredClone(controlProof.assets)}:{}),expectedOperatorId:input.operatorId};
       const raw=adapter.exchangeAndInspectMany?await adapter.exchangeAndInspectMany(exchange):[await adapter.exchangeAndInspect(exchange)];
       inspectedTokens=z.array(inspectedTokenSchema).min(1).max(32).parse(raw);
       // Discovery is deliberately proposal-only. A valid provider token and
@@ -246,10 +276,25 @@ export class PlatformOAuthService {
         if(inspectedTokens.length!==1)throw new PlatformDenied("OAUTH_DISCOVERY_TOKEN_COUNT_INVALID");
         const inspected=inspectedTokens[0],now=this.now(),expiresAt=Math.min(now+10*60_000,inspected.expiresAt);
         if(inspected.tokenType!=="user"||inspected.subjectId!==input.operatorId||inspected.provider!=="META_MARKETING"||inspected.assets.length<1||inspected.assets.some(a=>a.type!=="AD_ACCOUNT"))throw new PlatformDenied("OAUTH_DISCOVERY_OPERATOR_OR_ASSET_INVALID");
-        const proposal:OAuthDiscoveryProposal={id:randomUUID(),kind:"OAUTH_ASSET_DISCOVERY",tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,provider:"META_MARKETING",appId:profile.appId,subjectId:inspected.subjectId,grantedScopes:[...inspected.grantedScopes],assets:inspected.assets.map(a=>({type:a.type,id:a.id.replace(/^act_/,"")})),checkedAt:now,expiresAt,consumedAt:null,expected:initial.expected.map(row=>({collection:row.collection as "tenants"|"members"|"clients",id:row.id,canonical:row.canonical})),encryptedInspection:{ciphertext:"",iv:"",tag:""},planHash:""};
+        const enrolledKeys=new Set(registeredAssets.map(asset=>`${asset.type}:${asset.id.replace(/^act_/,"")}`));
+        const proposalAssets=existingConnections.length?inspected.assets.filter(asset=>!enrolledKeys.has(`${asset.type}:${asset.id.replace(/^act_/,"")}`)):inspected.assets;
+        // A direct read-only reauthorization of an already-enrolled asset uses
+        // the ordinary root-bound enrollment validation. Do not create a new
+        // proposal or duplicate its credential when discovery has no new root.
+        if(existingConnections.length && proposalAssets.length===0){
+          // Continue into the common enrollment path below. It will validate
+          // the discovered assets against the exact registered roots.
+        } else {
+          const proposal:OAuthDiscoveryProposal={id:randomUUID(),kind:"OAUTH_ASSET_DISCOVERY",tenantId:initial.principal.tenantId,clientId:input.clientId,operatorId:input.operatorId,profileId:profile.id,provider:"META_MARKETING",appId:profile.appId,subjectId:inspected.subjectId,grantedScopes:[...inspected.grantedScopes],assets:proposalAssets.map(a=>({type:a.type,id:a.id.replace(/^act_/,""),tasks:[...a.tasks],...(a.name?{name:a.name}:{}),...(a.businessId?{businessId:a.businessId}:{}),...(a.businessName?{businessName:a.businessName}:{})})),checkedAt:now,expiresAt,consumedAt:null,expected:initial.expected.map(row=>({collection:row.collection as "tenants"|"members"|"clients",id:row.id,canonical:row.canonical})),encryptedInspection:{ciphertext:"",iv:"",tag:""},planHash:""};
+          if(!proposal.assets.length)throw new PlatformDenied("OAUTH_DISCOVERY_NO_NEW_ASSETS");
         proposal.encryptedInspection=encryptOAuthDiscoveryInspection(proposal,inspected);proposal.planHash=oauthDiscoveryHash(proposal);
         await this.deps.repository.put("discoveryProposals",initial.principal.tenantId,proposal.id,proposal as unknown as import("./repository.js").Records["discoveryProposals"]);
+        if (proposal.assets.length === 1) {
+            const enrolled=await this.enrollDiscoveredAsset(input.operatorId, proposal.id, proposal.assets[0].id);
+            return {...enrolled,connectionIds:[enrolled.connectionId],connectionCount:1};
+        }
         throw new OAuthAssetSelectionRequired(proposal.id,proposal.assets);
+        }
       }
     }catch(error){if(error instanceof PlatformDenied && error.reason==="OAUTH_ASSET_SELECTION_REQUIRED")throw error;logOAuthFailure("provider_exchange",error);throw new PlatformDenied("OAUTH_PROVIDER_EXCHANGE_OR_INSPECTION_FAILED");}
     const enrollments:ConnectionEnrollment[]=[];
