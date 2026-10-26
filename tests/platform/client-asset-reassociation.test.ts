@@ -1,0 +1,29 @@
+import {describe,expect,it} from "vitest";
+import {InMemoryPlatformRepository} from "../../src/platform/repository.js";
+import {assetKey} from "../../src/platform/assets.js";
+import {prepareClientAssetReassociation} from "../../src/platform/client-asset-reassociation.js";
+import type {AssetGrant,Client,Connection,Member,MetaAsset,Tenant} from "../../src/platform/models.js";
+
+const tenantId = "tenant", operatorId = "10228464085301890", oldClientId = "internal", targetClientId = "amazing-decks-seattle", accountId = "1383983957242175", ownerBusinessId = "114286761376026", appId = "1516397820295451", connectionId = "connection", grantId = "grant";
+const capabilities = ["legacy.ads_get_ad_accounts","legacy.ads_get_account_info","legacy.ads_get_campaigns","legacy.ads_get_ad_sets","legacy.ads_get_ads","legacy.ads_get_insights"];
+
+async function fixture(){
+  const repo = new InMemoryPlatformRepository(), now = Date.now(), tenant:Tenant = {id:tenantId,status:"ACTIVE",policyRevision:1,registryRevision:1,migrationState:"READY"};
+  const member:Member = {operatorId,tenantId,roles:["connection_admin","reader"],allowedClientIds:[oldClientId],revision:4,disabledAt:null};
+  const oldClient:Client = {id:oldClientId,tenantId,status:"ACTIVE",revision:1,verifiedBusinessIds:[]};
+  const asset:MetaAsset = {key:"",id:accountId,type:"AD_ACCOUNT",tenantId,clientId:oldClientId,provider:"META_MARKETING",appId,parents:[],verifiedAt:now-1000,revokedAt:null,revision:3,ownerBusinessId}; asset.key=assetKey(asset.provider,asset.appId,asset);
+  const connection:Connection = {id:connectionId,tenantId,operatorId,subjectId:operatorId,metaAppUserId:operatorId,provider:"META_MARKETING",authStrategy:"facebook_business",credentialId:"credential",appId,tokenType:"user",scopes:["public_profile","ads_read"],assetKeys:[asset.key],verifiedAt:now-1000,expiresAt:now+3600000,revokedAt:null,revision:3,eligibility:[{requirement:"marketing_read_access:v26.0",source:"https://developers.facebook.com/docs/marketing-api/",checkedAt:now-1000,expiresAt:now+3599000,verified:true}]};
+  const grant:AssetGrant = {id:grantId,tenantId,clientId:oldClientId,assetKey:asset.key,connectionId,capabilities,actions:["READ"],tasks:[],verifiedAt:now-1000,expiresAt:now+3599000,revokedAt:null,revision:4};
+  await repo.put("tenants",tenantId,tenantId,tenant); await repo.put("operatorIndex","_index",operatorId,{operatorId,tenantId}); await repo.put("members",tenantId,operatorId,member); await repo.put("clients",tenantId,oldClientId,oldClient); await repo.put("assets",tenantId,asset.key,asset); await repo.put("connections",tenantId,connectionId,connection); await repo.put("grants",tenantId,grantId,grant);
+  const commit = prepareClientAssetReassociation({tenant,member,oldClient,asset,connection,grant,targetClientId,providerEvidence:{accountId,ownerBusinessId,appId,provider:"META_MARKETING",checkedAt:now,expiresAt:now+240000,source:"https://developers.facebook.com/docs/marketing-api/"},auditId:"reassoc-audit",planHash:"a".repeat(64)});
+  return {repo,commit,asset,connection,grant,member,tenant,now};
+}
+
+describe("validator-backed client asset reassociation",()=>{
+  it("commits exactly five records atomically and preserves read-only authority",async()=>{const f=await fixture();await f.repo.commitControlPlane(f.commit);expect(await f.repo.get("clients",tenantId,targetClientId)).toMatchObject({status:"ACTIVE",verifiedBusinessIds:[]});expect((await f.repo.get("assets",tenantId,f.asset.key))?.clientId).toBe(targetClientId);expect((await f.repo.get("grants",tenantId,grantId))?.clientId).toBe(targetClientId);expect((await f.repo.get("grants",tenantId,grantId))?.actions).toEqual(["READ"]);expect((await f.repo.get("members",tenantId,operatorId))?.allowedClientIds).toEqual([oldClientId,targetClientId]);expect(await f.repo.get("controlAudit",tenantId,"reassoc-audit")).toBeTruthy();});
+  it("rejects a stale CAS snapshot without partial writes",async()=>{const f=await fixture();await f.repo.put("assets",tenantId,f.asset.key,{...f.asset,revision:f.asset.revision+1});await expect(f.repo.commitControlPlane(f.commit)).rejects.toThrow("CONTROL_AUTHORIZATION_CHANGED");expect(await f.repo.get("clients",tenantId,targetClientId)).toBeNull();expect(await f.repo.get("controlAudit",tenantId,"reassoc-audit")).toBeNull();});
+  it("rejects provider owner mismatch, credential substitution, and write escalation",async()=>{const f=await fixture();const ownerMismatch=structuredClone(f.commit);ownerMismatch.clientAssetReassociationProof!.ownerBusinessId="3550936491744646";await expect(f.repo.commitControlPlane(ownerMismatch)).rejects.toThrow("CLIENT_ASSET_REASSOCIATION_ASSET_SCOPE_INVALID");const credential=structuredClone(f.commit);(credential.writes.find(w=>w.collection==="connections")!.value as Connection).credentialId="other";await expect(f.repo.commitControlPlane(credential)).rejects.toThrow("CLIENT_ASSET_REASSOCIATION_CONNECTION_SCOPE_INVALID");const write=structuredClone(f.commit);(write.writes.find(w=>w.collection==="grants")!.value as AssetGrant).actions=["READ","WRITE_AD_CONFIGURATION"];await expect(f.repo.commitControlPlane(write)).rejects.toThrow("CLIENT_ASSET_REASSOCIATION_GRANT_SCOPE_INVALID");});
+  it("rejects expired proof and cross-tenant mutation",async()=>{const f=await fixture();const expired=structuredClone(f.commit);expired.clientAssetReassociationProof!.expiresAt=expired.clientAssetReassociationProof!.checkedAt;await expect(f.repo.commitControlPlane(expired)).rejects.toThrow("CLIENT_ASSET_REASSOCIATION_PROVIDER_EVIDENCE_INVALID");const foreign=structuredClone(f.commit);foreign.tenantId="foreign";await expect(f.repo.commitControlPlane(foreign)).rejects.toThrow();});
+});
+
+
