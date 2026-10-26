@@ -128,6 +128,29 @@ describe("protected incremental OAuth service", () => {
     expect(await repo.list("connections", "tenant-single")).toHaveLength(1);
   });
 
+  it("reassociates an enrolled account through fresh encrypted discovery with CAS and replay protection", async () => {
+    const marketing: TrustedOAuthProfile = { id: "meta-reassociate", provider: "META_MARKETING", appId: "3006", strategy: "facebook_business", scopes: ["public_profile", "ads_read"], tokenTypes: ["user"], redirectUri: "https://fixture.invalid/platform/oauth/meta-reassociate/callback", authorizeUrl: "https://www.facebook.com/v26.0/dialog/oauth", verified: true, secretReference: "fixture-secret-reference", capabilities: ["legacy.ads_get_ad_accounts","legacy.ads_get_account_info","legacy.ads_get_campaigns","legacy.ads_get_ad_sets","legacy.ads_get_ads","legacy.ads_get_insights"], actions: ["READ"], requiredTasks: [] };
+    const repo = new InMemoryPlatformRepository(), operator = "1006", tenant = "tenant-reassociate", oldClient = "old-client", targetClient = "target-client", account = "101008", key = assetKey("META_MARKETING", marketing.appId, {type:"AD_ACCOUNT",id:account}), business = "114286761376026", now = Date.now();
+    await repo.put("operatorIndex", "_index", operator, {operatorId:operator, tenantId:tenant});
+    await repo.put("tenants", tenant, tenant, {id:tenant,status:"ACTIVE",migrationState:"READY",policyRevision:1,registryRevision:1});
+    await repo.put("members", tenant, operator, {operatorId:operator,tenantId:tenant,roles:["connection_admin"],allowedClientIds:[oldClient,targetClient],revision:2,disabledAt:null});
+    await repo.put("clients", tenant, oldClient, {id:oldClient,tenantId:tenant,status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
+    await repo.put("clients", tenant, targetClient, {id:targetClient,tenantId:tenant,status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
+    await repo.put("assets", tenant, key, {key,id:account,type:"AD_ACCOUNT",tenantId:tenant,clientId:oldClient,provider:"META_MARKETING",appId:marketing.appId,parents:[],ownerBusinessId:business,verifiedAt:now-1000,revokedAt:null,revision:2});
+    await repo.put("connections", tenant, "old-connection", {id:"old-connection",tenantId:tenant,operatorId:operator,subjectId:operator,metaAppUserId:operator,provider:"META_MARKETING",authStrategy:"facebook_business",credentialId:"old-credential",appId:marketing.appId,tokenType:"user",scopes:marketing.scopes,assetKeys:[key],expiresAt:now+3600000,revokedAt:null,verifiedAt:now-1000,revision:2,eligibility:[]});
+    await repo.put("grants", tenant, "old-grant", {id:"old-grant",tenantId:tenant,clientId:oldClient,assetKey:key,connectionId:"old-connection",capabilities:marketing.capabilities,actions:["READ"],tasks:[],verifiedAt:now-1000,expiresAt:now+3599000,revokedAt:null,revision:2});
+    const exchange = vi.fn(async () => ({accessToken:"synthetic-reassociation-token",provider:"META_MARKETING" as const,appId:marketing.appId,subjectId:operator,tokenType:"user" as const,grantedScopes:marketing.scopes,expiresAt:Date.now()+3600000,assets:[{type:"AD_ACCOUNT" as const,id:account,tasks:[],businessId:business}]}));
+    const service = new PlatformOAuthService({repository:repo,challenges:new InMemoryConnectionChallengeStore(),profiles:new ImmutableOAuthProfileRegistry([marketing]),secrets:{get:async()=>"synthetic-private-app-secret"},adapters:{get:()=>({provider:"META_MARKETING" as const,verified:true,validateProfile:()=>{},exchangeAndInspect:exchange})},commitVerifiedConnection:atomicConnectionEnrollment(repo)});
+    const started = await service.start(operator,targetClient,marketing.id);
+    await expect(service.callback({operatorId:operator,clientId:targetClient,profileId:marketing.id,...started,code:"reassociate-code"})).resolves.toMatchObject({assetCount:1,connectionId:"old-connection"});
+    expect((await repo.get("assets",tenant,key))?.clientId).toBe(targetClient);
+    expect((await repo.get("grants",tenant,"old-grant"))?.actions).toEqual(["READ"]);
+    expect((await repo.get("connections",tenant,"old-connection"))?.credentialId).toBe("old-credential");
+    const proposals = await repo.list("discoveryProposals",tenant);
+    expect(proposals).toHaveLength(1);
+    await expect(service.enrollDiscoveredAsset(operator,(proposals[0] as {id:string}).id,account)).rejects.toThrow("OAUTH_DISCOVERY_PROPOSAL_UNAVAILABLE");
+  });
+
   it("performs incremental discovery when an existing connection is already enrolled", async () => {
     const marketing: TrustedOAuthProfile = { id: "meta-incremental-discovery", provider: "META_MARKETING", appId: "3005", strategy: "facebook_business", scopes: ["public_profile", "ads_read"], tokenTypes: ["user"], redirectUri: "https://fixture.invalid/platform/oauth/meta-incremental-discovery/callback", authorizeUrl: "https://www.facebook.com/v26.0/dialog/oauth", verified: true, secretReference: "fixture-secret-reference", capabilities: ["legacy.ads_get_account_info"], actions: ["READ"], requiredTasks: [] };
     const repo = new InMemoryPlatformRepository();
