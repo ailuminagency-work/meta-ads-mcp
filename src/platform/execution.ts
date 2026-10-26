@@ -153,10 +153,10 @@ export async function persistProviderReadEligibility(accountId:string, checkedAt
   const trustedSource=/^https:\/\/(developers\.facebook\.com\/|www\.postman\.com\/meta\/|github\.com\/facebook\/)/;
   const existing=existingRows.find(e=>e.verified&&trustedSource.test(e.source)&&e.checkedAt<=checkedAt&&e.expiresAt>checkedAt);
   if(existing)return;
-  if(existingRows.length)throw new PlatformDenied("UNVERIFIED_MARKETING_READ_ACCESS");
+  if(existingRows.some(e=>e.verified!==true || e.attestationId || !trustedSource.test(e.source) || !Number.isFinite(e.expiresAt) || e.expiresAt>checkedAt))throw new PlatformDenied("UNVERIFIED_MARKETING_READ_ACCESS");
   const expiresAt=Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity);
   if(!Number.isSafeInteger(expiresAt)||expiresAt<=checkedAt)throw new PlatformDenied("PROVIDER_READ_EVIDENCE_EXPIRED");
-  const nextConnection={...state.connection,eligibility:[...(state.connection.eligibility??[]).filter(e=>e.requirement!==requirement),{requirement,source,checkedAt,expiresAt,verified:true}],verifiedAt:checkedAt,revision:state.connection.revision+1};
+  const nextConnection={...state.connection,eligibility:[...(state.connection.eligibility??[]),{requirement,source,checkedAt,expiresAt,verified:true}],verifiedAt:checkedAt,revision:state.connection.revision+1};
   const nextAssets=state.snapshot.assets.map(a=>a.key===target.key?{...a,verifiedAt:checkedAt,revision:a.revision+1}:a);
   const nextGrants=state.snapshot.grants.map(g=>g.assetKey===target.key&&g.connectionId===state.connection.id?{...g,verifiedAt:checkedAt,expiresAt:Math.min(checkedAt+3600000,state.connection.expiresAt??Infinity),revision:g.revision+1}:g);
   const expected=[{collection:"tenants" as const,id:state.snapshot.tenant.id,canonical:canonicalJson(state.snapshot.tenant)},{collection:"members" as const,id:state.snapshot.member.operatorId,canonical:canonicalJson(state.snapshot.member)},{collection:"clients" as const,id:state.snapshot.client.id,canonical:canonicalJson(state.snapshot.client)},{collection:"connections" as const,id:state.connection.id,canonical:canonicalJson(state.connection)},...state.snapshot.assets.map(a=>({collection:"assets" as const,id:a.key,canonical:canonicalJson(a)})),...state.snapshot.grants.map(g=>({collection:"grants" as const,id:g.id,canonical:canonicalJson(g)}))];

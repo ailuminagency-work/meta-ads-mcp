@@ -16,7 +16,7 @@ export interface LegacyReadStep { path: string; query: Record<string,string|numb
 const PROVIDER_READ_PROBE_FIELDS="id,account_id,business{id},account_status";
 function providerReadProbe(scope:ReturnType<typeof getExecutionScope>,method:string,path:string,query:Record<string,string>):boolean {
   if(method!=="GET"||scope.context.provider!=="META_MARKETING"||scope.plan.parameters.provider_read_bootstrap!==true)return false;
-  if(scope.snapshot.connection.eligibility?.some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}`))return false;
+  if(scope.snapshot.connection.eligibility?.some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}` && e.verified===true && Number.isFinite(e.checkedAt) && e.checkedAt>0 && e.checkedAt<=Date.now() && Number.isFinite(e.expiresAt) && e.expiresAt>Date.now()))return false;
   const accountIds=scope.plan.assets.filter(a=>a.type==="AD_ACCOUNT").map(a=>a.id.replace(/^act_/,""));
   if(!accountIds.length||!/^\/act_\d{1,32}$/.test(path)||!accountIds.includes(path.split("/act_")[1]))return false;
   if(scope.context.tool==="ads_get_account_info"||scope.context.tool==="ads_get_ad_accounts")return true;
@@ -158,3 +158,4 @@ export function projectLegacyReadResponse(path:string,urlString:string,body:unkn
   if(page.paging!==undefined){if(!page.paging||typeof page.paging!=="object"||Array.isArray(page.paging))throw new PlatformDenied("LEGACY_PAGING_SCHEMA_INVALID");if(Object.prototype.hasOwnProperty.call(page.paging,"next")){const next=page.paging.next;if(typeof next!=="string"||!next.length||next.length>8192)throw new PlatformDenied("LEGACY_PAGING_SCHEMA_INVALID");let u:URL;try{u=new URL(next);}catch{throw new PlatformDenied("LEGACY_PAGING_SCHEMA_INVALID");}if(u.protocol!=="https:"||u.username||u.password)throw new PlatformDenied("LEGACY_PAGING_SCHEMA_INVALID");}}
   return {data:page.data.map(project),lumin_page:{complete:!page.paging?.next,truncated:!!page.paging?.next,reason:page.paging?.next?"Strict read returns one bounded page; no provider next URL is followed or exposed.":"No next page returned by provider."}};
 }
+

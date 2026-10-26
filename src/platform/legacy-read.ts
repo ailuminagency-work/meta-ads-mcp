@@ -127,10 +127,10 @@ async function executePlan(ctx:OperationContext,input:Record<string,unknown>,bui
   try {
     const result=await runWithExecutionPermit(permit,async()=>{
       const requirement=`marketing_read_access:${resolveMetaApiVersion()}`;
-      if((getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===requirement))assertLegacyMarketingReadEligibility();
+       if((getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===requirement&&e.verified===true&&Number.isFinite(e.checkedAt)&&e.checkedAt>0&&e.checkedAt<=Date.now()&&Number.isFinite(e.expiresAt)&&e.expiresAt>Date.now()))assertLegacyMarketingReadEligibility();
       return withConnectionCredential(permit,async accessToken=>requestContext.run({accessToken,fbUserId:ctx.principal.operatorId},async()=>{
         const output:unknown[]=[];
-        if(built.refs.some(ref=>ref.type==="AD_ACCOUNT")&&!(getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}`)){
+        if(built.refs.some(ref=>ref.type==="AD_ACCOUNT")&&!(getExecutionScope().snapshot.connection.eligibility??[]).some(e=>e.requirement===`marketing_read_access:${resolveMetaApiVersion()}`&&e.verified===true&&Number.isFinite(e.checkedAt)&&e.checkedAt>0&&e.checkedAt<=Date.now()&&Number.isFinite(e.expiresAt)&&e.expiresAt>Date.now())){
           const account=built.refs.find(ref=>ref.type==="AD_ACCOUNT");
           if(!account)throw new PlatformDenied("LEGACY_PROVIDER_READ_PROBE_ACCOUNT_REQUIRED");
           await metaApiClient.get(`/act_${account.id.replace(/^act_/,"")}`,{fields:"id,account_id,business{id},account_status"});
