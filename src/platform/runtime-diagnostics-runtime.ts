@@ -17,7 +17,8 @@ export function environmentRuntimeDiagnosticsRouter(): express.Router {
       res.json(await inspectRuntimeCompatibility(repo,principal));
     } catch(error) {
       const reason=error instanceof PlatformDenied?error.reason:"RUNTIME_DIAGNOSTICS_UNAVAILABLE";
-      res.status(reason==="RUNTIME_DIAGNOSTICS_ADMIN_REQUIRED"?403:503).json({status:"HOLD",reason});
+      const forbidden=reason==="RUNTIME_DIAGNOSTICS_ADMIN_REQUIRED"||reason==="PLATFORM_MEMBERSHIP_REQUIRED";
+      res.status(forbidden?403:503).json({status:"HOLD",reason});
     }
   });
   return router;
