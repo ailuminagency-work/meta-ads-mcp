@@ -20,6 +20,7 @@ import {encryptPageInspectionDelegation,pageInspectionDelegationMetadata,type Pa
 import {facebookActualScopesMatch} from "./oauth-facebook.js";
 import {decryptOAuthDiscoveryInspection,encryptOAuthDiscoveryInspection,oauthDiscoveryHash,type OAuthDiscoveryProposal} from "./oauth-discovery.js";
 import {assetKey} from "./assets.js";
+import {prepareClientAssetReassociation} from "./client-asset-reassociation.js";
 
 export interface TrustedOAuthProfile extends ConnectionProfile {
   appPromotionBinding?:import("./app-promotion-contract.js").AppPromotionBinding;
@@ -214,7 +215,23 @@ export class PlatformOAuthService {
     const inspected=decryptOAuthDiscoveryInspection(raw),selected=raw.assets.find(a=>a.type==="AD_ACCOUNT"&&a.id.replace(/^act_/,"")===assetId);
     if(!selected||inspected.expiresAt<=this.now()||inspected.subjectId!==operatorId||inspected.assets.some(a=>a.type!=="AD_ACCOUNT"))throw new PlatformDenied("OAUTH_DISCOVERY_SELECTION_NOT_AUTHORIZED");
     adapter.validateEnrollmentContext?.({profile,principal,clientId:raw.clientId,client:initial.client,businessOwnerEvidence:initial.businessOwnerEvidence});
-    const now=this.now(),key=assetKey(profile.provider,profile.appId,selected),existing=await this.deps.repository.get("assets",principal.tenantId,key);if(existing)throw new PlatformDenied("OAUTH_DISCOVERY_ASSET_ALREADY_ENROLLED");
+    const now=this.now(),key=assetKey(profile.provider,profile.appId,selected),existing=await this.deps.repository.get("assets",principal.tenantId,key);
+    if(existing){
+      if(existing.clientId===raw.clientId)throw new PlatformDenied("OAUTH_DISCOVERY_ASSET_ALREADY_ENROLLED");
+      if(!selected.businessId||existing.type!=="AD_ACCOUNT"||existing.provider!=="META_MARKETING"||existing.appId!==profile.appId||existing.revokedAt!==null)throw new PlatformDenied("OAUTH_REASSOCIATION_PROVIDER_OWNERSHIP_REQUIRED");
+      const [oldClient,connections,grants]=await Promise.all([
+        this.deps.repository.get("clients",principal.tenantId,existing.clientId),
+        this.deps.repository.list("connections",principal.tenantId),
+        this.deps.repository.list("grants",principal.tenantId),
+      ]);
+      const connectionMatches=connections.filter(c=>c.tenantId===principal.tenantId&&c.provider==="META_MARKETING"&&c.appId===profile.appId&&c.assetKeys.includes(existing.key)&&c.operatorId===operatorId&&c.revokedAt===null);
+      if(!oldClient||connectionMatches.length!==1)throw new PlatformDenied("OAUTH_REASSOCIATION_SOURCE_STATE_INVALID");
+      const connection=connectionMatches[0],grantMatches=grants.filter(g=>g.tenantId===principal.tenantId&&g.clientId===existing.clientId&&g.assetKey===existing.key&&g.connectionId===connection.id&&g.revokedAt===null);
+      if(grantMatches.length!==1||connection.expiresAt===null||connection.expiresAt<=now)throw new PlatformDenied("OAUTH_REASSOCIATION_SOURCE_STATE_INVALID");
+      const commit=prepareClientAssetReassociation({tenant:await this.deps.repository.get("tenants",principal.tenantId,principal.tenantId).then(value=>{if(!value)throw new PlatformDenied("OAUTH_REASSOCIATION_TENANT_REQUIRED");return value;}),member:await this.deps.repository.get("members",principal.tenantId,operatorId).then(value=>{if(!value)throw new PlatformDenied("OAUTH_REASSOCIATION_MEMBER_REQUIRED");return value;}),oldClient,asset:existing,connection,grant:grantMatches[0],targetClient:initial.client,targetClientId:raw.clientId,providerEvidence:{accountId:selected.id.replace(/^act_/,""),ownerBusinessId:selected.businessId,appId:profile.appId,provider:"META_MARKETING",checkedAt:raw.checkedAt,expiresAt:Math.min(raw.expiresAt,connection.expiresAt,raw.checkedAt+300000),source:"https://developers.facebook.com/docs/marketing-api/"},discoveryProposal:raw,auditId:randomUUID(),planHash:raw.planHash,verificationAt:now});
+      await this.deps.repository.commitControlPlane(commit);
+      return {connectionId:connection.id,assetCount:1,provider:profile.provider};
+    }
     const asset:MetaAsset={key,id:selected.id.replace(/^act_/,""),type:"AD_ACCOUNT",tenantId:principal.tenantId,clientId:raw.clientId,provider:"META_MARKETING",appId:profile.appId,parents:[],verifiedAt:raw.checkedAt,revokedAt:null,revision:1,...(selected.businessId?{ownerBusinessId:selected.businessId}: {})};
     const connectionId=randomUUID(),credentialId=randomUUID(),credential=encryptCredential({id:credentialId,tenantId:principal.tenantId,operatorId,provider:profile.provider,appId:profile.appId,keyVersion:"primary"},inspected.accessToken);
     const connection:ConnectionEnrollment["connection"]={id:connectionId,metaAppUserId:inspected.subjectId,tenantId:principal.tenantId,operatorId,provider:profile.provider,authStrategy:profile.strategy,credentialId,appId:profile.appId,tokenType:"user",subjectId:inspected.subjectId,scopes:[...inspected.grantedScopes],assetKeys:[asset.key],expiresAt:inspected.expiresAt,revokedAt:null,verifiedAt:now,revision:1};
