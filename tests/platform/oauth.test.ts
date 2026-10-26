@@ -135,7 +135,7 @@ describe("protected incremental OAuth service", () => {
     await repo.put("tenants", tenant, tenant, {id:tenant,status:"ACTIVE",migrationState:"READY",policyRevision:1,registryRevision:1});
     await repo.put("members", tenant, operator, {operatorId:operator,tenantId:tenant,roles:["connection_admin"],allowedClientIds:[oldClient,targetClient],revision:2,disabledAt:null});
     await repo.put("clients", tenant, oldClient, {id:oldClient,tenantId:tenant,status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
-    await repo.put("clients", tenant, targetClient, {id:targetClient,tenantId:tenant,status:"ACTIVE",revision:1,verifiedBusinessIds:[]});
+    await repo.put("clients", tenant, targetClient, {id:targetClient,tenantId:tenant,status:"ACTIVE",revision:1,verifiedBusinessIds:[business]});
     await repo.put("assets", tenant, key, {key,id:account,type:"AD_ACCOUNT",tenantId:tenant,clientId:oldClient,provider:"META_MARKETING",appId:marketing.appId,parents:[],ownerBusinessId:business,verifiedAt:now-1000,revokedAt:null,revision:2});
     await repo.put("connections", tenant, "old-connection", {id:"old-connection",tenantId:tenant,operatorId:operator,subjectId:operator,metaAppUserId:operator,provider:"META_MARKETING",authStrategy:"facebook_business",credentialId:"old-credential",appId:marketing.appId,tokenType:"user",scopes:marketing.scopes,assetKeys:[key],expiresAt:now+3600000,revokedAt:null,verifiedAt:now-1000,revision:2,eligibility:[]});
     await repo.put("grants", tenant, "old-grant", {id:"old-grant",tenantId:tenant,clientId:oldClient,assetKey:key,connectionId:"old-connection",capabilities:marketing.capabilities,actions:["READ"],tasks:[],verifiedAt:now-1000,expiresAt:now+3599000,revokedAt:null,revision:2});
