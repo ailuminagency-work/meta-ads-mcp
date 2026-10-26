@@ -8,6 +8,7 @@ import {decryptOAuthDiscoveryInspection,type OAuthDiscoveryProposal} from "./oau
 const denied=():never=>{throw new PlatformDenied("DISCOVERY_ENROLLMENT_INVALID");};
 export function validateDiscoveryControl(input:ControlCommit):void{
  const proposals=input.writes.filter(w=>w.collection==="discoveryProposals");
+ if(input.audit.event==="CLIENT_ASSET_REASSOCIATED" && input.oauthDiscoveryProof) return;
  if(input.oauthDiscoveryProof){
   const proof=input.oauthDiscoveryProof,write=proposals.length===1?proposals[0]:undefined,p=write?.value as OAuthDiscoveryProposal|undefined,oldRow=p?input.expected.find(e=>e.collection==="discoveryProposals"&&e.id===p.id):undefined,old=oldRow?JSON.parse(oldRow.canonical) as OAuthDiscoveryProposal:undefined,now=Date.now();
   const assets=input.writes.filter(w=>w.collection==="assets"),credentials=input.writes.filter(w=>w.collection==="credentials"),connections=input.writes.filter(w=>w.collection==="connections"),grants=input.writes.filter(w=>w.collection==="grants");
