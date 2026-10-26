@@ -1,11 +1,14 @@
-import {describe,expect,it} from "vitest";
+import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
 import {InMemoryPlatformRepository} from "../../src/platform/repository.js";
 import {assetKey} from "../../src/platform/assets.js";
 import {prepareClientAssetReassociation} from "../../src/platform/client-asset-reassociation.js";
+import {encryptOAuthDiscoveryInspection,oauthDiscoveryHash,type OAuthDiscoveryProposal} from "../../src/platform/oauth-discovery.js";
 import type {AssetGrant,Client,Connection,Member,MetaAsset,Tenant} from "../../src/platform/models.js";
 
 const tenantId = "tenant", operatorId = "10228464085301890", oldClientId = "internal", targetClientId = "amazing-decks-seattle", accountId = "1383983957242175", ownerBusinessId = "114286761376026", appId = "1516397820295451", connectionId = "connection", grantId = "grant";
 const capabilities = ["legacy.ads_get_ad_accounts","legacy.ads_get_account_info","legacy.ads_get_campaigns","legacy.ads_get_ad_sets","legacy.ads_get_ads","legacy.ads_get_insights"];
+beforeEach(()=>vi.stubEnv("TOKEN_ENCRYPTION_KEY",Buffer.alloc(32,3).toString("hex")));
+afterEach(()=>vi.unstubAllEnvs());
 
 async function fixture(){
   const repo = new InMemoryPlatformRepository(), now = Date.now(), tenant:Tenant = {id:tenantId,status:"ACTIVE",policyRevision:1,registryRevision:1,migrationState:"READY"};
@@ -19,7 +22,15 @@ async function fixture(){
   return {repo,asset,connection,grant,member,oldClient,targetClient,tenant,now};
 }
 
+async function trustedCommit(f:Awaited<ReturnType<typeof fixture>>){
+  const proposal:OAuthDiscoveryProposal={id:"proposal",kind:"OAUTH_ASSET_DISCOVERY",tenantId,clientId:targetClientId,operatorId,profileId:"meta",provider:"META_MARKETING",appId,subjectId:operatorId,grantedScopes:["public_profile","ads_read"],assets:[{type:"AD_ACCOUNT",id:accountId,tasks:[],businessId:ownerBusinessId}],checkedAt:f.now,expiresAt:f.now+240000,consumedAt:null,expected:[{collection:"tenants",id:tenantId,canonical:JSON.stringify(f.tenant)}, {collection:"members",id:operatorId,canonical:JSON.stringify(f.member)}, {collection:"clients",id:oldClientId,canonical:JSON.stringify(f.oldClient)}, {collection:"clients",id:targetClientId,canonical:JSON.stringify(f.targetClient)}],encryptedInspection:{ciphertext:"",iv:"",tag:""},planHash:""};
+  proposal.encryptedInspection=encryptOAuthDiscoveryInspection(proposal,{accessToken:"synthetic",provider:"META_MARKETING",appId,subjectId:operatorId,tokenType:"user",grantedScopes:["public_profile","ads_read"],expiresAt:f.now+240000,assets:[{type:"AD_ACCOUNT",id:accountId,tasks:[],businessId:ownerBusinessId}]}); proposal.planHash=oauthDiscoveryHash(proposal); await f.repo.put("discoveryProposals",tenantId,proposal.id,proposal as never);
+  return prepareClientAssetReassociation({tenant:f.tenant,member:f.member,oldClient:f.oldClient,asset:f.asset,connection:f.connection,grant:f.grant,targetClientId,targetClient:f.targetClient,discoveryProposal:proposal,providerEvidence:{accountId,ownerBusinessId,appId,provider:"META_MARKETING",checkedAt:f.now,expiresAt:f.now+240000,source:"https://developers.facebook.com/docs/marketing-api/"},auditId:"reassoc-audit",planHash:proposal.planHash});
+}
+
 describe("validator-backed client asset reassociation",()=>{
   it("rejects the legacy proof-only control path",async()=>{const f=await fixture();expect(()=>prepareClientAssetReassociation({tenant:f.tenant,member:f.member,oldClient:f.oldClient,asset:f.asset,connection:f.connection,grant:f.grant,targetClientId,targetClient:f.targetClient,providerEvidence:{accountId,ownerBusinessId,appId,provider:"META_MARKETING",checkedAt:f.now,expiresAt:f.now+240000,source:"https://developers.facebook.com/docs/marketing-api/"},auditId:"reassoc-audit",planHash:"a".repeat(64)})).toThrow("CLIENT_ASSET_REASSOCIATION_EXACT_SCOPE_REQUIRED");});
   it("does not mutate source records when trusted discovery proof is absent",async()=>{const f=await fixture();expect(await f.repo.get("assets",tenantId,f.asset.key)).toMatchObject({clientId:oldClientId});expect(await f.repo.get("grants",tenantId,grantId)).toMatchObject({clientId:oldClientId,actions:["READ"]});});
+  it("accepts encrypted provider proof only for the exact account and business",async()=>{const f=await fixture(),commit=await trustedCommit(f);await f.repo.commitControlPlane(commit);expect((await f.repo.get("assets",tenantId,f.asset.key))?.clientId).toBe(targetClientId);const wrong=await fixture(),wrongAccount=await trustedCommit(wrong);wrongAccount.clientAssetReassociationProof!.accountId="999999";expect(()=>JSON.stringify(wrongAccount)).not.toThrow();await expect(wrong.repo.commitControlPlane(wrongAccount)).rejects.toThrow("CLIENT_ASSET_REASSOCIATION_DISCOVERY_PROOF_INVALID");});
+  it("rejects wrong business, expired evidence, stale CAS, replay, and source-client substitution",async()=>{const wrongBusiness=await fixture(),wrongBusinessCommit=await trustedCommit(wrongBusiness);wrongBusinessCommit.clientAssetReassociationProof!.ownerBusinessId="3550936491744646";await expect(wrongBusiness.repo.commitControlPlane(wrongBusinessCommit)).rejects.toThrow("CLIENT_ASSET_REASSOCIATION_DISCOVERY_PROOF_INVALID");const expired=await fixture(),expiredCommit=await trustedCommit(expired);expiredCommit.clientAssetReassociationProof!.expiresAt=expired.now;await expect(expired.repo.commitControlPlane(expiredCommit)).rejects.toThrow("CLIENT_ASSET_REASSOCIATION_PROVIDER_EVIDENCE_INVALID");const stale=await fixture(),staleCommit=await trustedCommit(stale);await stale.repo.put("assets",tenantId,stale.asset.key,{...stale.asset,revision:stale.asset.revision+1});await expect(stale.repo.commitControlPlane(staleCommit)).rejects.toThrow("CONTROL_AUTHORIZATION_CHANGED");const replay=await fixture(),replayCommit=await trustedCommit(replay);await replay.repo.commitControlPlane(replayCommit);await expect(replay.repo.commitControlPlane(replayCommit)).rejects.toThrow("CONTROL_AUTHORIZATION_CHANGED");const source=await fixture(),sourceCommit=await trustedCommit(source),memberRow=sourceCommit.expected.find(row=>row.collection==="members")!;memberRow.canonical=JSON.stringify({...source.member,allowedClientIds:[targetClientId]});await expect(source.repo.commitControlPlane(sourceCommit)).rejects.toThrow("CLIENT_ASSET_REASSOCIATION_CLIENT_SCOPE_INVALID");});
 });
