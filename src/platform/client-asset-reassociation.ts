@@ -59,7 +59,7 @@ export function validateClientAssetReassociationControl(input: ControlCommit): v
   const hasProposal = typeof proposalId === "string";
   const baseWrites = hasProposal ? input.writes.length - 1 : input.writes.length;
   const baseExpected = hasProposal ? input.expected.length - 1 : input.expected.length;
-  if (!proof || ![3,5].includes(baseWrites) || baseExpected !== 7 || !exactKeys(input.writes) || !exactKeys(input.expected)) {
+  if (!proof || !hasProposal || !proof.proposalPlanHash || ![3,5].includes(baseWrites) || baseExpected !== 7 || !exactKeys(input.writes) || !exactKeys(input.expected)) {
     throw new PlatformDenied("CLIENT_ASSET_REASSOCIATION_EXACT_SCOPE_REQUIRED");
   }
   const rows = new Map(input.writes.map(row => [row.collection, row]));
@@ -102,6 +102,7 @@ export function validateClientAssetReassociationControl(input: ControlCommit): v
   } else {
     if (clientWrite || memberWrite || client.id !== input.audit.clientId || client.tenantId !== input.tenantId || client.status !== "ACTIVE" || !oldMember.allowedClientIds.includes(client.id)) throw new PlatformDenied("CLIENT_ASSET_REASSOCIATION_CLIENT_SCOPE_INVALID");
   }
+  if (!oldMember.allowedClientIds.includes(oldClient.id) || !client.verifiedBusinessIds.includes(proof.ownerBusinessId)) throw new PlatformDenied("CLIENT_ASSET_REASSOCIATION_CLIENT_SCOPE_INVALID");
   if (oldClient.id !== oldClientId || oldClient.tenantId !== input.tenantId || oldClient.status !== "ACTIVE" || oldAsset.clientId !== oldClient.id || oldGrant.clientId !== oldClient.id) throw new PlatformDenied("CLIENT_ASSET_REASSOCIATION_OLD_CLIENT_INVALID");
   if (assetWrite.id !== oldAsset.key || assetWrite.createOnly || asset.tenantId !== input.tenantId || asset.clientId !== client.id || asset.id !== proof.accountId || asset.type !== "AD_ACCOUNT" || asset.provider !== "META_MARKETING" || asset.appId !== proof.appId || asset.ownerBusinessId !== proof.ownerBusinessId || asset.revokedAt !== null || asset.billingOwnershipVerified === true || asset.ownerBillingAttestationId !== undefined || asset.ownershipObservationId !== undefined || asset.key !== assetKey(asset.provider,asset.appId,asset) || asset.revision !== oldAsset.revision + 1 || asset.verifiedAt !== now || canonicalJson(stableAsset(asset)) !== canonicalJson(stableAsset(oldAsset))) throw new PlatformDenied("CLIENT_ASSET_REASSOCIATION_ASSET_SCOPE_INVALID");
   if (connectionWrite.id !== oldConnection.id || connectionWrite.createOnly || connection.tenantId !== input.tenantId || connection.provider !== "META_MARKETING" || connection.appId !== proof.appId || connection.operatorId !== input.audit.actorId || connection.metaAppUserId !== input.audit.actorId || connection.subjectId !== oldConnection.subjectId || connection.credentialId !== oldConnection.credentialId || connection.revokedAt !== null || connection.revision !== oldConnection.revision + 1 || connection.verifiedAt !== now || connection.expiresAt === null || connection.expiresAt <= now || canonicalJson(stableConnection(connection)) !== canonicalJson(stableConnection(oldConnection)) || connection.assetKeys.length !== oldConnection.assetKeys.length || connection.assetKeys.some((key,index) => key !== oldConnection.assetKeys[index])) throw new PlatformDenied("CLIENT_ASSET_REASSOCIATION_CONNECTION_SCOPE_INVALID");
