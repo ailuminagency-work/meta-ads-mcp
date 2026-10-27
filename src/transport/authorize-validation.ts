@@ -6,7 +6,7 @@ export type AuthorizeValidationResult =
   | { ok: false; kind: "no-params"; status: 400; message: string }
   | {
       ok: false;
-      kind: "missing-field" | "unknown-client" | "redirect-mismatch" | "malformed-redirect";
+      kind: "missing-field" | "unknown-client" | "redirect-mismatch" | "malformed-redirect" | "repeated-parameter";
       status: number;
       message: string;
     };
@@ -42,6 +42,16 @@ export async function validateAuthorizeQuery(
     clientId: string,
   ) => Promise<OAuthClientInformationFull | undefined>,
 ): Promise<AuthorizeValidationResult> {
+  // A parameter given twice parses to an array. Which copy each part of the
+  // server reads would differ, so none is accepted.
+  if (Object.values(query).some((value) => typeof value !== "string")) {
+    return {
+      ok: false,
+      kind: "repeated-parameter",
+      status: 400,
+      message: "Each request parameter may appear only once.",
+    };
+  }
   const clientId = single(query.client_id);
   const redirectUri = single(query.redirect_uri);
 

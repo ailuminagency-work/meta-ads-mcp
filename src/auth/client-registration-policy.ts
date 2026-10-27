@@ -28,6 +28,15 @@ const MAX_REDIRECT_URI_LENGTH = 2048;
 const HOSTNAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 const FORBIDDEN_CHARACTERS = /[\s\x00-\x1f\x7f\\*#]/;
 
+export const MAX_CLIENT_NAME_LENGTH = 100;
+
+/** The name is shown on the consent page and logged, and anyone can register one: keep it short. */
+export function boundedClientName(name: string | undefined): string | undefined {
+  if (typeof name !== "string") return name;
+  const characters = Array.from(name);
+  return characters.length > MAX_CLIENT_NAME_LENGTH ? characters.slice(0, MAX_CLIENT_NAME_LENGTH).join("") : name;
+}
+
 export type RedirectUriVerdict = { ok: true } | { ok: false; reason: string };
 
 let cachedExtraHostsSource: string | undefined;

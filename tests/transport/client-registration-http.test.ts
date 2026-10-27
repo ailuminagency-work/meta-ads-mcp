@@ -192,6 +192,21 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
     },
   );
 
+  it("registers a client with a very long name under a bounded name", async () => {
+    const response = await fetch(`${harness.origin}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "N".repeat(90_000),
+        redirect_uris: ["http://127.0.0.1:38123/cb"],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    expect(response.status).toBe(201);
+    const registered = (await response.json()) as OAuthClientInformationFull;
+    expect(Array.from(registered.client_name ?? "")).toHaveLength(100);
+  });
+
   it("accepts a ChatGPT-style registration only for hosts the operator allowlisted", async () => {
     const hosted = ["https://tools.agency.example/oauth/callback"];
     expect((await register(harness.origin, hosted)).status).toBe(400);

@@ -123,3 +123,37 @@ describe("clients registered before the policy existed", () => {
     expect(await store.getClient("temporary")).toBeUndefined();
   });
 });
+
+describe.each(stores)("%s client name", (_name, create) => {
+  it("keeps a long client name to 100 characters, stored and returned", async () => {
+    const store = create();
+    const submitted = { ...client("long-name", ["http://127.0.0.1:38123/cb"]), client_name: "N".repeat(90_000) };
+
+    const registered = await store.registerClient!(submitted);
+
+    expect(Array.from(registered.client_name ?? "")).toHaveLength(100);
+    expect(Array.from((await store.getClient("long-name"))?.client_name ?? "")).toHaveLength(100);
+    expect(submitted.client_name).toHaveLength(90_000);
+  });
+
+  it("does not split a character when it cuts", async () => {
+    const store = create();
+    const registered = await store.registerClient!({
+      ...client("emoji-name", ["http://127.0.0.1:38123/cb"]),
+      client_name: "\u{1F600}".repeat(150),
+    });
+
+    expect(Array.from(registered.client_name ?? "")).toHaveLength(100);
+    expect(registered.client_name).not.toMatch(/[\ud800-\udbff]$/);
+  });
+
+  it("leaves a short or missing name alone", async () => {
+    const store = create();
+    expect((await store.registerClient!(client("short-name", ["http://127.0.0.1:38123/cb"]))).client_name).toBe(
+      "Synthetic client",
+    );
+    const nameless = { ...client("no-name", ["http://127.0.0.1:38123/cb"]) } as Partial<OAuthClientInformationFull>;
+    delete nameless.client_name;
+    expect((await store.registerClient!(nameless as OAuthClientInformationFull)).client_name).toBeUndefined();
+  });
+});

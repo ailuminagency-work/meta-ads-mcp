@@ -5,6 +5,7 @@ import { clientExpireTime, clientNeedsExtension, withoutExpireTime } from "./ret
 import { logger } from "../utils/logger.js";
 import {
   assertRegistrableRedirectUris,
+  boundedClientName,
   checkRedirectUris,
 } from "../auth/client-registration-policy.js";
 
@@ -24,6 +25,11 @@ function usableClient(
     "Ignoring OAuth client whose redirect URIs violate the registration policy",
   );
   return undefined;
+}
+
+function withBoundedName(client: OAuthClientInformationFull): OAuthClientInformationFull {
+  const name = boundedClientName(client.client_name);
+  return name === client.client_name ? client : { ...client, client_name: name };
 }
 
 /**
@@ -64,9 +70,10 @@ export class FirestoreClientsStore implements OAuthRegisteredClientsStore {
   }
 
   async registerClient(
-    client: OAuthClientInformationFull,
+    submitted: OAuthClientInformationFull,
   ): Promise<OAuthClientInformationFull> {
-    assertRegistrableRedirectUris(client.redirect_uris);
+    assertRegistrableRedirectUris(submitted.redirect_uris);
+    const client = withBoundedName(submitted);
     const stored: StoredClient = {
       ...client,
       registered_at: Math.floor(Date.now() / 1000),
@@ -92,9 +99,10 @@ export class InMemoryClientsStore implements OAuthRegisteredClientsStore {
   }
 
   async registerClient(
-    client: OAuthClientInformationFull,
+    submitted: OAuthClientInformationFull,
   ): Promise<OAuthClientInformationFull> {
-    assertRegistrableRedirectUris(client.redirect_uris);
+    assertRegistrableRedirectUris(submitted.redirect_uris);
+    const client = withBoundedName(submitted);
     if (
       this.clients.size >= InMemoryClientsStore.MAX &&
       !this.clients.has(client.client_id)
