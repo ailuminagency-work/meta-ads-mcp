@@ -7,6 +7,8 @@ export const VIDEO_TMP_PREFIX = "meta-ads-video-";
 
 const DEFAULT_MAX_CONCURRENT = 2;
 const DEFAULT_MAX_QUEUED = 8;
+// One tenant may wait for at most this many places, so a burst from one account cannot take the whole queue.
+const DEFAULT_MAX_QUEUED_PER_TENANT = 2;
 const DEFAULT_QUEUE_WAIT_MS = 20_000;
 // Cloud Run caps a request at 300 s; leave headroom to serialise the response.
 const DEFAULT_BUDGET_MS = 240_000;
@@ -17,6 +19,13 @@ export class VideoJobBusyError extends Error {
   constructor(message = "The server is busy processing other videos; retry in a few seconds.") {
     super(message);
     this.name = "VideoJobBusyError";
+  }
+}
+
+export class VideoJobTenantQueueFullError extends VideoJobBusyError {
+  constructor(limit: number) {
+    super(`This user already has ${limit} videos waiting for a free slot; retry when one has finished.`);
+    this.name = "VideoJobTenantQueueFullError";
   }
 }
 
@@ -45,6 +54,7 @@ export interface VideoJobContext {
 export interface VideoJobRunnerConfig {
   maxConcurrent?: number;
   maxQueued?: number;
+  maxQueuedPerTenant?: number;
   queueWaitMs?: number;
   budgetMs?: number;
   perTenantPerHour?: number;
@@ -65,6 +75,7 @@ export class VideoJobAbortedError extends Error {
 }
 
 interface Waiter {
+  tenantId: string;
   resolve: () => void;
   reject: (err: Error) => void;
   cancel: () => void;
@@ -73,6 +84,7 @@ interface Waiter {
 export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJobRunner {
   const maxConcurrent = config.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
   const maxQueued = config.maxQueued ?? DEFAULT_MAX_QUEUED;
+  const maxQueuedPerTenant = config.maxQueuedPerTenant ?? DEFAULT_MAX_QUEUED_PER_TENANT;
   const queueWaitMs = config.queueWaitMs ?? DEFAULT_QUEUE_WAIT_MS;
   const budgetMs = config.budgetMs ?? DEFAULT_BUDGET_MS;
   const perTenantPerHour = config.perTenantPerHour ?? DEFAULT_PER_TENANT_PER_HOUR;
@@ -88,11 +100,14 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
     if (idx >= 0) waiters.splice(idx, 1);
   };
 
-  const acquire = (signal: AbortSignal | undefined): Promise<void> => {
+  const acquire = (tenantId: string, signal: AbortSignal | undefined): Promise<void> => {
     if (signal?.aborted) return Promise.reject(new VideoJobAbortedError());
     if (running < maxConcurrent) {
       running += 1;
       return Promise.resolve();
+    }
+    if (waiters.filter((w) => w.tenantId === tenantId).length >= maxQueuedPerTenant) {
+      return Promise.reject(new VideoJobTenantQueueFullError(maxQueuedPerTenant));
     }
     if (waiters.length >= maxQueued) {
       return Promise.reject(new VideoJobBusyError());
@@ -101,6 +116,7 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
       const timer = setTimeout(() => waiter.cancel(new VideoJobBusyError()), queueWaitMs);
       const onAbort = () => waiter.cancel(new VideoJobAbortedError());
       const waiter: Waiter & { cancel: (err?: Error) => void } = {
+        tenantId,
         resolve: () => {
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
@@ -159,7 +175,7 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
     async run(request, job) {
       if (request.signal?.aborted) throw new VideoJobAbortedError();
       assertTenantRate(request.tenantId);
-      await acquire(request.signal);
+      await acquire(request.tenantId, request.signal);
 
       const controller = new AbortController();
       const start = now();
