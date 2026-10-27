@@ -153,7 +153,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     }
 
     logger.info(
-      { clientId: client.client_id, subject: hashPii(pending?.fbUserId) },
+      { clientId: client.client_id, fbUserId: hashPii(pending?.fbUserId) },
       "Authorization code issued",
     );
     res.redirect(302, redirectUrl.toString());
@@ -309,7 +309,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if (subject && !(await this.isSubjectAuthorized(subject))) {
       await this.refreshJtiStoreImpl.consume(jti);
       logger.warn(
-        { clientId: client.client_id, subject: hashPii(subject) },
+        { clientId: client.client_id, fbUserId: hashPii(subject) },
         "Refresh refused: the account is no longer authorized",
       );
       throw new InvalidGrantError(REVOKED_MESSAGE);
@@ -359,7 +359,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       // owns it.
       await this.revokeFamily(familyId, clientId);
       logger.warn(
-        { clientId, subject: hashPii(subject), family: hashPii(familyId) },
+        { clientId, fbUserId: hashPii(subject), family: hashPii(familyId) },
         "Rotated refresh token was presented again; its token chain has been revoked",
       );
     } catch (error) {
@@ -375,7 +375,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       const user = await getUser(fbUserId);
       return isAllowed({ email: user?.email ?? null, fbUserId });
     } catch (error) {
-      logger.error({ err: error, subject: hashPii(fbUserId) }, "Could not re-check the account allowlist");
+      logger.error({ err: error, fbUserId: hashPii(fbUserId) }, "Could not re-check the account allowlist");
       throw new ServerError("Unable to confirm that the account is still authorized");
     }
   }
@@ -506,7 +506,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     });
 
     logger.info(
-      { clientId: input.clientId, subject: hashPii(input.fbUserId) },
+      { clientId: input.clientId, fbUserId: hashPii(input.fbUserId) },
       "Tokens issued",
     );
 

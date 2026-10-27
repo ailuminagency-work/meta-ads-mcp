@@ -331,7 +331,7 @@ async function sessionStillAllowed(
 ): Promise<boolean> {
   if (isAllowed({ email: session.email, fbUserId: session.fbUserId })) return true;
   await clearSession(req, res);
-  logger.warn({ subject: hashPii(session.fbUserId) }, "Rejected /authorize: account is no longer allowed");
+  logger.warn({ fbUserId: hashPii(session.fbUserId) }, "Rejected /authorize: account is no longer allowed");
   res.setHeader("Cache-Control", "no-store");
   res.status(403).type("html").send(
     "<h1>Access denied</h1><p>This Meta account is not allowed to use this server. Contact the administrator.</p>",
@@ -471,10 +471,11 @@ export function buildMetaTokenMiddleware(
         );
         return;
       } catch (err) {
+        const hashedId = hashPii(fbUserId) ?? "";
         logger.warn(
           {
-            subject: hashPii(fbUserId),
-            error: err instanceof Error ? err.message : String(err),
+            fbUserId: hashedId,
+            error: (err instanceof Error ? err.message : String(err)).split(fbUserId).join(hashedId),
           },
           "Failed to resolve user Meta token",
         );
