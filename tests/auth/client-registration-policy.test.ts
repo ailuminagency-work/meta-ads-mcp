@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  allowedAppHosts,
   allowedRedirectHosts,
   assertRegistrableRedirectUris,
   checkRedirectUri,
@@ -74,6 +75,72 @@ describe("client registration redirect policy: legitimate clients", () => {
       "*.example.com,https://scheme.example,host.example:8443,192.0.2.7,path.example/x,,ok.example",
     );
     expect(allowedRedirectHosts()).toEqual(["claude.ai", "claude.com", "ok.example"]);
+  });
+});
+
+describe("client registration redirect policy: custom-scheme application hosts (G1R-07)", () => {
+  // UNVERIFIED against the real clients: these are the hosts the earlier tests assumed.
+  it("lists the built-in application hosts per scheme", () => {
+    expect(allowedAppHosts("cursor")).toEqual(["anysphere.cursor-retrieval", "anysphere.cursor-mcp"]);
+    expect(allowedAppHosts("vscode")).toEqual(["vscode.github-authentication"]);
+    expect(allowedAppHosts("vscode-insiders")).toEqual(["vscode.github-authentication"]);
+    expect(allowedAppHosts("myapp")).toEqual([]);
+  });
+
+  it.each([
+    ["an application host nobody listed, on vscode", "vscode://attacker.publisher/cb"],
+    ["an application host nobody listed, on cursor", "cursor://attacker.publisher/cb"],
+    ["an application host nobody listed, on vscode-insiders", "vscode-insiders://attacker.publisher/cb"],
+    ["a vscode host on the cursor scheme", "cursor://vscode.github-authentication/oauth/callback"],
+    ["a cursor host on the vscode scheme", "vscode://anysphere.cursor-retrieval/oauth/callback"],
+    ["a listed host with a port", "cursor://anysphere.cursor-retrieval:8080/oauth/callback"],
+    ["a listed host as a prefix of another", "cursor://anysphere.cursor-retrieval.evil.example/oauth/callback"],
+    ["a listed host as a suffix of another", "cursor://evil.anysphere.cursor-retrieval/oauth/callback"],
+    ["a listed host in upper case", "cursor://ANYSPHERE.cursor-retrieval/oauth/callback"],
+    ["no application host", "cursor:///oauth/callback"],
+    ["no authority", "cursor:oauth/callback"],
+    ["user information", "cursor://evil@anysphere.cursor-retrieval/oauth/callback"],
+  ])("refuses %s", (_label, uri) => {
+    expect(checkRedirectUri(uri).ok, uri).toBe(false);
+  });
+
+  it("accepts any path and query on a listed host", () => {
+    for (const uri of [
+      "cursor://anysphere.cursor-retrieval/oauth/user-lumin/callback",
+      "cursor://anysphere.cursor-mcp/oauth/callback?x=1",
+      "vscode://vscode.github-authentication/did-authenticate",
+      "vscode-insiders://vscode.github-authentication/did-authenticate",
+    ]) {
+      expect(checkRedirectUri(uri), uri).toEqual({ ok: true });
+    }
+  });
+
+  it("adds hosts from OAUTH_EXTRA_ALLOWED_APP_HOSTS for the three custom schemes only", () => {
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_APP_HOSTS", "ms-vscode.mcp-helper, Other.Publisher-ext");
+    expect(allowedAppHosts("vscode")).toEqual(["vscode.github-authentication", "ms-vscode.mcp-helper", "other.publisher-ext"]);
+    expect(checkRedirectUri("vscode://ms-vscode.mcp-helper/callback")).toEqual({ ok: true });
+    expect(checkRedirectUri("vscode-insiders://other.publisher-ext/callback")).toEqual({ ok: true });
+    expect(checkRedirectUri("cursor://ms-vscode.mcp-helper/callback")).toEqual({ ok: true });
+    expect(checkRedirectUri("vscode://attacker.publisher/callback").ok).toBe(false);
+    expect(checkRedirectUri("myapp://ms-vscode.mcp-helper/callback").ok).toBe(false);
+  });
+
+  it("ignores operator entries that are not plain application host names", () => {
+    vi.stubEnv(
+      "OAUTH_EXTRA_ALLOWED_APP_HOSTS",
+      "*,a/b,host:80,vscode://x.y,..,-bad,bad-,with space,,fine.ext",
+    );
+    expect(allowedAppHosts("vscode")).toEqual(["vscode.github-authentication", "fine.ext"]);
+  });
+
+  it("does not let the redirect-host variable open a custom scheme host", () => {
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "attacker.publisher");
+    expect(checkRedirectUri("vscode://attacker.publisher/cb").ok).toBe(false);
+  });
+
+  it("keeps loopback open on any port and path", () => {
+    expect(checkRedirectUri("http://127.0.0.1:65535/any/path?x=1")).toEqual({ ok: true });
+    expect(checkRedirectUri("http://localhost:1/cb")).toEqual({ ok: true });
   });
 });
 

@@ -22,6 +22,17 @@ const PINNED_REDIRECT_PATHS: Readonly<Record<string, string>> = {
   "claude.com": "/api/mcp/auth_callback",
 };
 const ALLOWED_CUSTOM_SCHEMES: readonly string[] = ["cursor", "vscode", "vscode-insiders"];
+// The application a custom-scheme redirect is delivered to is its host
+// ("cursor://<host>/..."). Any application registered for the scheme on the
+// operator's machine can claim a host, so only these are accepted by default.
+// UNVERIFIED against the real clients: they are the hosts this project's tests
+// assumed. Add others with OAUTH_EXTRA_ALLOWED_APP_HOSTS.
+const DEFAULT_APP_HOSTS: Readonly<Record<string, readonly string[]>> = {
+  cursor: ["anysphere.cursor-retrieval", "anysphere.cursor-mcp"],
+  vscode: ["vscode.github-authentication"],
+  "vscode-insiders": ["vscode.github-authentication"],
+};
+const APP_HOST_PATTERN = /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/;
 const LOOPBACK_HOSTNAMES: readonly string[] = ["127.0.0.1", "localhost", "[::1]"];
 const MAX_REDIRECT_URIS = 10;
 const MAX_REDIRECT_URI_LENGTH = 2048;
@@ -61,6 +72,35 @@ function extraRedirectHosts(env: NodeJS.ProcessEnv): string[] {
   cachedExtraHostsSource = source;
   cachedExtraHosts = hosts;
   return hosts;
+}
+
+let cachedExtraAppHostsSource: string | undefined;
+let cachedExtraAppHosts: string[] = [];
+
+function extraAppHosts(env: NodeJS.ProcessEnv): string[] {
+  const source = env.OAUTH_EXTRA_ALLOWED_APP_HOSTS ?? "";
+  if (source === cachedExtraAppHostsSource) return cachedExtraAppHosts;
+  const hosts: string[] = [];
+  for (const entry of source.split(",")) {
+    const host = entry.trim().toLowerCase();
+    if (!host) continue;
+    if (!APP_HOST_PATTERN.test(host)) {
+      logger.warn(
+        { entryLength: host.length },
+        "Ignoring OAUTH_EXTRA_ALLOWED_APP_HOSTS entry: only plain application host names are accepted",
+      );
+      continue;
+    }
+    hosts.push(host);
+  }
+  cachedExtraAppHostsSource = source;
+  cachedExtraAppHosts = hosts;
+  return hosts;
+}
+
+export function allowedAppHosts(scheme: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  if (!ALLOWED_CUSTOM_SCHEMES.includes(scheme)) return [];
+  return [...(DEFAULT_APP_HOSTS[scheme] ?? []), ...extraAppHosts(env)];
 }
 
 export function allowedRedirectHosts(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -142,8 +182,12 @@ export function checkRedirectUri(
   if (!ALLOWED_CUSTOM_SCHEMES.includes(scheme)) {
     return { ok: false, reason: "scheme is not allowed" };
   }
-  if (!uri.toLowerCase().startsWith(`${scheme}://`) || !url.hostname) {
+  if (!uri.toLowerCase().startsWith(`${scheme}://`) || !url.hostname || authority === null) {
     return { ok: false, reason: "custom scheme redirects must name an application host" };
+  }
+  if (authority.includes(":")) return { ok: false, reason: "must not use an explicit port" };
+  if (!allowedAppHosts(scheme, env).includes(authority)) {
+    return { ok: false, reason: "application host is not allowed for this scheme" };
   }
   return { ok: true };
 }

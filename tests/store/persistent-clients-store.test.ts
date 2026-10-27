@@ -104,6 +104,10 @@ describe("clients registered before the policy existed", () => {
       ...client(uuidFor("legacy-evil"), ["https://evil.example/cb"]),
       registered_at: 1,
     });
+    double.data.set(`mcp_clients/${uuidFor("legacy-app-host")}`, {
+      ...client(uuidFor("legacy-app-host"), ["vscode://attacker.publisher/cb"]),
+      registered_at: 1,
+    });
     double.data.set(`mcp_clients/${uuidFor("legacy-good")}`, {
       ...client(uuidFor("legacy-good"), ["https://claude.ai/api/mcp/auth_callback"]),
       registered_at: 1,
@@ -115,6 +119,7 @@ describe("clients registered before the policy existed", () => {
     const store = new FirestoreClientsStore();
 
     expect(await store.getClient(uuidFor("legacy-evil"))).toBeUndefined();
+    expect(await store.getClient(uuidFor("legacy-app-host"))).toBeUndefined();
     expect(await store.getClient(uuidFor("legacy-custom-gpt"))).toBeUndefined();
     expect(await store.getClient(uuidFor("legacy-good"))).toMatchObject({ client_id: uuidFor("legacy-good") });
   });
