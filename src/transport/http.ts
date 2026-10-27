@@ -11,6 +11,7 @@ import {environmentBusinessOwnerRouter} from "../platform/business-owner-runtime
 import {environmentWhatsAppSetupRouter} from "../platform/whatsapp-setup-runtime.js";
 import {environmentResearchReviewRouter} from '../platform/research-runtime.js';
 import {environmentClientEnrollmentRouter} from "../platform/client-enrollment-runtime.js";
+import {environmentClientManagementRouter} from "../platform/client-management-runtime.js";
 import {environmentHealthEventStorage} from "../platform/health-events.js";
 import {environmentAttachmentRouters} from "../platform/attachment-runtime.js";
 import {environmentMessengerUtilityIngress} from "../platform/messenger-utility-runtime.js";
@@ -25,6 +26,7 @@ import {environmentDiscoveryRouter} from "../platform/discovery-runtime.js";
 import { createApprovalRouter } from "../platform/approval-router.js";
 import { environmentSourceIngressRouter } from "../platform/source-ingress.js";
 import {environmentOperationalRouter} from "../platform/operational-runtime.js";
+import {environmentRuntimeDiagnosticsRouter} from "../platform/runtime-diagnostics-runtime.js";
 import { platformConnectionRouters } from "../platform/connection-runtime.js";
 import { initializeMessagingPolicyRuntime } from "../platform/messaging-runtime.js";
 import { initializeEnvironmentWebhooks } from "../platform/events/environment.js";
@@ -575,6 +577,8 @@ export async function startHttpTransport(
   if(publishingVideoRouters)app.use("/platform/publishing-videos/review",publishingVideoRouters.review);
   const privacyRouter=environmentMetaPrivacyRouter(serverUrl.origin);
   if(privacyRouter)app.use("/meta/privacy",privacyRouter);
+  const clientManagementRouter=environmentClientManagementRouter(serverUrl.origin);
+  if(clientManagementRouter)app.use("/platform/clients",clientManagementRouter);
   const clientEnrollmentRouter=environmentClientEnrollmentRouter(serverUrl.origin);
   if(clientEnrollmentRouter)app.use("/platform/clients/new",clientEnrollmentRouter);
   const whatsappSetupRouter=environmentWhatsAppSetupRouter(serverUrl.origin);
@@ -588,6 +592,10 @@ export async function startHttpTransport(
   environmentHealthEventStorage();
   const operationalRouter=environmentOperationalRouter(serverUrl.origin);
   if(operationalRouter)app.use("/platform/operations",operationalRouter);
+  // Runtime diagnostics has its own administrator authorization boundary and
+  // must remain available when the broader platform feature is disabled. It
+  // never enables platform routes, writes, or provider operations.
+  app.use("/platform/runtime/diagnostics",environmentRuntimeDiagnosticsRouter());
   const businessOwnerRouter=environmentBusinessOwnerRouter(serverUrl.origin);
   if(businessOwnerRouter) app.use("/platform/business-owner",businessOwnerRouter);
   const researchReviewRouter=environmentResearchReviewRouter(serverUrl.origin);

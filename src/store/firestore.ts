@@ -8,6 +8,39 @@ interface ServiceAccountCredentials {
   private_key: string;
 }
 
+export interface FirestoreRuntimeIdentity {
+  configuredProjectId: string | null;
+  credentialProjectId: string | null;
+  serviceAccountEmail: string | null;
+  databaseId: string;
+  emulator: boolean;
+}
+
+/** Return only non-secret runtime identity metadata for authenticated diagnostics. */
+export function getFirestoreRuntimeIdentity(): FirestoreRuntimeIdentity {
+  const configuredProjectId = process.env.FIRESTORE_PROJECT_ID?.trim() || process.env.GOOGLE_CLOUD_PROJECT?.trim() || null;
+  const raw = process.env.GOOGLE_CREDENTIALS_JSON?.trim();
+  let credentialProjectId: string | null = null;
+  let serviceAccountEmail: string | null = null;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      credentialProjectId = typeof parsed.project_id === "string" ? parsed.project_id : null;
+      serviceAccountEmail = typeof parsed.client_email === "string" ? parsed.client_email : null;
+    } catch {
+      throw new Error("GOOGLE_CREDENTIALS_JSON is not valid credential JSON");
+    }
+  }
+  const firestore = getFirestore();
+  return {
+    configuredProjectId,
+    credentialProjectId,
+    serviceAccountEmail,
+    databaseId: firestore.databaseId,
+    emulator: !!process.env.FIRESTORE_EMULATOR_HOST,
+  };
+}
+
 function getServiceAccountCredentials(): ServiceAccountCredentials | undefined {
   const raw = process.env.GOOGLE_CREDENTIALS_JSON?.trim();
   if (!raw) return undefined;

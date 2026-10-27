@@ -90,7 +90,9 @@ export async function legacyCapabilityStatus(ctx:OperationContext,entry:LegacyMa
   if(!connections.length)return report("NOT_CONNECTED",["No selected product-specific connection exists."]);
   if(connections.every(c=>c.expiresAt!==null&&c.expiresAt<=now))return report("TOKEN_EXPIRED",["No live Meta Marketing credential."]);
   const registered=(await repo.list("assets",ctx.principal.tenantId)).filter(a=>a.tenantId===ctx.principal.tenantId&&a.clientId===ctx.clientId&&a.provider==="META_MARKETING"&&a.revokedAt===null);
-  let candidates:OperationPlan[];try{candidates=plans(entry.name,registered);}catch(error){return report("UNVERIFIED",[error instanceof PlatformDenied?error.reason:"CAPABILITY_PLAN_HOLD"]);}
+  const capabilityGrants=read&&LEGACY_CORE_READ_TOOLS.includes(entry.name)?await repo.list("grants",ctx.principal.tenantId):[];
+  const registeredForCapability=capabilityGrants.length?registered.filter(a=>a.type!=="AD_ACCOUNT"||capabilityGrants.some(g=>g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.assetKey===a.key&&g.capabilities.includes(`legacy.${entry.name}`)&&g.actions.includes("READ")&&g.revokedAt===null&&g.expiresAt>now&&g.verifiedAt>0&&now-g.verifiedAt<=3600000)):registered;
+  let candidates:OperationPlan[];try{candidates=plans(entry.name,registeredForCapability);}catch(error){return report("UNVERIFIED",[error instanceof PlatformDenied?error.reason:"CAPABILITY_PLAN_HOLD"]);}
   if(!candidates.length)return report("ASSET_ACCESS_REQUIRED",["Registered exact-type roots and parent references are required."]);
   let fallback:CapabilityReport|undefined;
   for(const plan of candidates){

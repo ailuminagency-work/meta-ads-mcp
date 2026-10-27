@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - feat/lumin-meta-platform-v1
+      - feat/connection-fabric-wave0
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -183,3 +184,4 @@ jobs:
 
       - name: Crypto and keyring tests
         run: npx vitest run tests/auth/crypto.test.ts tests/auth/keyring.test.ts tests/auth/token-key-migration.test.ts
+
