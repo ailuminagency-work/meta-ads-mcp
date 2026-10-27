@@ -243,6 +243,8 @@ export function claimMutationStep(permit: ExecutionPermit): void {
   if(!state.mutation || state.mutationClaimed || state.finishing || state.terminalHash) throw new PlatformDenied("MUTATION_STEP_ALREADY_CLAIMED_OR_NOT_AUTHORIZED");
   state.mutationClaimed = true;
 }
+/** True once this permit has begun its single provider mutation, which is the point after which a write may have reached Meta. */
+export function mutationStepClaimed(permit: ExecutionPermit): boolean { return permits.get(permit)?.mutationClaimed === true; }
 export async function withConnectionCredential<T>(permit: ExecutionPermit, fn: (token: string) => Promise<T>): Promise<T> {
   await revalidateExecutionPermit(permit);
   const state = validate(permit);
