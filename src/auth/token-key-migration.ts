@@ -84,12 +84,24 @@ function payloadFrom(data: Record<string, unknown>, target: Target): EncryptedPa
   return payload as unknown as EncryptedPayload;
 }
 
-function declaredVersion(data: Record<string, unknown>, payload: EncryptedPayload): string | undefined {
-  return typeof data.keyVersion === "string"
-    ? data.keyVersion
-    : typeof payload.keyVersion === "string"
-      ? payload.keyVersion
-      : undefined;
+interface VersionHint {
+  declared: string | undefined;
+  tryAllKeys: boolean;
+}
+
+/**
+ * The runtime read path only honours the envelope's own version and tries every
+ * key when the envelope has none. A stored outer label that disagrees with the
+ * envelope, or that sits beside a versionless envelope, proves nothing about
+ * the key, so those records are authenticated against the whole keyring. Only
+ * a label pair that agrees pins a single key.
+ */
+function versionHint(data: Record<string, unknown>, payload: EncryptedPayload): VersionHint {
+  const outer = typeof data.keyVersion === "string" ? data.keyVersion : undefined;
+  const inner = typeof payload.keyVersion === "string" ? payload.keyVersion : undefined;
+  if (inner === undefined) return { declared: undefined, tryAllKeys: true };
+  if (outer !== undefined && outer !== inner) return { declared: undefined, tryAllKeys: true };
+  return { declared: inner, tryAllKeys: false };
 }
 
 function isCurrent(data: Record<string, unknown>, payload: EncryptedPayload, activeKeyId: string): boolean {
@@ -99,15 +111,18 @@ function isCurrent(data: Record<string, unknown>, payload: EncryptedPayload, act
 function decryptForMigration(
   payload: EncryptedPayload,
   aad: string,
-  declaredKeyVersion: string | undefined,
+  hint: VersionHint,
   keyring: EncryptionKeyring,
 ) {
+  const subject = hint.tryAllKeys && typeof payload.keyVersion === "string"
+    ? { ciphertext: payload.ciphertext, iv: payload.iv, tag: payload.tag }
+    : payload;
   try {
-    return { ...decryptTokenDetailed(payload, aad, declaredKeyVersion, keyring), usedLegacyAad: false };
+    return { ...decryptTokenDetailed(subject, aad, hint.declared, keyring), usedLegacyAad: false };
   } catch {
     // Legacy records were encrypted without AAD. This fallback is deliberately
     // confined to the migration boundary; all newly written records use AAD.
-    return { ...decryptTokenDetailed(payload, undefined, declaredKeyVersion, keyring), usedLegacyAad: true };
+    return { ...decryptTokenDetailed(subject, undefined, hint.declared, keyring), usedLegacyAad: true };
   }
 }
 
@@ -156,7 +171,7 @@ async function discover(db: Firestore): Promise<{ records: DiscoveredRecord[]; i
         recordId: recordIdFor(doc.ref.path),
         aad: aadFor(target, doc.ref),
         payload,
-        declaredKeyVersion: declaredVersion(data, payload),
+        declaredKeyVersion: versionHint(data, payload).declared,
         outerKeyVersion: typeof data.keyVersion === "string" ? data.keyVersion : undefined,
       });
     }
@@ -235,7 +250,7 @@ async function migrateRecord(
       decryptTokenDetailed(payload, record.aad, keyring.activeKeyId, keyring);
       return "skipped" as const;
     }
-    const declared = declaredVersion(data, payload);
+    const hint = versionHint(data, payload);
     const now = Date.now();
 
     if (isCurrent(data, payload, keyring.activeKeyId)) {
@@ -244,7 +259,7 @@ async function migrateRecord(
       return "alreadyCurrent" as const;
     }
 
-    const decrypted = decryptForMigration(payload, record.aad, declared, keyring);
+    const decrypted = decryptForMigration(payload, record.aad, hint, keyring);
     const replacement = encryptToken(decrypted.plaintext, record.aad, keyring);
     tx.update(record.ref, {
       [record.target.field]: replacement,
@@ -299,7 +314,7 @@ export async function runTokenKeyMigration(options: MigrationOptions): Promise<M
         const data = (await record.ref.get()).data() as Record<string, unknown>;
         const payload = payloadFrom(data, record.target);
         if (!payload) throw new Error("encrypted payload disappeared during dry-run");
-        decryptForMigration(payload, record.aad, declaredVersion(data, payload), keyring);
+        decryptForMigration(payload, record.aad, versionHint(data, payload), keyring);
         report.verified++;
       } catch {
         report.failed++;
