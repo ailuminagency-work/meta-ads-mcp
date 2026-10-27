@@ -27,28 +27,7 @@ export function abortableSleep(ms: number, signal: AbortSignal | undefined): Pro
   });
 }
 
-/** Waits for a promise that cannot itself be cancelled, but stops waiting for it when the signal aborts. */
-export function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) {
-    promise.catch(() => undefined);
-    return Promise.reject(new RequestAbortedError());
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      promise.catch(() => undefined);
-      reject(new RequestAbortedError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
+// There is deliberately no "stop waiting but leave the work running" helper here. Racing a wait against the
+// signal abandons it: the queue place, the timer and everything they reference (a whole per-request server)
+// live on until the wait ends by itself. A wait must take the signal and leave on its own, as abortableSleep,
+// WritePacer.acquire and RateLimiter.waitIfNeeded do.

@@ -1,4 +1,6 @@
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { logger } from "../utils/logger.js";
+import { abortableSleep, throwIfAborted } from "../utils/abortable.js";
 import { createHash } from "node:crypto";
 
 /**
@@ -71,6 +73,8 @@ interface ReachThrottleHeader {
  */
 export const USAGE_BUCKET_TTL_MS = 60 * 60 * 1000;
 export const MAX_USAGE_BUCKETS = 5_000;
+/** The longest pause a call is held for; a longer block is reported to the caller instead of slept through. */
+export const MAX_SELF_THROTTLE_WAIT_MS = 30_000;
 const SWEEP_INTERVAL_MS = 60_000;
 
 export class RateLimiter {
@@ -258,8 +262,27 @@ export class RateLimiter {
     return maxDelay;
   }
 
-  async waitIfNeeded(context: RequestContext): Promise<void> {
+  /**
+   * Sleeps out a short self-throttle. A wait longer than MAX_SELF_THROTTLE_WAIT_MS
+   * is not served by holding the call (and its admission slot and memory) for
+   * minutes: it is refused at once with the time left. The sleep ends, timer
+   * cleared, when the signal aborts.
+   */
+  async waitIfNeeded(context: RequestContext, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const delay = this.getThrottleDelay(context);
+    if (delay > MAX_SELF_THROTTLE_WAIT_MS) {
+      const retryInSeconds = Math.ceil(delay / 1000);
+      logger.warn(
+        { event: "meta_rate_throttle_refused", tokenHash: context.tokenHash, accountId: context.accountId, retryInSeconds },
+        "Refusing a Meta request during a long rate-limit block",
+      );
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `Meta rate limit active for this token, retry in ${retryInSeconds} seconds. No request was sent; Meta asked for this pause, and continuing to call during it extends it.`,
+        { retry_after_seconds: retryInSeconds },
+      );
+    }
     if (delay > 0) {
       logger.warn(
         {
@@ -270,7 +293,7 @@ export class RateLimiter {
         },
         "Self-throttling before Meta request",
       );
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await abortableSleep(delay, signal);
     }
   }
 
