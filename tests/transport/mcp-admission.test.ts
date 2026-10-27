@@ -8,6 +8,7 @@ import {
   DEFAULT_MCP_RATE_LIMIT_PER_MINUTE,
   DEFAULT_MCP_MAX_IN_FLIGHT_PER_SUBJECT,
   DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS,
+  DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS_AGENCY,
   readMcpAdmissionConfig,
   type McpAdmission,
   type McpAdmissionConfig,
@@ -378,7 +379,8 @@ describe("request watchdog and stalled readers on /mcp (G3R-01)", () => {
     const answer = await call.done;
 
     expect(answer.status).toBe(504);
-    expect(JSON.parse(answer.body)).toEqual({ jsonrpc: "2.0", error: { code: -32000, message: "Request timed out" }, id: null });
+    expect(JSON.parse(answer.body)).toMatchObject({ jsonrpc: "2.0", error: { code: -32000 }, id: null });
+    expect(JSON.parse(answer.body).error.message).toMatch(/^Request timed out after \d+ seconds\..*ads_get_report_status.*call again/);
     expect(Date.now() - started).toBeLessThan(2_000);
     await until(() => admission.stats().inFlight === 0, "slot released after the 504");
     expect(admission.stats().timedOut).toBe(1);
@@ -429,6 +431,20 @@ describe("configuration", () => {
     expect(config.perSubjectInFlight).toBe(4);
     expect(config.requestTimeoutMs).toBe(DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS * 1_000);
     expect(config.requestTimeoutMs).toBeGreaterThan(3_600_000);
+  });
+
+  it("defaults the request timeout to 600 s in agency mode and keeps 3700 s elsewhere (G3D-04)", () => {
+    expect(DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS_AGENCY).toBe(600);
+    expect(readMcpAdmissionConfig({ DEPLOYMENT_MODE: "agency" }).requestTimeoutMs).toBe(600_000);
+    expect(readMcpAdmissionConfig({ DEPLOYMENT_MODE: "upstream" }).requestTimeoutMs).toBe(3_700_000);
+    expect(readMcpAdmissionConfig({ DEPLOYMENT_MODE: "awaiting_credentials" }).requestTimeoutMs).toBe(3_700_000);
+    expect(readMcpAdmissionConfig({}).requestTimeoutMs).toBe(3_700_000);
+  });
+
+  it("lets an explicit MCP_REQUEST_TIMEOUT_SECONDS win in either mode, with the same bounds", () => {
+    expect(readMcpAdmissionConfig({ DEPLOYMENT_MODE: "agency", MCP_REQUEST_TIMEOUT_SECONDS: "900" }).requestTimeoutMs).toBe(900_000);
+    expect(readMcpAdmissionConfig({ DEPLOYMENT_MODE: "agency", MCP_REQUEST_TIMEOUT_SECONDS: " " }).requestTimeoutMs).toBe(600_000);
+    expect(() => readMcpAdmissionConfig({ DEPLOYMENT_MODE: "agency", MCP_REQUEST_TIMEOUT_SECONDS: "29" })).toThrow(/from 30 to 7200/);
   });
 
   it("reads the per-subject cap and the request timeout from the environment", () => {
@@ -507,6 +523,17 @@ describe("wired into the real transport", () => {
     expect(await refused.json()).toMatchObject({ jsonrpc: "2.0", error: { code: -32000 }, id: null });
     const anonymous = await fetch(`${origin}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     expect(anonymous.status).toBe(401);
+  });
+
+  it.each([
+    ["agency", 600],
+    ["upstream", 3700],
+  ])("logs the effective admission limits at startup; %s mode runs with a %i s request timeout", async (mode, seconds) => {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    authServer = await startAuthServer({ DEPLOYMENT_MODE: mode, MCP_REQUEST_TIMEOUT_SECONDS: undefined });
+
+    const line = info.mock.calls.find((call) => call[1] === "MCP admission limits");
+    expect(line?.[0]).toEqual({ maxInFlight: 16, perSubjectInFlight: 4, perSubjectPerMinute: 120, requestTimeoutSeconds: seconds });
   });
 
   it("refuses to start with an unusable limit", async () => {

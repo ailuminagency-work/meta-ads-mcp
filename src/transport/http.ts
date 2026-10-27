@@ -970,7 +970,17 @@ export async function startHttpTransport(
   const auth = createCombinedAuthMiddleware(oauthBearerAuth);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
-  const mcpAdmission = createMcpAdmission(readMcpAdmissionConfig());
+  const admissionConfig = readMcpAdmissionConfig();
+  logger.info(
+    {
+      maxInFlight: admissionConfig.maxInFlight,
+      perSubjectInFlight: admissionConfig.perSubjectInFlight,
+      perSubjectPerMinute: admissionConfig.perSubjectPerWindow,
+      requestTimeoutSeconds: (admissionConfig.requestTimeoutMs ?? 0) / 1000,
+    },
+    "MCP admission limits",
+  );
+  const mcpAdmission = createMcpAdmission(admissionConfig);
 
   app.use("/mcp", mcpOriginGuard(corsAllowedOrigins));
   app.post("/mcp", auth, mcpAdmission, metaTokenMw, mcpJsonParser(), async (req, res) => {
