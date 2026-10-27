@@ -117,7 +117,7 @@ The server stops at startup on a value that is not a whole number from 0 to 10; 
 1. Decide on OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS, OAUTH_EXTRA_ALLOWED_REDIRECT_URIS and OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS for the clients in use (ChatGPT, OpenAI app review, vscode.dev). Stored clients are re-checked on every read, so an existing ChatGPT connector stops working with invalid_client until its callback is accepted again: set the variable in the same change as the source pin, and list the redirect URIs of the clients already registered (inventory them first) before the cutover.
 2. Confirm CORS_ALLOWED_ORIGINS covers every browser client that calls /mcp.
 3. Confirm the TTL policy on mcp_refresh_jti.expiresAt.
-4. If chatgpt.com is currently listed in OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS, remove it when you set OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS: a listed host overrides the narrow rule and the server logs a warning at the first registration or client read.
+4. If chatgpt.com is currently listed in OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS, remove it when you set OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS: a listed host overrides the narrow rule and the server logs a warning at the first redirect check for a non-Claude https URI.
 5. Set TRUST_PROXY_HOPS to the number of proxies in front of the server and check a rate-limited route from two addresses.
 6. If the deployment uses MCP_API_KEY, confirm it is at least 32 characters, preferably the 64 hex characters of `openssl rand -hex 32`. The server refuses to start on a key with fewer than 12 different characters or one block repeated.
 7. Record the deny list procedure: edit AUTH_DENIED_FB_USER_IDS and redeploy. There is no admin endpoint for per-user revocation.

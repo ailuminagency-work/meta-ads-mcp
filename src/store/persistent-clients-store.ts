@@ -20,6 +20,15 @@ export function isClientIdShape(clientId: unknown): clientId is string {
   return typeof clientId === "string" && CLIENT_ID_SHAPE.test(clientId);
 }
 
+// Stored documents are not guaranteed to hold strings: String() on a null-prototype
+// object throws, which would turn a refusal into a 500.
+function loggedRedirectUris(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 5)
+    .map((uri) => (typeof uri === "string" ? singleLine(uri, 200) : `<${typeof uri}>`));
+}
+
 // A client stored before the registration policy existed may still carry a
 // redirect URI the policy now rejects. Treating it as unknown keeps such a
 // client from receiving authorization codes.
@@ -33,10 +42,8 @@ function usableClient(
     {
       clientId: client.client_id,
       reason: verdict.reason,
-      redirectUris: (Array.isArray(client.redirect_uris) ? client.redirect_uris : [])
-        .slice(0, 5)
-        .map((uri) => singleLine(String(uri), 200)),
-      hint: "To keep this client working list its exact redirect URI in OAUTH_EXTRA_ALLOWED_REDIRECT_URIS, or set OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS=true for ChatGPT connector callbacks",
+      redirectUris: loggedRedirectUris(client.redirect_uris),
+      hint: "If you trust this client, list its exact redirect URI in OAUTH_EXTRA_ALLOWED_REDIRECT_URIS, or set OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS=true for ChatGPT connector callbacks; otherwise leave it refused",
     },
     "Ignoring OAuth client whose redirect URIs violate the registration policy",
   );

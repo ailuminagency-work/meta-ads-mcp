@@ -9,6 +9,12 @@ vi.mock("../../src/store/firestore.js", () => ({
   getFirestore: () => selected.db,
   isFirestoreEnabled: () => true,
 }));
+const warn = vi.hoisted(() => vi.fn());
+vi.mock("../../src/utils/logger.js", () => {
+  const noop = () => undefined;
+  const logger = { info: noop, warn, error: noop, debug: noop, fatal: noop, trace: noop, child: () => logger };
+  return { logger };
+});
 
 import {
   FirestoreClientsStore,
@@ -38,6 +44,7 @@ let double: FirestoreDouble;
 beforeEach(() => {
   double = createFirestoreDouble();
   selected.db = double.db;
+  warn.mockClear();
 });
 
 afterEach(() => {
@@ -132,6 +139,64 @@ describe("clients registered before the policy existed", () => {
 
     vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "");
     expect(await store.getClient(uuidFor("temporary"))).toBeUndefined();
+  });
+});
+
+describe("the warning for a stored client the policy refuses", () => {
+  interface Logged {
+    clientId: string;
+    reason: string;
+    redirectUris: string[];
+    hint: string;
+  }
+  const store = (id: string, redirectUris: unknown) =>
+    double.data.set(`mcp_clients/${uuidFor(id)}`, { ...client(uuidFor(id), []), redirect_uris: redirectUris, registered_at: 1 });
+  const logged = (): Logged => {
+    expect(warn).toHaveBeenCalledTimes(1);
+    return warn.mock.calls[0]![0] as Logged;
+  };
+
+  it("logs at most five URIs, each on one line and cut at 200 characters", async () => {
+    store("noisy", [
+      'https://evil.example/a\r\n{"level":60,"msg":"forged"}',
+      `https://evil.example/${"x".repeat(3000)}`,
+      ...Array.from({ length: 10 }, (_, i) => `https://evil.example/${i}`),
+    ]);
+
+    expect(await new FirestoreClientsStore().getClient(uuidFor("noisy"))).toBeUndefined();
+
+    const fields = logged();
+    expect(fields.clientId).toBe(uuidFor("noisy"));
+    expect(fields.redirectUris).toHaveLength(5);
+    for (const uri of fields.redirectUris) {
+      expect(uri).not.toMatch(/[\r\n]/);
+      expect(uri.length).toBeLessThanOrEqual(201);
+    }
+    expect(fields.redirectUris[1]).toMatch(/…$/);
+  });
+
+  it("refuses a client whose stored entries are not strings instead of failing the request", async () => {
+    store("corrupt", [{ toString: null }, 7, null, ["nested"], "https://evil.example/cb"]);
+
+    await expect(new FirestoreClientsStore().getClient(uuidFor("corrupt"))).resolves.toBeUndefined();
+
+    expect(logged().redirectUris).toEqual(["<object>", "<number>", "<object>", "<object>", "https://evil.example/cb"]);
+  });
+
+  it("logs no URIs when the stored field is not a list", async () => {
+    store("scalar", "https://evil.example/cb");
+
+    await expect(new FirestoreClientsStore().getClient(uuidFor("scalar"))).resolves.toBeUndefined();
+
+    expect(logged().redirectUris).toEqual([]);
+  });
+
+  it("tells the operator to act only on a client they trust", async () => {
+    store("hint", ["https://evil.example/cb"]);
+
+    await new FirestoreClientsStore().getClient(uuidFor("hint"));
+
+    expect(logged().hint).toMatch(/^If you trust this client, .*OAUTH_EXTRA_ALLOWED_REDIRECT_URIS.*otherwise leave it refused$/);
   });
 });
 
