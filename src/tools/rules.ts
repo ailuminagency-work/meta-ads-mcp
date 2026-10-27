@@ -47,6 +47,26 @@ function checkedExecutionSpec(spec: ExecutionSpecInput): Record<string, unknown>
   return { execution_type: type, ...(options ? { execution_options: options } : {}) };
 }
 
+/**
+ * Enabling is the one status change that can start a rule that already exists on Meta, so the rule's current
+ * execution_type is read first and must be exactly an allowed one; a failed or empty read refuses. Disabling
+ * never reads: it stays an unconditional kill switch.
+ */
+async function assertRuleSafeToEnable(ruleId: string): Promise<void> {
+  const refused = (why: string) =>
+    new Error(`Autonomous spend-changing rules are not permitted in this release, and rule ${ruleId} ${why}, so it will not be enabled. Only PAUSE, ROTATE and NOTIFICATION rules can be enabled.`);
+  let current: { execution_spec?: { execution_type?: unknown } | null };
+  try {
+    current = await metaApiClient.get<typeof current>(`/${ruleId}`, { fields: "execution_spec,status" });
+  } catch {
+    throw refused("could not be read to confirm what it does");
+  }
+  const type = current?.execution_spec?.execution_type;
+  if (typeof type !== "string" || !ALLOWED_EXECUTION_TYPES.has(type)) {
+    throw refused(`is not confirmed to be a PAUSE, ROTATE or NOTIFICATION rule (current execution_type: ${typeof type === "string" ? JSON.stringify(type.slice(0, 40)) : "not reported"})`);
+  }
+}
+
 const scheduleTypeEnum = z.enum([
   "CUSTOM", "SEMI_HOURLY", "HOURLY", "DAILY", "WEEKLY",
 ]);
@@ -224,7 +244,7 @@ export function registerRuleTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_rule",
     {
-      description: `${WRITE_WARNING}Update an existing automated rule's name, status, or specs. UNPAUSE, CHANGE_BUDGET and CHANGE_BID are refused as the new execution_type: autonomous spend-changing rules are not permitted in this release.`,
+      description: `${WRITE_WARNING}Update an existing automated rule's name, status, or specs. UNPAUSE, CHANGE_BUDGET and CHANGE_BID are refused as the new execution_type, and a rule can be enabled only after it is read and confirmed to be a PAUSE, ROTATE or NOTIFICATION rule: autonomous spend-changing rules are not permitted in this release. Disabling is always allowed.`,
       inputSchema: {
         rule_id: z.string().describe("Rule ID to update"),
         name: z.string().optional().describe("New name"),
@@ -261,6 +281,7 @@ export function registerRuleTools(server: McpServer): void {
     async ({ rule_id, name, status, evaluation_spec, execution_spec }) => {
       const checkedExecution = execution_spec ? checkedExecutionSpec(execution_spec) : undefined;
       const id = validateMetaId(rule_id, "rule");
+      if (status === "ENABLED") await assertRuleSafeToEnable(id);
       const body: Record<string, string | number | boolean> = {};
       if (name) body.name = name;
       if (status) body.status = status;

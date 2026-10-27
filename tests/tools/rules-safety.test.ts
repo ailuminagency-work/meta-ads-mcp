@@ -166,6 +166,99 @@ describe("ads_update_ad_rule keeps PAUSE, ROTATE and NOTIFICATION working", () =
   });
 });
 
+describe("ads_update_ad_rule enables a rule only after reading that it is not spend-changing", () => {
+  const requests = () =>
+    vi.mocked(fetch).mock.calls.map(([url, init]) => `${init?.method}:${new URL(String(url)).pathname.replace(/^\/v[\d.]+/, "")}`);
+
+  const stubRule = (read: () => Response | Promise<Response>) =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, init?: RequestInit) => (init?.method === "GET" ? read() : mockFetchResponse({ success: true }))),
+    );
+
+  const ruleWith = (execution_type: unknown) => stubRule(() => mockFetchResponse({ id: "901", status: "DISABLED", execution_spec: { execution_type } }));
+
+  it.each(SPEND_TYPES)("refuses to enable an existing %s rule, after one read and with no write", async (execution_type) => {
+    ruleWith(execution_type);
+    await expect(update({ status: "ENABLED" })).rejects.toThrow(NOT_PERMITTED);
+    expect(requests()).toEqual(["GET:/901"]);
+    const read = new URL(String(vi.mocked(fetch).mock.calls[0][0]));
+    expect(read.searchParams.get("fields")).toBe("execution_spec,status");
+  });
+
+  it("refuses when the rule cannot be read", async () => {
+    stubRule(() => mockFetchResponse({ error: { message: "synthetic read failure", code: 100 } }, { status: 400 }));
+    await expect(update({ status: "ENABLED" })).rejects.toThrow(NOT_PERMITTED);
+    expect(requests()).toEqual(["GET:/901"]);
+  });
+
+  it.each([
+    ["no execution_spec", { id: "901", status: "DISABLED" }],
+    ["an empty execution_spec", { id: "901", execution_spec: {} }],
+    ["a null execution_spec", { id: "901", execution_spec: null }],
+    ["a non-string execution_type", { id: "901", execution_spec: { execution_type: 7 } }],
+    ["a lower-case execution_type", { id: "901", execution_spec: { execution_type: "pause" } }],
+    ["a padded execution_type", { id: "901", execution_spec: { execution_type: "PAUSE " } }],
+    ["an unknown execution_type", { id: "901", execution_spec: { execution_type: "DELETE" } }],
+  ])("refuses when the read returns %s", async (_name, rule) => {
+    stubRule(() => mockFetchResponse(rule));
+    await expect(update({ status: "ENABLED" })).rejects.toThrow(NOT_PERMITTED);
+    expect(requests()).toEqual(["GET:/901"]);
+  });
+
+  it.each(["PAUSE", "ROTATE", "NOTIFICATION"])("enables a %s rule with exactly one read then one write", async (execution_type) => {
+    ruleWith(execution_type);
+    await update({ status: "ENABLED" });
+    expect(requests()).toEqual(["GET:/901", "POST:/901"]);
+    expect(new URLSearchParams(vi.mocked(fetch).mock.calls[1][1]?.body as string).get("status")).toBe("ENABLED");
+  });
+
+  it("enables a PAUSE rule together with a rename and a new allowed execution_spec", async () => {
+    ruleWith("PAUSE");
+    await update({ status: "ENABLED", name: "Renamed", execution_spec: { execution_type: "NOTIFICATION" } });
+    expect(requests()).toEqual(["GET:/901", "POST:/901"]);
+    const body = new URLSearchParams(vi.mocked(fetch).mock.calls[1][1]?.body as string);
+    expect(body.get("name")).toBe("Renamed");
+    expect(JSON.parse(body.get("execution_spec")!)).toEqual({ execution_type: "NOTIFICATION" });
+  });
+
+  it("refuses to enable a spend-changing rule even in the same call that switches it to PAUSE", async () => {
+    ruleWith("CHANGE_BUDGET");
+    await expect(update({ status: "ENABLED", execution_spec: { execution_type: "PAUSE" } })).rejects.toThrow(NOT_PERMITTED);
+    expect(requests()).toEqual(["GET:/901"]);
+  });
+
+  it("refuses a new spend-changing execution_spec without reading or writing anything", async () => {
+    ruleWith("PAUSE");
+    await expect(update({ status: "ENABLED", execution_spec: { execution_type: "CHANGE_BID" } })).rejects.toThrow(NOT_PERMITTED);
+    expect(requests()).toEqual([]);
+  });
+
+  it("disabling is an unconditional kill switch: no read, one write, even if reads would fail", async () => {
+    stubRule(() => {
+      throw new Error("a disable must not read the rule");
+    });
+    await update({ status: "DISABLED" });
+    expect(requests()).toEqual(["POST:/901"]);
+    expect(new URLSearchParams(vi.mocked(fetch).mock.calls[0][1]?.body as string).get("status")).toBe("DISABLED");
+  });
+
+  it("an update that does not touch the status makes no read", async () => {
+    ruleWith("CHANGE_BUDGET");
+    await update({ name: "Renamed" });
+    expect(requests()).toEqual(["POST:/901"]);
+  });
+
+  it("deleting a rule makes no read", async () => {
+    stubRule(() => {
+      throw new Error("a delete must not read the rule");
+    });
+    await tool("ads_delete_ad_rule").handler({ rule_id: "901" });
+    expect(requests()).toHaveLength(1);
+    expect(requests()[0]).not.toMatch(/^GET:/);
+  });
+});
+
 describe("the rule tool descriptions no longer advertise spend-changing automation", () => {
   it.each(["ads_create_ad_rule", "ads_update_ad_rule"])("%s", (name) => {
     const description = tool(name).description as string;
