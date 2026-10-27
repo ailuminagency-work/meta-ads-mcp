@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import http from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import {
   createMcpAdmission,
   DEFAULT_MCP_MAX_IN_FLIGHT,
   DEFAULT_MCP_RATE_LIMIT_PER_MINUTE,
+  DEFAULT_MCP_MAX_IN_FLIGHT_PER_SUBJECT,
+  DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS,
   readMcpAdmissionConfig,
   type McpAdmission,
   type McpAdmissionConfig,
@@ -67,8 +69,15 @@ async function start(admission: McpAdmission): Promise<string> {
     },
     admission,
     (req, res) => {
+      if (req.headers["x-flood"] === "1") {
+        res.setHeader("content-type", "application/octet-stream");
+        res.write(Buffer.alloc(64 * 1024 * 1024));
+        return;
+      }
       if (req.headers["x-hold"] === "1") {
-        open.push(() => res.json({ held: true }));
+        open.push(() => {
+          if (!res.writableEnded && !res.destroyed) res.json({ held: true });
+        });
         return;
       }
       res.json({ ok: true });
@@ -295,11 +304,147 @@ describe("what the rejection log carries", () => {
   });
 });
 
+describe("per-subject in-flight cap on /mcp (G1R-01, G3R-01)", () => {
+  it("stops one subject at its cap with 429 and Retry-After while every other subject keeps being served", async () => {
+    const admission = createMcpAdmission(config({ maxInFlight: 16, perSubjectInFlight: 4 }));
+    const base = await start(admission);
+    const held = Array.from({ length: 4 }, () => send(base, SUBJECT_A, true));
+    await until(() => admission.stats().inFlight === 4, "four calls in flight");
+
+    const refused = await Promise.all(Array.from({ length: 12 }, () => send(base, SUBJECT_A, true).done));
+
+    expect(refused.every((response) => response.status === 429 && response.retryAfter === "1")).toBe(true);
+    expect(admission.stats().inFlight).toBe(4);
+    expect(admission.stats().rejectedSubjectInFlight).toBe(12);
+    expect((await send(base, SUBJECT_B).done).status).toBe(200);
+    for (const release of open.splice(0)) release();
+    expect((await Promise.all(held.map((h) => h.done))).every((r) => r.status === 200)).toBe(true);
+  });
+
+  it("frees the subject's slots when its calls finish or are aborted", async () => {
+    const admission = createMcpAdmission(config({ perSubjectInFlight: 2 }));
+    const base = await start(admission);
+    const first = send(base, SUBJECT_A, true);
+    const second = send(base, SUBJECT_A, true);
+    await until(() => admission.stats().inFlight === 2, "two calls in flight");
+    expect((await send(base, SUBJECT_A).done).status).toBe(429);
+
+    first.abort();
+    await until(() => admission.stats().inFlight === 1, "one call released by the abort");
+    expect((await send(base, SUBJECT_A).done).status).toBe(200);
+
+    second.abort();
+    await until(() => admission.stats().inFlight === 0, "all released");
+    expect((await send(base, SUBJECT_A).done).status).toBe(200);
+  });
+
+  it("does not spend rate allowance on a call refused by the per-subject cap", async () => {
+    const admission = createMcpAdmission(config({ perSubjectInFlight: 2, perSubjectPerWindow: 3 }), () => clock);
+    const base = await start(admission);
+    send(base, SUBJECT_A, true);
+    const second = send(base, SUBJECT_A, true);
+    await until(() => admission.stats().inFlight === 2, "two calls in flight");
+    for (let index = 0; index < 5; index += 1) expect((await send(base, SUBJECT_A).done).status).toBe(429);
+
+    second.abort();
+    await until(() => admission.stats().inFlight === 1, "one released");
+    expect((await send(base, SUBJECT_A).done).status).toBe(200);
+    expect((await send(base, SUBJECT_A).done).status).toBe(429);
+    expect(admission.stats().rejectedRate).toBe(1);
+  });
+
+  it("logs a per-subject rejection with a hashed subject only", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const admission = createMcpAdmission(config({ perSubjectInFlight: 1 }), () => clock);
+    const base = await start(admission);
+    send(base, SUBJECT_A, true);
+    await until(() => admission.stats().inFlight === 1, "held");
+    await send(base, SUBJECT_A).done;
+
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).toContain('"reason":"subject_in_flight"');
+    expect(logged).not.toContain(SUBJECT_A);
+  });
+});
+
+describe("request watchdog and stalled readers on /mcp (G3R-01)", () => {
+  it("ends a call that is still unanswered after the request timeout with a 504 and frees its slot", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const admission = createMcpAdmission(config({ maxInFlight: 1, requestTimeoutMs: 150 }));
+    const base = await start(admission);
+    const started = Date.now();
+    const call = send(base, SUBJECT_A, true);
+
+    const answer = await call.done;
+
+    expect(answer.status).toBe(504);
+    expect(JSON.parse(answer.body)).toEqual({ jsonrpc: "2.0", error: { code: -32000, message: "Request timed out" }, id: null });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await until(() => admission.stats().inFlight === 0, "slot released after the 504");
+    expect(admission.stats().timedOut).toBe(1);
+    expect(JSON.stringify(warn.mock.calls)).toContain("mcp_request_timed_out");
+    expect((await send(base, SUBJECT_B).done).status).toBe(200);
+  });
+
+  it("does not touch a call that is answered in time", async () => {
+    const admission = createMcpAdmission(config({ requestTimeoutMs: 400 }));
+    const base = await start(admission);
+    expect((await send(base, SUBJECT_A).done).status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(admission.stats().timedOut).toBe(0);
+  });
+
+  it("destroys a response the client has stopped reading and frees the slot", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const admission = createMcpAdmission(config({ maxInFlight: 1, responseStallMs: 300, stallCheckMs: 50 }));
+    const base = await start(admission);
+    const port = Number(new URL(base).port);
+    const socket = net.connect(port, "127.0.0.1", () => {
+      socket.write(`POST /mcp HTTP/1.1\r\nHost: x\r\nx-test-user: ${SUBJECT_A}\r\nx-flood: 1\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\n{}`);
+      socket.pause();
+    });
+    socket.on("error", () => {});
+    try {
+      await until(() => admission.stats().inFlight === 1, "flooding call admitted");
+      await until(() => admission.stats().stalled === 1, "stalled response detected");
+      await until(() => admission.stats().inFlight === 0, "slot released after the stall");
+      expect(JSON.stringify(warn.mock.calls)).toContain("mcp_response_stalled");
+      expect((await send(base, SUBJECT_B).done).status).toBe(200);
+    } finally {
+      socket.destroy();
+    }
+  }, 15_000);
+});
+
 describe("configuration", () => {
   it("defaults to 16 in flight and 120 calls a minute per subject", () => {
     expect(readMcpAdmissionConfig({})).toMatchObject({ maxInFlight: DEFAULT_MCP_MAX_IN_FLIGHT, perSubjectPerWindow: DEFAULT_MCP_RATE_LIMIT_PER_MINUTE, windowMs: 60_000 });
     expect(DEFAULT_MCP_MAX_IN_FLIGHT).toBe(16);
     expect(DEFAULT_MCP_RATE_LIMIT_PER_MINUTE).toBe(120);
+  });
+
+  it("defaults to 4 in flight per subject and a request timeout above the longest tool call", () => {
+    const config = readMcpAdmissionConfig({});
+    expect(config.perSubjectInFlight).toBe(DEFAULT_MCP_MAX_IN_FLIGHT_PER_SUBJECT);
+    expect(config.perSubjectInFlight).toBe(4);
+    expect(config.requestTimeoutMs).toBe(DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS * 1_000);
+    expect(config.requestTimeoutMs).toBeGreaterThan(3_600_000);
+  });
+
+  it("reads the per-subject cap and the request timeout from the environment", () => {
+    expect(readMcpAdmissionConfig({ MCP_MAX_IN_FLIGHT_PER_SUBJECT: "2", MCP_REQUEST_TIMEOUT_SECONDS: "300" })).toMatchObject({
+      perSubjectInFlight: 2,
+      requestTimeoutMs: 300_000,
+    });
+    expect(readMcpAdmissionConfig({ MCP_MAX_IN_FLIGHT_PER_SUBJECT: "", MCP_REQUEST_TIMEOUT_SECONDS: " " })).toMatchObject({ perSubjectInFlight: 4, requestTimeoutMs: 3_700_000 });
+  });
+
+  it.each(["0", "-1", "abc", "1.5", "1001"])("refuses MCP_MAX_IN_FLIGHT_PER_SUBJECT=%s instead of dropping the cap", (value) => {
+    expect(() => readMcpAdmissionConfig({ MCP_MAX_IN_FLIGHT_PER_SUBJECT: value })).toThrow(/MCP_MAX_IN_FLIGHT_PER_SUBJECT must be a positive integer/);
+  });
+
+  it.each(["0", "29", "7201", "abc", "1.5", "-300"])("refuses MCP_REQUEST_TIMEOUT_SECONDS=%s instead of dropping the watchdog", (value) => {
+    expect(() => readMcpAdmissionConfig({ MCP_REQUEST_TIMEOUT_SECONDS: value })).toThrow(/MCP_REQUEST_TIMEOUT_SECONDS must be an integer from 30 to 7200/);
   });
 
   it("reads both limits from the environment and treats an empty value as unset", () => {

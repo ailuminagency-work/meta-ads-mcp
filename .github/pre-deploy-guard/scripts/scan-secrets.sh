@@ -30,7 +30,9 @@ PATTERNS=(
   'aws-access-key|AKIA[0-9A-Z]{16}'
 )
 
-# Allowlist: skip findings that match these substrings (case-sensitive).
+# Allowlist: a finding is dropped when the MATCHED TEXT contains one of these
+# substrings (case-sensitive), so a real token never becomes invisible because
+# the word "fixture" or "placeholder" appears somewhere else on its line.
 # Mainly to suppress obvious examples / placeholders / stripped redactions.
 ALLOWLIST=(
   'EAAabcdefghij'                 # canonical example placeholder
@@ -41,8 +43,12 @@ ALLOWLIST=(
   'PLACEHOLDER'
   '<your-'
   'fixture'
-  'gitleaks:allow'
 )
+
+# The one line-level exemption, the same marker gitleaks honours: a comment that
+# ends the line and says exactly gitleaks:allow (after #, //, --, /* or <!--).
+# The marker anywhere else on the line, or followed by other words, suppresses nothing.
+LINE_MARKER='(#|//|--|/\*|<!--)[[:space:]]*gitleaks:allow[[:space:]]*(\*/|-->)?[[:space:]]*$'
 
 # Source the diff: piped stdin when there is one, else the staged diff.
 WORKDIR="$(mktemp -d -t scan-secrets.XXXXXX)" || {
@@ -126,32 +132,33 @@ if ! { grep -qE '^(diff --git |--- )' "$INPUT" && grep -qE '^@@ ' "$INPUT"; }; t
 fi
 
 while IFS=$'\t' read -r FILE HIT_LINE BODY; do
-  # Skip allowlisted contents.
-  skip=0
-  for needle in "${ALLOWLIST[@]}"; do
-    if printf '%s' "$BODY" | grep -qF -- "$needle"; then
-      skip=1
-      break
-    fi
-  done
-  [ "$skip" = "1" ] && continue
-
-  # Skip if path is .env.example, tests fixtures, or vendored.
+  # Path skips are repository-root files only. A directory or file name that
+  # merely looks like one of them (docs/package-lock.json, deploy/.env.example,
+  # src/x/scan-secrets.sh, anything ending .lock) is scanned like any other.
   case "$FILE" in
-    .env.example|*/.env.example) continue ;;
-    package-lock.json|*/package-lock.json) continue ;;
-    *.lock|yarn.lock|pnpm-lock.yaml) continue ;;
+    package-lock.json|yarn.lock|pnpm-lock.yaml) continue ;;
     # Self-references: the gitleaks config and this script declare the
     # very regex shapes we look for as PATTERNS. Skip them so a doc-only
     # change to either doesn't trigger a guard against itself.
-    .gitleaks.toml|*/.gitleaks.toml) continue ;;
-    scan-secrets.sh|*/scan-secrets.sh) continue ;;
+    .gitleaks.toml|.github/pre-deploy-guard/scripts/scan-secrets.sh) continue ;;
   esac
+
+  printf '%s' "$BODY" | grep -E -q -- "$LINE_MARKER" && continue
 
   for entry in "${PATTERNS[@]}"; do
     NAME="${entry%%|*}"
     RE="${entry#*|}"
-    if printf '%s' "$BODY" | grep -E -q -- "$RE"; then
+    MATCHES="$(printf '%s' "$BODY" | grep -E -o -- "$RE" || true)"
+    [ -n "$MATCHES" ] || continue
+    FOUND=0
+    while IFS= read -r MATCHED; do
+      allowed=0
+      for needle in "${ALLOWLIST[@]}"; do
+        case "$MATCHED" in *"$needle"*) allowed=1; break ;; esac
+      done
+      if [ "$allowed" = "0" ]; then FOUND=1; break; fi
+    done <<< "$MATCHES"
+    if [ "$FOUND" = "1" ]; then
       printf '%s:%s: %s\n' "$FILE" "$HIT_LINE" "$NAME"
       HITS=$((HITS+1))
     fi

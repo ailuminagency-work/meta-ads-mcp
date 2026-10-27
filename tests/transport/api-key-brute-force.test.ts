@@ -38,7 +38,7 @@ describe("the /mcp API key", () => {
     );
   });
 
-  it("locks out a client address after repeated wrong keys, even for the right key, and leaves other addresses alone", async () => {
+  it("locks out a client address after repeated wrong keys, but never the right key, and leaves other addresses alone", async () => {
     const origin = await apiKeyServer();
     const attacker = { "x-forwarded-for": "203.0.113.7" };
 
@@ -51,9 +51,13 @@ describe("the /mcp API key", () => {
     expect(statuses.slice(0, 20).every((status) => status === 401)).toBe(true);
     expect(statuses.slice(20).every((status) => status === 429)).toBe(true);
 
-    const locked = await mcp(origin, { ...attacker, "x-api-key": API_KEY });
-    expect(locked.status).toBe(429);
-    expect(locked.headers.get("retry-after")).toBeTruthy();
+    const lockedWrong = await mcp(origin, { ...attacker, "x-api-key": "guess-again" });
+    expect(lockedWrong.status).toBe(429);
+    expect(lockedWrong.headers.get("retry-after")).toBeTruthy();
+    await lockedWrong.arrayBuffer();
+
+    const rightKey = await mcp(origin, { ...attacker, "x-api-key": API_KEY });
+    expect(rightKey.status).toBe(200);
 
     const elsewhere = await mcp(origin, { "x-forwarded-for": "203.0.113.8", "x-api-key": API_KEY });
     expect(elsewhere.status).toBe(200);
@@ -71,7 +75,8 @@ describe("the /mcp API key", () => {
       expect(response.status).toBe(401);
       await response.arrayBuffer();
     }
-    expect((await mcp(origin, { ...client, "x-api-key": API_KEY })).status).toBe(429);
+    expect((await mcp(origin, { ...client, authorization: "Bearer not-a-token-again" })).status).toBe(429);
+    expect((await mcp(origin, { ...client, "x-api-key": API_KEY })).status).toBe(200);
   });
 
   it("does not lock out a client that sends the right key every time", async () => {

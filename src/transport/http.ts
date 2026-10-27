@@ -69,6 +69,7 @@ import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
 import { createMcpAdmission, readMcpAdmissionConfig } from "./mcp-admission.js";
+import { applyServerTimeouts } from "./server-timeouts.js";
 import { installGracefulShutdown } from "./graceful-shutdown.js";
 import { createReadinessCheck, createReadinessHandler } from "./readiness.js";
 import {
@@ -415,6 +416,14 @@ function createCombinedAuthMiddleware(
       return;
     }
 
+    // The presented key is checked first: a valid key is never locked out, only failures are counted and blocked.
+    const presented = extractApiKey(req);
+    if (presented && validateApiKey(presented)) {
+      logger.debug("Authenticated via API key");
+      next();
+      return;
+    }
+
     const client = clientIpKey(req.ip ?? req.socket.remoteAddress);
     if (failures.isBlocked(client)) {
       logger.warn({ ip: client, path: req.path }, "Too many failed /mcp credentials");
@@ -429,24 +438,12 @@ function createCombinedAuthMiddleware(
 
     const xApiKey = req.headers["x-api-key"];
     if (typeof xApiKey === "string" && xApiKey) {
-      if (validateApiKey(xApiKey)) {
-        logger.debug("Authenticated via X-API-Key header");
-        next();
-        return;
-      }
       failures.record(client);
       res.status(401).json({
         jsonrpc: "2.0",
         error: { code: -32000, message: "Invalid API key" },
         id: null,
       });
-      return;
-    }
-
-    const candidate = extractApiKey(req);
-    if (candidate && validateApiKey(candidate)) {
-      logger.debug("Authenticated via Bearer token (API key match)");
-      next();
       return;
     }
 
@@ -1044,5 +1041,6 @@ export async function startHttpTransport(
       `Meta Ads MCP server listening (HTTP transport — auth: ${authModes.join(", ")})`,
     );
   });
+  applyServerTimeouts(httpServer);
   installGracefulShutdown(httpServer);
 }

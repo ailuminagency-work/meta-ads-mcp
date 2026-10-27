@@ -5,6 +5,7 @@ import {
   describeDeployment,
   resolveDeploymentMode,
   validateAgencyEnvironment,
+  validatePlatformConfiguration,
   validateVideoConcurrency,
 } from "./transport/deployment-config.js";
 import { startWaitingTransport } from "./transport/waiting.js";
@@ -43,6 +44,7 @@ async function main(): Promise<void> {
     const cleanup = materializeGoogleCredentials();
     process.once("exit", cleanup);
     validateAgencyEnvironment();
+    await validatePlatformConfiguration();
   }
   logger.info(describeDeployment(mode), "Deployment configuration");
   const { createServer } = await import("./server.js");

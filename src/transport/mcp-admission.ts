@@ -4,8 +4,17 @@ import { logger } from "../utils/logger.js";
 
 export const DEFAULT_MCP_MAX_IN_FLIGHT = 16;
 export const DEFAULT_MCP_RATE_LIMIT_PER_MINUTE = 120;
+export const DEFAULT_MCP_MAX_IN_FLIGHT_PER_SUBJECT = 4;
+// The longest tool call a client can ask for is ads_run_report_and_wait (max_wait_seconds up to 3600); video
+// and Gemini calls run 180 to 240 s by default. The default sits just above that, so no tool is cut short; an
+// operator who does not use long report waits can lower it.
+export const DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS = 3_700;
 const MAX_IN_FLIGHT_CEILING = 1_000;
 const RATE_LIMIT_CEILING = 100_000;
+const REQUEST_TIMEOUT_FLOOR_SECONDS = 30;
+const REQUEST_TIMEOUT_CEILING_SECONDS = 7_200;
+const RESPONSE_STALL_MS = 60_000;
+const STALL_CHECK_MS = 5_000;
 const RATE_WINDOW_MS = 60_000;
 const MAX_TRACKED_SUBJECTS = 10_000;
 const LOG_INTERVAL_MS = 1_000;
@@ -15,24 +24,33 @@ export interface McpAdmissionConfig {
   perSubjectPerWindow: number;
   windowMs: number;
   maxTrackedSubjects: number;
+  perSubjectInFlight?: number;
+  requestTimeoutMs?: number;
+  responseStallMs?: number;
+  stallCheckMs?: number;
 }
 
 export interface McpAdmissionStats {
   inFlight: number;
   admitted: number;
   rejectedInFlight: number;
+  rejectedSubjectInFlight: number;
   rejectedRate: number;
   rejectedCapacity: number;
+  timedOut: number;
+  stalled: number;
   trackedSubjects: number;
 }
 
 export type McpAdmission = express.RequestHandler & { stats(): McpAdmissionStats };
 
-function positiveInteger(env: NodeJS.ProcessEnv, name: string, fallback: number, ceiling: number): number {
+function boundedInteger(env: NodeJS.ProcessEnv, name: string, fallback: number, floor: number, ceiling: number): number {
   const raw = env[name]?.trim();
   if (!raw) return fallback;
-  if (!/^[1-9]\d{0,8}$/.test(raw) || Number(raw) > ceiling) {
-    throw new Error(`${name} must be a positive integer no greater than ${ceiling}`);
+  if (!/^[1-9]\d{0,8}$/.test(raw) || Number(raw) < floor || Number(raw) > ceiling) {
+    throw new Error(
+      floor === 1 ? `${name} must be a positive integer no greater than ${ceiling}` : `${name} must be an integer from ${floor} to ${ceiling}`,
+    );
   }
   return Number(raw);
 }
@@ -40,8 +58,13 @@ function positiveInteger(env: NodeJS.ProcessEnv, name: string, fallback: number,
 /** A set but unusable value stops startup: the limits are never silently dropped. */
 export function readMcpAdmissionConfig(env: NodeJS.ProcessEnv = process.env): McpAdmissionConfig {
   return {
-    maxInFlight: positiveInteger(env, "MCP_MAX_IN_FLIGHT", DEFAULT_MCP_MAX_IN_FLIGHT, MAX_IN_FLIGHT_CEILING),
-    perSubjectPerWindow: positiveInteger(env, "MCP_RATE_LIMIT_PER_MINUTE", DEFAULT_MCP_RATE_LIMIT_PER_MINUTE, RATE_LIMIT_CEILING),
+    maxInFlight: boundedInteger(env, "MCP_MAX_IN_FLIGHT", DEFAULT_MCP_MAX_IN_FLIGHT, 1, MAX_IN_FLIGHT_CEILING),
+    perSubjectInFlight: boundedInteger(env, "MCP_MAX_IN_FLIGHT_PER_SUBJECT", DEFAULT_MCP_MAX_IN_FLIGHT_PER_SUBJECT, 1, MAX_IN_FLIGHT_CEILING),
+    perSubjectPerWindow: boundedInteger(env, "MCP_RATE_LIMIT_PER_MINUTE", DEFAULT_MCP_RATE_LIMIT_PER_MINUTE, 1, RATE_LIMIT_CEILING),
+    requestTimeoutMs:
+      boundedInteger(env, "MCP_REQUEST_TIMEOUT_SECONDS", DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS, REQUEST_TIMEOUT_FLOOR_SECONDS, REQUEST_TIMEOUT_CEILING_SECONDS) * 1_000,
+    responseStallMs: RESPONSE_STALL_MS,
+    stallCheckMs: STALL_CHECK_MS,
     windowMs: RATE_WINDOW_MS,
     maxTrackedSubjects: MAX_TRACKED_SUBJECTS,
   };
@@ -63,19 +86,39 @@ function subjectOf(req: express.Request): string {
  * Admission control for POST /mcp, placed after authentication and before the
  * body is read. Every request builds a fresh server with the full tool
  * registry and can hold a worker on Meta, Gemini or ffmpeg for minutes, so an
- * authenticated caller could otherwise saturate the only replica. Two limits,
- * both refused with 429 and a Retry-After:
- *  - a per-instance cap on requests in flight (released when the response
- *    finishes or the connection closes, so an abort frees the slot);
+ * authenticated caller could otherwise saturate the only replica. Limits, all
+ * refused with 429 and a Retry-After:
+ *  - a per-instance cap on requests in flight;
+ *  - a per-subject cap on requests in flight, so one credential cannot take
+ *    every slot (the slot is taken before the body is read on purpose: reading
+ *    first would let any valid token buffer bodies without bound);
  *  - a per-authenticated-subject sliding window.
+ * A slot is released when the response finishes or the connection closes, so
+ * an abort frees it. A watchdog ends a request still unanswered after the
+ * request timeout, and a response the client has stopped reading is destroyed
+ * after a minute without progress; both release the slot through `close`.
  * Requests that cannot be attributed share one bucket and a full tracking
  * table refuses new subjects: the limits fail closed.
  */
 export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmissionConfig(), clock: () => number = Date.now): McpAdmission {
+  const perSubjectInFlight = config.perSubjectInFlight ?? DEFAULT_MCP_MAX_IN_FLIGHT_PER_SUBJECT;
+  const requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS * 1_000;
+  const responseStallMs = config.responseStallMs ?? RESPONSE_STALL_MS;
+  const stallCheckMs = config.stallCheckMs ?? STALL_CHECK_MS;
   const windows = new Map<string, number[]>();
-  const counters = { inFlight: 0, admitted: 0, rejectedInFlight: 0, rejectedRate: 0, rejectedCapacity: 0 };
-  const lastLogged = { in_flight: -Infinity, rate: -Infinity, capacity: -Infinity };
-  const suppressed = { in_flight: 0, rate: 0, capacity: 0 };
+  const subjectCounts = new Map<string, number>();
+  const counters = {
+    inFlight: 0,
+    admitted: 0,
+    rejectedInFlight: 0,
+    rejectedSubjectInFlight: 0,
+    rejectedRate: 0,
+    rejectedCapacity: 0,
+    timedOut: 0,
+    stalled: 0,
+  };
+  const lastLogged = { in_flight: -Infinity, subject_in_flight: -Infinity, rate: -Infinity, capacity: -Infinity };
+  const suppressed = { in_flight: 0, subject_in_flight: 0, rate: 0, capacity: 0 };
 
   function prune(now: number): void {
     for (const [key, stamps] of windows) {
@@ -86,6 +129,7 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
 
   function reject(res: express.Response, reason: keyof typeof lastLogged, retryAfterSeconds: number, subject: string, now: number): void {
     if (reason === "in_flight") counters.rejectedInFlight += 1;
+    else if (reason === "subject_in_flight") counters.rejectedSubjectInFlight += 1;
     else if (reason === "rate") counters.rejectedRate += 1;
     else counters.rejectedCapacity += 1;
     if (now - lastLogged[reason] >= LOG_INTERVAL_MS) {
@@ -96,7 +140,8 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
           subject: hashPii(subject),
           inFlight: counters.inFlight,
           maxInFlight: config.maxInFlight,
-          rejectedTotal: counters.rejectedInFlight + counters.rejectedRate + counters.rejectedCapacity,
+          rejectedTotal:
+            counters.rejectedInFlight + counters.rejectedSubjectInFlight + counters.rejectedRate + counters.rejectedCapacity,
           suppressedSinceLastLog: suppressed[reason],
         },
         "Rejected /mcp request: admission limit reached",
@@ -114,6 +159,46 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
     });
   }
 
+  function watch(res: express.Response, release: () => void): void {
+    const ended = (): void => {
+      clearTimeout(requestTimer);
+      clearInterval(stallTimer);
+      release();
+    };
+    const requestTimer = setTimeout(() => {
+      counters.timedOut += 1;
+      logger.warn({ event: "mcp_request_timed_out", timeoutMs: requestTimeoutMs, inFlight: counters.inFlight }, "Ended a /mcp request that stayed unanswered");
+      if (!res.headersSent) {
+        res.setHeader("Connection", "close");
+        res.status(504).json({ jsonrpc: "2.0", error: { code: -32000, message: "Request timed out" }, id: null });
+        res.once("finish", () => res.destroy());
+        setTimeout(() => res.destroy(), 1_000).unref();
+      } else {
+        res.destroy();
+      }
+    }, requestTimeoutMs);
+    requestTimer.unref();
+
+    let lastLength = 0;
+    let stalledSince: number | null = null;
+    const stallTimer = setInterval(() => {
+      const length = res.writableLength;
+      if (length === 0) stalledSince = null;
+      else if (length < lastLength) stalledSince = Date.now();
+      else if (stalledSince === null) stalledSince = Date.now();
+      else if (Date.now() - stalledSince >= responseStallMs) {
+        counters.stalled += 1;
+        logger.warn({ event: "mcp_response_stalled", bufferedBytes: length, stallMs: responseStallMs }, "Closed a /mcp response the client stopped reading");
+        res.destroy();
+      }
+      lastLength = length;
+    }, stallCheckMs);
+    stallTimer.unref();
+
+    res.once("finish", ended);
+    res.once("close", ended);
+  }
+
   const middleware: express.RequestHandler = (req, res, next) => {
     const now = clock();
     const subject = subjectOf(req);
@@ -124,6 +209,11 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
     }
 
     const key = hashPii(subject) ?? "unattributed";
+    if ((subjectCounts.get(key) ?? 0) >= perSubjectInFlight) {
+      reject(res, "subject_in_flight", 1, subject, now);
+      return;
+    }
+
     let stamps = windows.get(key);
     if (stamps) {
       while (stamps.length > 0 && stamps[0] <= now - config.windowMs) stamps.shift();
@@ -145,14 +235,17 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
 
     counters.inFlight += 1;
     counters.admitted += 1;
+    subjectCounts.set(key, (subjectCounts.get(key) ?? 0) + 1);
     let released = false;
     const release = (): void => {
       if (released) return;
       released = true;
       counters.inFlight -= 1;
+      const remaining = (subjectCounts.get(key) ?? 1) - 1;
+      if (remaining <= 0) subjectCounts.delete(key);
+      else subjectCounts.set(key, remaining);
     };
-    res.once("finish", release);
-    res.once("close", release);
+    watch(res, release);
     next();
   };
 

@@ -27,7 +27,12 @@ import {
   publishingVideoIngressSignature,
   type PublishingVideoProfile,
 } from "../../src/platform/publishing-video-ingress.js";
-import { ingressPreauthSignature, INGRESS_PREAUTH_HEADER, legacyBodySignatureAllowed } from "../../src/platform/ingress-preauth.js";
+import {
+  DeliveryReplayCache,
+  ingressPreauthSignature,
+  INGRESS_PREAUTH_HEADER,
+  legacyBodySignatureAllowed,
+} from "../../src/platform/ingress-preauth.js";
 
 const KEY = "a".repeat(64);
 const MIB = 1024 * 1024;
@@ -233,9 +238,12 @@ function signedHead(adapter: Adapter, length: number, overrides: Partial<Head> =
   };
 }
 
+let deliveries = 0;
+
 async function signedPost(port: number, adapter: Adapter, raw: Buffer, options: { legacyBody?: Buffer; preauthLength?: number } = {}): Promise<number> {
   const timestamp = String(Date.now());
-  const delivery = "synthetic-delivery";
+  deliveries += 1;
+  const delivery = `synthetic-delivery-${deliveries}`;
   const response = await fetch(`http://127.0.0.1:${port}/ingress/${adapter.profileId}`, {
     method: "POST",
     headers: {
@@ -391,6 +399,130 @@ describe("media ingress no longer buffers for callers it has not authenticated (
     expect(answers.every((answer) => answer.status === 404)).toBe(true);
     expect(grown).toBeLessThan(50);
   }, 30_000);
+});
+
+/** One fixed header set, as a captured request would carry it. */
+function captured(adapter: Adapter, raw: Buffer, delivery = "synthetic-replay-delivery") {
+  const timestamp = String(Date.now());
+  return {
+    timestamp,
+    delivery,
+    signature: adapter.legacy(raw, timestamp, delivery),
+    preauth: adapter.preauth(timestamp, delivery, raw.length),
+    raw,
+  };
+}
+
+async function sendCaptured(port: number, adapter: Adapter, set: ReturnType<typeof captured>, bodyOverride?: Buffer): Promise<number> {
+  const response = await fetch(`http://127.0.0.1:${port}/ingress/${adapter.profileId}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-lumin-timestamp": set.timestamp,
+      "x-lumin-delivery": set.delivery,
+      "x-lumin-signature": set.signature,
+      [INGRESS_PREAUTH_HEADER]: set.preauth,
+    },
+    body: bodyOverride ?? set.raw,
+  });
+  return response.status;
+}
+
+describe.each(adapters)("$name ingress refuses a replayed header set (G3R-02)", (adapter) => {
+  it("answers a replay of a request that was processed with 409 at once, without taking the slot, while a fresh delivery still passes", async () => {
+    const port = await listen(adapter.build(true, stage));
+    const set = captured(adapter, Buffer.from("{}"));
+    expect(await sendCaptured(port, adapter, set)).toBe(400);
+
+    const replay = await stalled(
+      port,
+      { path: `/ingress/${adapter.profileId}`, contentLength: set.raw.length, timestamp: set.timestamp, delivery: set.delivery, signature: set.signature, preauth: set.preauth },
+      0,
+    );
+    expect(replay.status).toBe(409);
+    expect(await signedPost(port, adapter, Buffer.from("{}"))).toBe(400);
+  });
+
+  it("refuses a replay while the original is still arriving, and does not let it hold the slot", async () => {
+    const port = await listen(adapter.build(true, stage));
+    const set = captured(adapter, Buffer.from("{}"));
+    const head = { path: `/ingress/${adapter.profileId}`, contentLength: 1_000, timestamp: set.timestamp, delivery: set.delivery, signature: set.signature, preauth: adapter.preauth(set.timestamp, set.delivery, 1_000) };
+    const original = stalled(port, head, 10, 600);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect((await stalled(port, head, 10)).status).toBe(409);
+    expect((await original).status).toBe(-1);
+  });
+
+  it("lets the sender retry the same delivery after an attempt that failed its body signature", async () => {
+    const port = await listen(adapter.build(true, stage));
+    const set = captured(adapter, Buffer.from("{}"));
+    expect(await sendCaptured(port, adapter, { ...set, signature: "sha256=" + "0".repeat(64) })).toBe(401);
+    expect(await sendCaptured(port, adapter, set)).toBe(400);
+  });
+
+  it("lets the sender retry the same delivery after an upload that was aborted", async () => {
+    const port = await listen(adapter.build(true, stage));
+    const set = captured(adapter, Buffer.from("{}"));
+    const head = { path: `/ingress/${adapter.profileId}`, contentLength: 1_000, timestamp: set.timestamp, delivery: set.delivery, signature: set.signature, preauth: adapter.preauth(set.timestamp, set.delivery, 1_000) };
+    expect((await stalled(port, head, 10, 400)).status).toBe(-1);
+    for (const socket of sockets.splice(0)) socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(await sendCaptured(port, adapter, set)).toBe(400);
+  });
+});
+
+describe("DeliveryReplayCache", () => {
+  let now = 1_700_000_000_000;
+  const cache = (maxPerProfile = 3) => new DeliveryReplayCache({ ttlMs: 600_000, maxPerProfile, now: () => now });
+
+  it("claims a delivery once per profile and forgets it after the window", () => {
+    const store = cache();
+    expect(store.claim("p", "d1")).toBe(true);
+    expect(store.claim("p", "d1")).toBe(false);
+    expect(store.claim("q", "d1")).toBe(true);
+    now += 599_999;
+    expect(store.claim("p", "d1")).toBe(false);
+    now += 2;
+    expect(store.claim("p", "d1")).toBe(true);
+  });
+
+  it("lets a released delivery be claimed again", () => {
+    const store = cache();
+    expect(store.claim("p", "d1")).toBe(true);
+    store.release("p", "d1");
+    expect(store.claim("p", "d1")).toBe(true);
+  });
+
+  it("stays bounded: a full profile evicts its oldest settled delivery and never an active one", () => {
+    const store = cache(3);
+    for (const id of ["d1", "d2", "d3"]) {
+      expect(store.claim("p", id)).toBe(true);
+      store.settle("p", id);
+    }
+    expect(store.claim("p", "d4")).toBe(true);
+    expect(store.size("p")).toBe(3);
+    expect(store.claim("p", "d1")).toBe(true);
+    expect(store.claim("p", "d4")).toBe(false);
+  });
+
+  it("refuses a new delivery when every entry is still in flight, instead of dropping one", () => {
+    const store = cache(2);
+    expect(store.claim("p", "a")).toBe(true);
+    expect(store.claim("p", "b")).toBe(true);
+    expect(store.claim("p", "c")).toBe(false);
+    expect(store.size("p")).toBe(2);
+  });
+
+  it("does not let one profile fill another's table", () => {
+    const store = cache(2);
+    for (let index = 0; index < 50; index += 1) {
+      store.claim("busy", `d${index}`);
+      store.settle("busy", `d${index}`);
+    }
+    expect(store.size("busy")).toBe(2);
+    expect(store.claim("quiet", "d0")).toBe(true);
+  });
 });
 
 describe("video ingress end to end with the pre-authenticated protocol", () => {

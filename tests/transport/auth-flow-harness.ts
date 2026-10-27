@@ -42,6 +42,7 @@ const BASE_ENV: Record<string, string | undefined> = {
 
 export interface AuthServer {
   origin: string;
+  server: Server;
   close: () => Promise<void>;
 }
 
@@ -86,6 +87,7 @@ export async function startAuthServer(env: Record<string, string | undefined> = 
   if (!server!.listening) await new Promise<void>((resolve) => server!.once("listening", resolve));
   return {
     origin: `http://127.0.0.1:${(server!.address() as AddressInfo).port}`,
+    server: server!,
     close: () =>
       new Promise<void>((resolve, reject) => {
         removeShutdownHooks();

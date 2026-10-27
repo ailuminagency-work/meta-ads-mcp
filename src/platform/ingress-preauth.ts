@@ -13,6 +13,9 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export const INGRESS_PREAUTH_HEADER = "x-lumin-request-signature";
 
 const BODY_DEADLINE_MS = 10_000;
+// A header set stays acceptable for 300 s either side of its timestamp, so it can be replayed for up to 600 s.
+const REPLAY_WINDOW_MS = 600_000;
+const REPLAY_MAX_PER_PROFILE = 1_000;
 const SIGNATURE_SHAPE = /^sha256=[a-f0-9]{64}$/;
 
 export function ingressPreauthSignature(
@@ -42,6 +45,72 @@ export function legacyBodySignatureAllowed(env: NodeJS.ProcessEnv = process.env)
   return env.LUMIN_INGRESS_ALLOW_LEGACY_BODY_SIGNATURE === "true" || env.NODE_ENV === "test" || env.NODE_ENV === "development";
 }
 
+interface ReplayOptions {
+  ttlMs?: number;
+  maxPerProfile?: number;
+  now?: () => number;
+}
+
+/**
+ * Delivery ids seen on authenticated requests, per profile, for as long as the
+ * header set that carried them could still be replayed. An entry is `active`
+ * while its request is arriving and `settled` once it was processed; a request
+ * that failed or was cut off is released so the sender can retry the same
+ * delivery. The table is capped per profile: a full table evicts its oldest
+ * settled entry and, when every entry is active, refuses the new delivery.
+ */
+export class DeliveryReplayCache {
+  private readonly profiles = new Map<string, Map<string, { expiresAt: number; settled: boolean }>>();
+  private readonly ttlMs: number;
+  private readonly maxPerProfile: number;
+  private readonly now: () => number;
+
+  constructor(options: ReplayOptions = {}) {
+    this.ttlMs = options.ttlMs ?? REPLAY_WINDOW_MS;
+    this.maxPerProfile = options.maxPerProfile ?? REPLAY_MAX_PER_PROFILE;
+    this.now = options.now ?? Date.now;
+  }
+
+  claim(profileId: string, deliveryId: string): boolean {
+    const now = this.now();
+    let entries = this.profiles.get(profileId);
+    if (!entries) {
+      entries = new Map();
+      this.profiles.set(profileId, entries);
+    }
+    for (const [id, entry] of entries) {
+      if (entry.expiresAt > now) break;
+      entries.delete(id);
+    }
+    const existing = entries.get(deliveryId);
+    if (existing && existing.expiresAt > now) return false;
+    if (entries.size >= this.maxPerProfile) {
+      const oldestSettled = [...entries].find(([, entry]) => entry.settled);
+      if (!oldestSettled) return false;
+      entries.delete(oldestSettled[0]);
+    }
+    entries.delete(deliveryId);
+    entries.set(deliveryId, { expiresAt: now + this.ttlMs, settled: false });
+    return true;
+  }
+
+  settle(profileId: string, deliveryId: string): void {
+    const entry = this.profiles.get(profileId)?.get(deliveryId);
+    if (entry) entry.settled = true;
+  }
+
+  release(profileId: string, deliveryId: string): void {
+    this.profiles.get(profileId)?.delete(deliveryId);
+  }
+
+  size(profileId: string): number {
+    return this.profiles.get(profileId)?.size ?? 0;
+  }
+}
+
+/** Outcomes of an authenticated request that count as processed; anything else lets the sender retry the delivery. */
+const processedStatus = (status: number): boolean => (status >= 200 && status < 300) || status === 400 || status === 403;
+
 export interface IngressGateProfile {
   id: string;
   enabled: boolean;
@@ -57,6 +126,7 @@ export interface IngressGateOptions<P extends IngressGateProfile> {
   maxActive: number;
   unknownProfileStatus: 403 | 404;
   env?: () => NodeJS.ProcessEnv;
+  replay?: DeliveryReplayCache;
 }
 
 function refuse(res: express.Response, status: number): void {
@@ -75,22 +145,32 @@ function refuse(res: express.Response, status: number): void {
 export function createIngressGate<P extends IngressGateProfile>(options: IngressGateOptions<P>): express.RequestHandler {
   let active = 0;
   const environment = options.env ?? (() => process.env);
+  const replay = options.replay ?? new DeliveryReplayCache();
 
-  const admit = (req: express.Request, res: express.Response, next: express.NextFunction, limit: number): void => {
+  const admit = (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+    limit: number,
+    claimed?: { profileId: string; deliveryId: string },
+  ): void => {
     if (active >= options.maxActive) {
+      if (claimed) replay.release(claimed.profileId, claimed.deliveryId);
       refuse(res, 429);
       return;
     }
     active += 1;
     let released = false;
-    const release = (): void => {
-      if (!released) {
-        released = true;
-        active -= 1;
-      }
+    const release = (completed: boolean): void => {
+      if (released) return;
+      released = true;
+      active -= 1;
+      if (!claimed) return;
+      if (completed && processedStatus(res.statusCode)) replay.settle(claimed.profileId, claimed.deliveryId);
+      else replay.release(claimed.profileId, claimed.deliveryId);
     };
-    res.once("finish", release);
-    res.once("close", release);
+    res.once("finish", () => release(true));
+    res.once("close", () => release(false));
     const bodyDeadline = setTimeout(() => req.destroy(), BODY_DEADLINE_MS);
     bodyDeadline.unref();
     req.once("end", () => clearTimeout(bodyDeadline));
@@ -163,7 +243,11 @@ export function createIngressGate<P extends IngressGateProfile>(options: Ingress
       refuse(res, 401);
       return;
     }
-    admit(req, res, next, length);
+    if (!replay.claim(profile.id, delivery)) {
+      refuse(res, 409);
+      return;
+    }
+    admit(req, res, next, length, { profileId: profile.id, deliveryId: delivery });
   }
 
   return (req, res, next) => {

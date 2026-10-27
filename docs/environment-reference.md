@@ -85,6 +85,8 @@ Optional public-ad acquisition uses default-off `LUMIN_APIFY_PUBLIC_ADS_ENABLED`
 | Variable | Purpose and enabling rule |
 |---|---|
 | MCP_MAX_IN_FLIGHT | Default 16. Authenticated `POST /mcp` requests allowed in flight on one instance; the next gets 429 with Retry-After. A set value must be a positive integer up to 1000 or startup fails. |
+| MCP_MAX_IN_FLIGHT_PER_SUBJECT | Default 4. Authenticated `POST /mcp` requests one subject may have in flight; the next gets 429 with Retry-After while other subjects are served. A set value must be a positive integer up to 1000 or startup fails. |
+| MCP_REQUEST_TIMEOUT_SECONDS | Default 3700 (above the longest tool call, `ads_run_report_and_wait` with `max_wait_seconds` 3600). A `/mcp` request unanswered for this long is ended with 504 and its slot freed. A set value must be an integer from 30 to 7200 or startup fails. |
 | MCP_RATE_LIMIT_PER_MINUTE | Default 120. Calls per authenticated subject in a sliding minute, refused with 429 and Retry-After beyond it. A set value must be a positive integer up to 100000 or startup fails. |
 | LUMIN_INGRESS_ALLOW_LEGACY_BODY_SIGNATURE | Default unset. Outside test and development runs the media, video, attachment and publishing-video ingress routes require the pre-authenticated `x-lumin-request-signature` header and refuse a request that has only the body signature. Setting this to exactly `true` re-admits the body-only signature, which can only be checked after the body is buffered; leave it unset. |
 | LUMIN_APPROVAL_REQUIRE_DISTINCT_APPROVER | Agency startup accepts only unset, `true` or `false` (any letter case) and refuses anything else, so a misspelled value cannot silently read as false. When true, the operator who requested an approval cannot also issue it. |

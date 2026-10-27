@@ -17,6 +17,8 @@ concurrency:
 jobs:
   preflight:
     name: Preflight (lint, typecheck, test, build, secret scan)
+    # workflow_dispatch can be run on any branch; only main may build and deploy (the jobs after this one need it).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -80,11 +82,12 @@ jobs:
 
   deploy:
     needs: preflight
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write   # Workload Identity Federation token; only this job, which runs no repository code, authenticates to GCP
+      id-token: write   # Workload Identity Federation token; only this job authenticates to GCP. It runs no repository script on the runner (Dockerfile RUN steps execute inside BuildKit, which has no OIDC variables)
     environment:
       name: production
       url: ${{ steps.deploy.outputs.url }}
@@ -525,4 +528,4 @@ jobs:
     permissions:
       contents: read
       packages: write
-    secrets: inherit
+    # No secrets: publish.yml uses only its own GITHUB_TOKEN, so nothing is inherited from the repository.
