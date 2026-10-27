@@ -87,7 +87,7 @@ function isRejected(reply: Awaited<ReturnType<typeof callTool>>): boolean {
   return reply.status >= 400 || reply.json?.result?.isError === true || reply.json?.error !== undefined;
 }
 
-describe("agency mode with writes enabled (platform disabled)", () => {
+describe("agency mode with the writes flag but no platform stays read-only (fail closed)", () => {
   let h: Harness;
   let flow: FlowResult;
 
@@ -98,26 +98,22 @@ describe("agency mode with writes enabled (platform disabled)", () => {
   afterEach(() => expect(h.upstream.blocked).toEqual([]));
   afterAll(async () => h.close());
 
-  it("exposes the write tools with their destructive/idempotent hints and the live-data warning", async () => {
+  it("lists no write tool: the writes flag without the platform adds nothing to the read-only list", async () => {
     const tools = await listTools(h.origin, flow.tokens.access_token);
-    const byName = new Map(tools.map((tool) => [tool.name, tool]));
-    const writes = tools.filter((tool) => tool.annotations?.readOnlyHint !== true);
-    expect(writes.length).toBeGreaterThan(50);
-    for (const name of ["ads_create_campaign", "ads_update_campaign", "ads_delete_campaign"]) {
-      expect(byName.has(name), name).toBe(true);
-      expect(byName.get(name)!.description, name).toContain(WRITE_WARNING);
+    expect(tools.length).toBeGreaterThan(30);
+    for (const tool of tools) {
+      expect(tool.annotations?.readOnlyHint, tool.name).toBe(true);
+      expect(tool.description ?? "", tool.name).not.toContain(WRITE_WARNING);
     }
-    expect(byName.get("ads_delete_campaign")!.annotations?.destructiveHint).toBe(true);
-    expect(byName.get("ads_create_campaign")!.annotations?.idempotentHint).toBe(false);
-    expect(byName.get("ads_get_campaigns")!.annotations?.readOnlyHint).toBe(true);
+    const names = new Set(tools.map((tool) => tool.name));
+    for (const name of ["ads_create_campaign", "ads_update_campaign", "ads_delete_campaign"]) expect(names.has(name), name).toBe(false);
   });
 
-  it("routes a write call to validation, not to a 'disabled' refusal, and sends nothing to Meta for invalid input", async () => {
+  it("refuses a write call as disabled and sends nothing to Meta", async () => {
     h.upstream.reset();
     const reply = await callTool(h.origin, flow.tokens.access_token, "ads_create_campaign", {});
     expect(isRejected(reply)).toBe(true);
-    expect(errorText(reply)).toMatch(/Invalid arguments|invalid/i);
-    expect(errorText(reply)).not.toMatch(/disabled/i);
+    expect(errorText(reply)).toMatch(/disabled|not found|unknown tool/i);
     expect(h.upstream.graphCalls()).toHaveLength(0);
   });
 
@@ -142,7 +138,7 @@ describe("read-only agency mode (platform disabled)", () => {
     h = await bootServer();
     flow = await completeOAuthFlow(h.origin);
     tools = await listTools(h.origin, flow.tokens.access_token);
-    writeEnabled = (await listToolsInProcess({ AGENCY_WRITES_ENABLED: "true" })) as Tool[];
+    writeEnabled = (await listToolsInProcess({ AGENCY_WRITES_ENABLED: "true", LUMIN_PLATFORM_ENABLED: "true" })) as Tool[];
   });
   afterEach(() => expect(h.upstream.blocked).toEqual([]));
   afterAll(async () => h.close());
@@ -161,9 +157,7 @@ describe("read-only agency mode (platform disabled)", () => {
     const visible = new Set(tools.map((tool) => tool.name));
     const hidden = writeEnabled.filter((tool) => !visible.has(tool.name));
     expect(hidden.length).toBeGreaterThan(50);
-    for (const tool of writeEnabled.filter((candidate) => candidate.annotations?.readOnlyHint !== true)) {
-      expect(visible.has(tool.name), `${tool.name} must be hidden`).toBe(false);
-    }
+    for (const tool of tools) expect(tool.annotations?.readOnlyHint, `${tool.name} is visible so it must be read-only`).toBe(true);
     expect([...visible].every((name) => writeEnabled.some((tool) => tool.name === name))).toBe(true);
   });
 
@@ -174,7 +168,7 @@ describe("read-only agency mode (platform disabled)", () => {
     const accepted: string[] = [];
     for (const tool of hidden) {
       const reply = await callTool(h.origin, flow.tokens.access_token, tool.name, sampleArguments(tool, { clientId: "client-a", accountId: "101", campaignId: "201" }));
-      if (!isRejected(reply) || !/disabled/i.test(errorText(reply))) accepted.push(`${tool.name}: ${errorText(reply).slice(0, 120)}`);
+      if (!isRejected(reply) || !/disabled|not found/i.test(errorText(reply))) accepted.push(`${tool.name}: ${errorText(reply).slice(0, 120)}`);
     }
     expect(accepted).toEqual([]);
     expect(h.upstream.graphCalls()).toHaveLength(0);

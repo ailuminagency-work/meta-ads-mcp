@@ -131,7 +131,7 @@ describe("scripts/mcp-acceptance.mjs against the in-process server", () => {
   });
 
   it("refuses to call a tool that is not annotated read-only, even when the server lists it", async () => {
-    booted = await bootServer({ writes: true });
+    booted = await bootServer({ writes: true, platform: true });
     const flow = await completeOAuthFlow(booted.origin);
     booted.upstream.reset();
     const run = await runScript({
