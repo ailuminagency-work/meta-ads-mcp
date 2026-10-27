@@ -5,6 +5,7 @@ import {
   createVideoJobRunner,
   VideoJobBusyError,
   VideoJobRateLimitError,
+  VideoJobTenantQueueFullError,
   type VideoJobContext,
 } from "../../src/media/video-jobs.js";
 
@@ -188,5 +189,256 @@ describe("createVideoJobRunner", () => {
     gate.resolve();
     await Promise.all([a, b]);
     expect(runner.stats()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  describe("hourly allowance", () => {
+    it("is not spent by calls turned away because the queue is full", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 0, perTenantPerHour: 2 });
+      const gate = deferred<void>();
+      const holder = runner.run({ tenantId: "other" }, async () => gate.promise);
+
+      for (let i = 0; i < 5; i++) {
+        await expect(runner.run({ tenantId: "a" }, async () => undefined)).rejects.toBeInstanceOf(VideoJobBusyError);
+      }
+      gate.resolve();
+      await holder;
+
+      await runner.run({ tenantId: "a" }, async () => undefined);
+      await runner.run({ tenantId: "a" }, async () => undefined);
+      await expect(runner.run({ tenantId: "a" }, async () => undefined)).rejects.toBeInstanceOf(VideoJobRateLimitError);
+    });
+
+    it("is not spent by a call that waited out the queue and gave up", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 4, queueWaitMs: 20, perTenantPerHour: 1 });
+      const gate = deferred<void>();
+      const holder = runner.run({ tenantId: "other" }, async () => gate.promise);
+
+      await expect(runner.run({ tenantId: "a" }, async () => undefined)).rejects.toBeInstanceOf(VideoJobBusyError);
+      gate.resolve();
+      await holder;
+
+      await expect(runner.run({ tenantId: "a" }, async () => "ran")).resolves.toBe("ran");
+    });
+
+    it("is not spent by a queued call its caller abandoned", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 4, queueWaitMs: 5_000, perTenantPerHour: 1 });
+      const gate = deferred<void>();
+      const holder = runner.run({ tenantId: "other" }, async () => gate.promise);
+      const controller = new AbortController();
+      const abandoned = runner.run({ tenantId: "a", signal: controller.signal }, async () => "never");
+      await new Promise((r) => setTimeout(r, 5));
+      controller.abort();
+      await expect(abandoned).rejects.toThrow(/abort/i);
+      gate.resolve();
+      await holder;
+
+      await expect(runner.run({ tenantId: "a" }, async () => "ran")).resolves.toBe("ran");
+    });
+
+    it("is not spent by a call already aborted when it arrives", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, perTenantPerHour: 1 });
+      const controller = new AbortController();
+      controller.abort();
+      await expect(runner.run({ tenantId: "a", signal: controller.signal }, async () => "never")).rejects.toThrow(/abort/i);
+      await expect(runner.run({ tenantId: "a" }, async () => "ran")).resolves.toBe("ran");
+    });
+
+    it("is spent by a job that started, whether it succeeds or fails", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 2, perTenantPerHour: 2 });
+      await expect(runner.run({ tenantId: "a" }, async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+      await runner.run({ tenantId: "a" }, async () => undefined);
+      await expect(runner.run({ tenantId: "a" }, async () => undefined)).rejects.toBeInstanceOf(VideoJobRateLimitError);
+    });
+
+    it("cannot be overrun by callers that pass the first check together", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 3, maxQueued: 3, perTenantPerHour: 1 });
+      const gate = deferred<void>();
+      const first = runner.run({ tenantId: "a" }, async () => gate.promise);
+      const second = runner.run({ tenantId: "a" }, async () => "should not run");
+      const third = runner.run({ tenantId: "a" }, async () => "should not run");
+
+      await Promise.all([
+        expect(second).rejects.toBeInstanceOf(VideoJobRateLimitError),
+        expect(third).rejects.toBeInstanceOf(VideoJobRateLimitError),
+      ]);
+      gate.resolve();
+      await first;
+      expect(runner.stats()).toMatchObject({ running: 0, queued: 0 });
+    });
+  });
+
+  describe("queue places per tenant", () => {
+    const settle = () => new Promise((r) => setTimeout(r, 20));
+    const until = async (condition: () => boolean) => {
+      const limit = Date.now() + 5_000;
+      while (!condition()) {
+        if (Date.now() > limit) throw new Error("condition not reached");
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+
+    it("does not let one tenant hold the slot and the whole queue; another tenant still gets a place", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, queueWaitMs: 5_000, perTenantPerHour: 30 });
+      const gate = deferred<void>();
+      const order: string[] = [];
+      const noisy = Array.from({ length: 9 }, (_, i) =>
+        runner.run({ tenantId: "noisy" }, async () => { order.push(`noisy-${i}`); await gate.promise; }),
+      );
+      const outcomes = noisy.map((p) => p.then(() => "ok", (e: Error) => e));
+      await settle();
+
+      expect(runner.stats()).toMatchObject({ running: 1, queued: 2 });
+      const quiet = runner.run({ tenantId: "quiet" }, async () => { order.push("quiet"); return "quiet done"; });
+      await settle();
+      expect(runner.stats()).toMatchObject({ running: 1, queued: 3 });
+
+      gate.resolve();
+      await expect(quiet).resolves.toBe("quiet done");
+      const results = await Promise.all(outcomes);
+      const refused = results.filter((r) => r instanceof VideoJobTenantQueueFullError);
+      expect(refused).toHaveLength(6);
+      expect(refused[0]).toBeInstanceOf(VideoJobBusyError);
+      expect((refused[0] as Error).message).toMatch(/already has 2 videos waiting/);
+      expect(results.filter((r) => r === "ok")).toHaveLength(3);
+      expect(order).toEqual(["noisy-0", "quiet", "noisy-1", "noisy-2"]);
+    });
+
+    it("serves waiting tenants round-robin, the one that ran longest ago first, not in arrival order", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, queueWaitMs: 5_000 });
+      const gates = new Map<string, ReturnType<typeof deferred<void>>>();
+      const order: string[] = [];
+      const job = (name: string) => async () => {
+        order.push(name);
+        gates.set(name, deferred<void>());
+        await gates.get(name)!.promise;
+      };
+      const runs = [runner.run({ tenantId: "a" }, job("a1"))];
+      await until(() => order.length === 1);
+      runs.push(runner.run({ tenantId: "a" }, job("a2")));
+      runs.push(runner.run({ tenantId: "a" }, job("a3")));
+      await until(() => runner.stats().queued === 2);
+      runs.push(runner.run({ tenantId: "b" }, job("b1")));
+      runs.push(runner.run({ tenantId: "b" }, job("b2")));
+      runs.push(runner.run({ tenantId: "c" }, job("c1")));
+      await until(() => runner.stats().queued === 5);
+
+      const expected = ["a1", "b1", "c1", "a2", "b2", "a3"];
+      for (const [index, name] of expected.entries()) {
+        await until(() => gates.has(name));
+        gates.get(name)!.resolve();
+        await until(() => order.length === Math.min(index + 2, expected.length));
+      }
+      await Promise.all(runs);
+      expect(order).toEqual(["a1", "b1", "c1", "a2", "b2", "a3"]);
+    });
+
+    it("keeps oldest-first within a tenant and does not serve a caller that has gone", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, queueWaitMs: 5_000 });
+      const gate = deferred<void>();
+      const order: string[] = [];
+      const holder = runner.run({ tenantId: "a" }, async () => { order.push("a1"); await gate.promise; });
+      const controller = new AbortController();
+      const gone = runner.run({ tenantId: "b", signal: controller.signal }, async () => { order.push("b-gone"); });
+      const goneOutcome = gone.catch((e: Error) => e);
+      const b2 = runner.run({ tenantId: "b" }, async () => { order.push("b2"); });
+      const a2 = runner.run({ tenantId: "a" }, async () => { order.push("a2"); });
+      await settle();
+      controller.abort();
+      await goneOutcome;
+      gate.resolve();
+      await Promise.all([holder, b2, a2]);
+      expect(order).toEqual(["a1", "b2", "a2"]);
+    });
+
+    it("lets a tenant that is waiting run while another keeps resubmitting into the slot (starvation)", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, maxQueuedPerTenant: 2, queueWaitMs: 100, perTenantPerHour: 1000 });
+      let stop = false;
+      const pump = async () => {
+        while (!stop) {
+          await runner.run({ tenantId: "noisy" }, async () => new Promise((r) => setTimeout(r, 400))).catch(() => undefined);
+          await new Promise((r) => setTimeout(r, 2));
+        }
+      };
+      const pumps = [pump(), pump(), pump()];
+      await new Promise((r) => setTimeout(r, 50));
+      const outcomes: string[] = [];
+      const until = Date.now() + 1800;
+      while (Date.now() < until) {
+        outcomes.push(await runner.run({ tenantId: "quiet" }, async () => "ran").then(() => "ran", (e: Error) => e.name));
+      }
+      stop = true;
+      await Promise.allSettled(pumps);
+      expect(outcomes.filter((o) => o === "ran").length, outcomes.join(",")).toBeGreaterThan(0);
+    });
+
+    it("counts only waiting places: a running job is not one, and a place frees as soon as its job starts", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, queueWaitMs: 5_000 });
+      const first = deferred<void>();
+      const second = deferred<void>();
+      const a1 = runner.run({ tenantId: "a" }, async () => first.promise);
+      const a2 = runner.run({ tenantId: "a" }, async () => second.promise);
+      const a3 = runner.run({ tenantId: "a" }, async () => "a3");
+      await settle();
+      expect(runner.stats()).toMatchObject({ running: 1, queued: 2 });
+      await expect(runner.run({ tenantId: "a" }, async () => "a4")).rejects.toBeInstanceOf(VideoJobTenantQueueFullError);
+
+      first.resolve();
+      await a1;
+      await settle();
+      expect(runner.stats()).toMatchObject({ running: 1, queued: 1 });
+      const a4 = runner.run({ tenantId: "a" }, async () => "a4");
+      await settle();
+      expect(runner.stats()).toMatchObject({ running: 1, queued: 2 });
+      second.resolve();
+      await expect(Promise.all([a2, a3, a4])).resolves.toEqual([undefined, "a3", "a4"]);
+    });
+
+    it("frees a place when a queued caller gives up or times out", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, queueWaitMs: 50 });
+      const gate = deferred<void>();
+      const holder = runner.run({ tenantId: "b" }, async () => gate.promise);
+      const controller = new AbortController();
+      const abandoned = runner.run({ tenantId: "a", signal: controller.signal }, async () => "never");
+      const timedOut = runner.run({ tenantId: "a" }, async () => "never");
+      const abandonedOutcome = abandoned.catch((e: Error) => e);
+      const timedOutOutcome = timedOut.catch((e: Error) => e);
+      await settle();
+      await expect(runner.run({ tenantId: "a" }, async () => "never")).rejects.toBeInstanceOf(VideoJobTenantQueueFullError);
+      controller.abort();
+      await abandonedOutcome;
+      expect(runner.stats().queued).toBe(1);
+      expect(await timedOutOutcome).toBeInstanceOf(VideoJobBusyError);
+      expect(runner.stats().queued).toBe(0);
+      const again = runner.run({ tenantId: "a" }, async () => "a again");
+      await settle();
+      expect(runner.stats().queued).toBe(1);
+      gate.resolve();
+      await holder;
+      await expect(again).resolves.toBe("a again");
+    });
+
+    it("spends no allowance on a call turned away because its tenant's places are taken", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, queueWaitMs: 5_000, perTenantPerHour: 4 });
+      const gate = deferred<void>();
+      const jobs = Array.from({ length: 4 }, () => runner.run({ tenantId: "a" }, async () => gate.promise).catch((e: Error) => e));
+      await settle();
+      gate.resolve();
+      const results = await Promise.all(jobs);
+      expect(results.filter((r) => r instanceof VideoJobTenantQueueFullError)).toHaveLength(1);
+      await expect(runner.run({ tenantId: "a" }, async () => "fourth start")).resolves.toBe("fourth start");
+      await expect(runner.run({ tenantId: "a" }, async () => "over")).rejects.toBeInstanceOf(VideoJobRateLimitError);
+    });
+
+    it("takes the bound from configuration", async () => {
+      const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, maxQueuedPerTenant: 1, queueWaitMs: 5_000 });
+      const gate = deferred<void>();
+      const holder = runner.run({ tenantId: "a" }, async () => gate.promise);
+      const queued = runner.run({ tenantId: "a" }, async () => "queued");
+      await settle();
+      await expect(runner.run({ tenantId: "a" }, async () => "no")).rejects.toThrow(/already has 1 videos waiting/);
+      gate.resolve();
+      await holder;
+      await expect(queued).resolves.toBe("queued");
+    });
   });
 });

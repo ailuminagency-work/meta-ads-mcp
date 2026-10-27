@@ -6,11 +6,15 @@ import {requestContext} from "../../src/auth/token-store.js";
 import {configurePlatformRepository} from "../../src/platform/runtime.js";
 import {observeCampaignCompatibility} from "../../src/platform/compatibility-observer.js";
 import {beforeEach,afterEach,describe,expect,it,vi} from "vitest";
+import {stubBudgetCeilings} from "./budget-ceiling-fixture.js";
+beforeEach(()=>stubBudgetCeilings());
 import {InMemoryPlatformRepository} from "../../src/platform/repository.js";
 import {encryptCredential} from "../../src/platform/connections.js";
 import {lookupAdTargeting,bindLegacyTargetingEvidence,targetingLookupRows} from "../../src/platform/targeting-lookup.js";
 import {buildStrictLegacyWritePlan} from "../../src/platform/legacy-write.js";
-import {requestLegacyApproval,inspectApprovalRequest} from "../../src/platform/approvals.js";
+import {requestLegacyApproval,inspectApprovalRequest,issueHumanApproval} from "../../src/platform/approvals.js";
+import {authorizeOperation,finishOperation} from "../../src/platform/execution.js";
+import {canonicalPlanHash,planLockHash} from "../../src/platform/policy.js";
 import type {OperationContext} from "../../src/platform/models.js";
 const ctx:OperationContext={principal:{tenantId:"tenant",operatorId:"100"},clientId:"client",provider:"META_MARKETING",tool:"ads_create_ad_set",requestId:"synthetic"},source="https://developers.facebook.com/documentation/ads-commerce/marketing-api/audiences/reference/targeting-search";
 beforeEach(()=>{vi.stubEnv("TOKEN_ENCRYPTION_KEY","a".repeat(64));vi.stubEnv("META_API_VERSION","v26.0");vi.stubEnv("LUMIN_PLATFORM_ENABLED","true");vi.stubEnv("LUMIN_PLATFORM_WRITES_ENABLED","true");vi.stubEnv("AGENCY_WRITES_ENABLED","true");});afterEach(()=>{configurePlatformRepository(null);vi.unstubAllEnvs();vi.restoreAllMocks();});
@@ -27,4 +31,65 @@ describe("fresh public targeting evidence for reviewed ad sets",()=>{
  it("independently validates actual interest IDs by ID before storing evidence",async()=>{const f=await fixture({data:[{id:6001,name:"Synthetic public interest"}]}),found=await lookupAdTargeting(f.repo,ctx,{rootKey:"root",kind:"INTEREST",query:"Synthetic"},f.fetcher);expect(found.options[0].id).toBe("6001");expect(f.fetcher).toHaveBeenCalledTimes(2);const validation=new URL(String(f.fetcher.mock.calls[1][0]));expect(validation.searchParams.get("type")).toBe("adinterestvalid");expect(validation.searchParams.get("interest_fbid_list")).toBe('["6001"]');});
  it.each([{data:[{key:"2447439",name:"Wrong type",type:"region",country_code:"US",supports_city:true}]},{data:[{key:"2447439",name:"Unavailable",type:"city",country_code:"US",supports_city:false}]},{data:[{key:"../evil",name:"Bad ID",type:"city",country_code:"US",supports_city:true}]},{data:Array.from({length:21},(_,i)=>({key:String(i+1),name:"Synthetic",type:"city",country_code:"US",supports_city:true}))}])("rejects malformed, unproven or overbound provider options %j",async body=>{const f=await fixture(body);await expect(lookupAdTargeting(f.repo,ctx,{rootKey:"root",kind:"CITY",query:"Seattle"},f.fetcher)).rejects.toThrow();expect(await f.repo.list("targetingLookups","tenant")).toHaveLength(0);});
  it("rejects guessed keys, missing proof, wrong client, scope tampering and stale evidence before approval",async()=>{const f=await fixture(),found=await lookupAdTargeting(f.repo,ctx,{rootKey:"root",kind:"CITY",query:"Seattle"},f.fetcher);await expect(bindLegacyTargetingEvidence(f.repo,ctx,buildStrictLegacyWritePlan(ctx.tool,input()))).rejects.toThrow();const guessed=input(found.lookupId);guessed.targeting.geo_locations.cities[0].key="999";await expect(bindLegacyTargetingEvidence(f.repo,ctx,buildStrictLegacyWritePlan(ctx.tool,guessed))).rejects.toThrow("EXACT_LOOKUP_OPTION_REQUIRED");await expect(bindLegacyTargetingEvidence(f.repo,{...ctx,clientId:"other"},buildStrictLegacyWritePlan(ctx.tool,input(found.lookupId)))).rejects.toThrow();const stored=(await f.repo.get("targetingLookups","tenant",found.lookupId))!;expect(()=>targetingLookupRows({...stored,clientId:"other"})).toThrow("BINDING_INVALID");vi.spyOn(Date,"now").mockReturnValue(found.expiresAt+1);await expect(requestLegacyApproval(f.repo,ctx,input(found.lookupId))).rejects.toThrow("EXPIRED_OR_WRONG_CLIENT");});
+});
+
+describe("a read-only targeting lookup cannot be re-run to unlock a plan whose write may have happened",()=>{
+ const human={tenantId:"tenant",operatorId:"200"};
+ async function world(){
+  const f=await fixture();
+  const lookup=()=>lookupAdTargeting(f.repo,ctx,{rootKey:"root",kind:"CITY",query:"Seattle"},f.fetcher);
+  await observeCampaignCompatibility(f.repo,ctx,buildStrictLegacyWritePlan(ctx.tool,input()),"connection",async()=>new Response(JSON.stringify({id:"201",account_id:"101",objective:"OUTCOME_TRAFFIC",buying_type:"AUCTION",status:"PAUSED",special_ad_categories:[],daily_budget:"0",lifetime_budget:"0"})));
+  const approve=async(lookupId:string,args:Record<string,unknown>={})=>{const request=await requestLegacyApproval(f.repo,ctx,{...input(lookupId),...args}),{plan}=await inspectApprovalRequest(f.repo,human,request.id);return {plan,requestId:request.id,approvalId:await issueHumanApproval(f.repo,human,request.id)};};
+  const run=(plan:Awaited<ReturnType<typeof approve>>["plan"],approvalId:string)=>authorizeOperation(f.repo,ctx,plan,{writesEnabled:true,approvalId});
+  return {f,lookup,approve,run};
+ }
+ const bound=async(w:Awaited<ReturnType<typeof world>>,id:string)=>bindLegacyTargetingEvidence(w.f.repo,ctx,buildStrictLegacyWritePlan(ctx.tool,input(id)));
+
+ it("two lookups of the same query send the same request, keep distinct approval hashes and share one lock key",async()=>{
+  const w=await world(),first=await w.lookup(),second=await w.lookup(),p1=await bound(w,first.lookupId),p2=await bound(w,second.lookupId);
+  expect(first.lookupId).not.toBe(second.lookupId);
+  expect((p1.parameters as {legacy_write_step:unknown}).legacy_write_step).toEqual((p2.parameters as {legacy_write_step:unknown}).legacy_write_step);
+  expect(canonicalPlanHash(ctx,p1)).not.toBe(canonicalPlanHash(ctx,p2));
+  expect(planLockHash(ctx,p1)).toBe(planLockHash(ctx,p2));
+ });
+
+ it("the lock key still tells different requests apart",async()=>{
+  const w=await world(),lookup=await w.lookup(),base=await bound(w,lookup.lookupId);
+  for(const change of [{name:"Another reviewed adset"},{daily_budget:2100}]){
+   const other=await bindLegacyTargetingEvidence(w.f.repo,ctx,buildStrictLegacyWritePlan(ctx.tool,{...input(lookup.lookupId),...change}));
+   expect(planLockHash(ctx,other),JSON.stringify(change)).not.toBe(planLockHash(ctx,base));
+  }
+  expect(planLockHash({...ctx,principal:{...ctx.principal,tenantId:"other"}},base)).not.toBe(planLockHash(ctx,base));
+ });
+
+ it("after an UNKNOWN attempt a fresh lookup does not allow the identical ad set to be requested again",async()=>{
+  const w=await world(),first=await w.lookup(),attempt=await w.approve(first.lookupId),permit=await w.run(attempt.plan,attempt.approvalId);
+  await finishOperation(permit,"UNKNOWN");
+  const second=await w.lookup(),requests=(await w.f.repo.list("approvalRequests","tenant")).length;
+  await expect(w.approve(second.lookupId)).rejects.toThrow("PRIOR_ATTEMPT_UNRECONCILED");
+  expect(await w.f.repo.list("approvalRequests","tenant")).toHaveLength(requests);
+  expect(await w.f.repo.list("operations","tenant")).toHaveLength(1);
+ });
+
+ it("an approval already issued against a later lookup is refused after the UNKNOWN attempt, and stays unspent",async()=>{
+  const w=await world(),first=await w.lookup(),second=await w.lookup(),early=await w.approve(second.lookupId),attempt=await w.approve(first.lookupId);
+  await finishOperation(await w.run(attempt.plan,attempt.approvalId),"UNKNOWN");
+  await expect(w.run(early.plan,early.approvalId)).rejects.toThrow("PRIOR_ATTEMPT_UNRECONCILED");
+  expect(await w.f.repo.get("approvals","tenant",early.approvalId)).toMatchObject({consumedAt:null,operationId:null});
+  expect(await w.f.repo.list("operations","tenant")).toHaveLength(1);
+ });
+
+ it("after a FAILED attempt a fresh lookup lets the identical ad set be requested and run again",async()=>{
+  const w=await world(),first=await w.lookup(),attempt=await w.approve(first.lookupId);
+  await finishOperation(await w.run(attempt.plan,attempt.approvalId),"FAILED");
+  const second=await w.lookup(),again=await w.approve(second.lookupId),permit=await w.run(again.plan,again.approvalId);
+  await finishOperation(permit,"SUCCEEDED");
+  expect((await w.f.repo.list("operations","tenant")).map(o=>o.state).sort()).toEqual(["FAILED","SUCCEEDED"]);
+ });
+
+ it("approval stays bound to the full plan: an approval for one lookup does not authorise the plan carrying another",async()=>{
+  const w=await world(),first=await w.lookup(),second=await w.lookup(),one=await w.approve(first.lookupId),two=await w.approve(second.lookupId);
+  await expect(w.run(one.plan,two.approvalId)).rejects.toThrow();
+  expect(await w.f.repo.get("approvals","tenant",two.approvalId)).toMatchObject({consumedAt:null});
+ });
 });

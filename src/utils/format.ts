@@ -1,3 +1,5 @@
+import { currencyOffset, fromMinorUnits } from "../meta/currency.js";
+
 /**
  * Normalize a Meta ad account ID to always include the 'act_' prefix.
  *
@@ -14,6 +16,10 @@ export function normalizeAccountId(id: string): string {
   }
   return id.startsWith("act_") ? id : `act_${id}`;
 }
+
+// A campaign, ad set, ad or creative id is always plain numeric. Accepting an act_ id here would let a
+// generic update/toggle tool POST account-level fields such as spend_cap to the ad account itself.
+const AD_ENTITY_KINDS: ReadonlySet<string> = new Set(["campaign", "adset", "ad", "creative"]);
 
 /**
  * Validate a Meta resource ID before it is interpolated into a Graph API
@@ -34,7 +40,8 @@ export function normalizeAccountId(id: string): string {
  * than letting a malformed id leak into a path segment or bucket name.
  */
 export function validateMetaId(id: string, kind = "id"): string {
-  if (typeof id !== "string" || !/^(act_\d{1,30}|\d{1,30}(_\d{1,30})?)$/.test(id)) {
+  const pattern = AD_ENTITY_KINDS.has(kind) ? /^\d{1,30}$/ : /^(act_\d{1,30}|\d{1,30}(_\d{1,30})?)$/;
+  if (typeof id !== "string" || !pattern.test(id)) {
     throw new Error(
       `Invalid Meta ${kind}: must be numeric, "act_<numeric>" (account), or "<numeric>_<numeric>" (post/comment) — the three formats are mutually exclusive. Got: ${JSON.stringify(id).slice(0, 80)}`,
     );
@@ -43,14 +50,23 @@ export function validateMetaId(id: string, kind = "id"): string {
 }
 
 /**
- * Format a budget value from cents to a human-readable string.
+ * Format a Meta amount (the ad account currency's minor units) for display.
+ * The currency must be the account's own; when it is missing or has no
+ * recorded offset the raw minor units are shown and labelled, never scaled
+ * as if they were USD cents.
  */
 export function formatBudget(
-  cents: number | string,
-  currency = "USD",
+  minorUnits: number | string,
+  currency?: string,
 ): string {
-  const amount = typeof cents === "string" ? parseInt(cents, 10) : cents;
-  return `${(amount / 100).toFixed(2)} ${currency}`;
+  const raw = typeof minorUnits === "string" ? minorUnits.trim() : minorUnits;
+  if (typeof raw === "number" ? !Number.isSafeInteger(raw) : !/^-?\d{1,18}$/.test(raw)) {
+    return `${String(minorUnits)} (unreadable amount)`;
+  }
+  if (currencyOffset(currency) === undefined) {
+    return `${raw} (minor units; ${currency ? `offset for ${currency} unknown` : "currency unknown"})`;
+  }
+  return `${fromMinorUnits(raw, currency as string)} ${currency}`;
 }
 
 /**

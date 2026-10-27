@@ -38,7 +38,8 @@ import {
   type LibraryAd,
 } from "../apify/ad-library-schema.js";
 import { getDatasetLookup, type DatasetLookup } from "../apify/dataset-lookup.js";
-import { imageBlock, safeHostname, sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
+import { errorLine, imageBlock, safeHostname, sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
+import { IMAGE_DOWNLOAD_DEADLINE_MS } from "../media/creative-images.js";
 import { assertAllowedVideoHost, resolveAllowedVideoHostSuffixes } from "../media/safe-video-download.js";
 import {
   deliverVideos as defaultDeliverVideos,
@@ -768,7 +769,7 @@ export function registerAdsLibraryTools(server: McpServer, deps: AdLibraryToolDe
           try {
             assertAllowedVideoHost(new URL(asset.url), suffixes);
           } catch (err) {
-            meta.error = err instanceof Error ? err.message : String(err);
+            meta.error = errorLine(err);
             continue;
           }
           const remaining = Math.min(IMAGE_BYTES_BUDGET, responseBytesBudget(deps.transport)) - imageBytes;
@@ -778,7 +779,7 @@ export function registerAdsLibraryTools(server: McpServer, deps: AdLibraryToolDe
           }
           attempts += 1;
           try {
-            const image = await downloadImage(asset.url, { maxBytes: Math.min(MAX_IMAGE_BYTES, remaining), signal: extra?.signal, allowedHostSuffixes: suffixes });
+            const image = await downloadImage(asset.url, { maxBytes: Math.min(MAX_IMAGE_BYTES, remaining), signal: extra?.signal, deadlineMs: IMAGE_DOWNLOAD_DEADLINE_MS, allowedHostSuffixes: suffixes });
             imageBlocks.push(imageBlock(image.buffer, image.contentType));
             imageBytes += image.buffer.length;
             meta.downloaded = true;
@@ -786,7 +787,7 @@ export function registerAdsLibraryTools(server: McpServer, deps: AdLibraryToolDe
             meta.bytes = image.buffer.length;
             meta.mime_type = image.contentType;
           } catch (err) {
-            meta.error = err instanceof Error ? err.message : String(err);
+            meta.error = errorLine(err);
             logger.warn({ host: safeHostname(asset.url), event: "ad_library_image_download_failed" }, "Ad Library image download failed");
           }
         }

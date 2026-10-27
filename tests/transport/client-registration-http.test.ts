@@ -1,0 +1,250 @@
+import express from "express";
+import { createHash, randomBytes } from "node:crypto";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createFirestoreDouble } from "../store/firestore-double.js";
+
+const selected = vi.hoisted(() => ({ db: undefined as unknown }));
+vi.mock("../../src/store/firestore.js", () => ({
+  getFirestore: () => selected.db,
+  isFirestoreEnabled: () => true,
+}));
+
+import { oauthProvider, resetOAuthProviderForTests } from "../../src/auth/oauth-provider.js";
+import {
+  FirestoreClientsStore,
+  InMemoryClientsStore,
+} from "../../src/store/persistent-clients-store.js";
+
+interface Harness {
+  origin: string;
+  close: () => Promise<void>;
+}
+
+async function startRouter(): Promise<Harness> {
+  const app = express();
+  app.use(
+    mcpAuthRouter({
+      provider: oauthProvider,
+      issuerUrl: new URL("http://localhost:3000"),
+      resourceServerUrl: new URL("http://localhost:3000/mcp"),
+    }),
+  );
+  const server: Server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  return {
+    origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    close: () => new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),
+  };
+}
+
+function register(origin: string, redirectUris: string[]): Promise<Response> {
+  return fetch(`${origin}/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      client_name: "Synthetic client",
+      redirect_uris: redirectUris,
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+    }),
+  });
+}
+
+const stores = [
+  ["FirestoreClientsStore", () => new FirestoreClientsStore()],
+  ["InMemoryClientsStore", () => new InMemoryClientsStore()],
+] as const;
+
+describe.each(stores)("POST /register with %s", (_name, create) => {
+  let harness: Harness;
+
+  beforeEach(async () => {
+    vi.stubEnv("OAUTH_SECRET", "x".repeat(64));
+    selected.db = createFirestoreDouble().db;
+    resetOAuthProviderForTests();
+    oauthProvider.configure({ clientsStore: create() });
+    harness = await startRouter();
+  });
+
+  afterEach(async () => {
+    await harness.close();
+    vi.unstubAllEnvs();
+    resetOAuthProviderForTests();
+  });
+
+  it("refuses to register an attacker redirect and reports invalid_redirect_uri", async () => {
+    const response = await register(harness.origin, ["https://evil.example/cb"]);
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: string; error_description: string };
+    expect(body.error).toBe("invalid_redirect_uri");
+    expect(body.error_description).not.toContain("evil.example");
+  });
+
+  it.each([
+    ["javascript: URI", "javascript:alert(1)"],
+    ["plain http on a remote host", "http://evil.example/cb"],
+    ["fragment", "https://claude.ai/cb#x"],
+    ["wildcard host", "https://*.claude.ai/cb"],
+    ["userinfo", "https://claude.ai@evil.example/cb"],
+    ["another path on claude.ai", "https://claude.ai/anything/the/attacker/likes"],
+    ["a Custom GPT callback on chatgpt.com", "https://chatgpt.com/aip/g-SYNTHETIC-GPT/oauth/callback"],
+    ["the ChatGPT connector callback before the operator opts in", "https://chatgpt.com/connector_platform_oauth_redirect"],
+    ["an unlisted vscode application host", "vscode://attacker.publisher/cb"],
+    ["an unlisted cursor application host", "cursor://attacker.publisher/cb"],
+    ["lookalike of claude.com", "https://claude.com.evil.example/x"],
+    ["plain http on claude.com", "http://claude.com/x"],
+    ["unlisted custom scheme", "myapp://callback"],
+  ])("refuses a %s redirect", async (_label, uri) => {
+    const response = await register(harness.origin, [uri]);
+    expect(response.status).toBe(400);
+    expect(response.status).not.toBe(201);
+    expect(["invalid_redirect_uri", "invalid_client_metadata"]).toContain(
+      ((await response.json()) as { error: string }).error,
+    );
+  });
+
+  it("refuses a registration that mixes a legitimate and a hostile redirect", async () => {
+    const response = await register(harness.origin, [
+      "https://claude.ai/api/mcp/auth_callback",
+      "https://evil.example/cb",
+    ]);
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe("invalid_redirect_uri");
+  });
+
+  const LEGITIMATE: Array<[string, string[], string, string?]> = [
+    ["Claude", ["https://claude.ai/api/mcp/auth_callback"], "https://claude.ai/api/mcp/auth_callback"],
+    ["Claude on claude.com", ["https://claude.com/api/mcp/auth_callback"], "https://claude.com/api/mcp/auth_callback"],
+    [
+      "ChatGPT (opted in with OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS)",
+      ["https://chatgpt.com/connector_platform_oauth_redirect"],
+      "https://chatgpt.com/connector_platform_oauth_redirect",
+      "chatgpt.com",
+    ],
+    [
+      "Claude Code loopback",
+      ["http://localhost:54321/callback"],
+      "http://localhost:54321/callback",
+    ],
+    [
+      "Cursor",
+      ["cursor://anysphere.cursor-retrieval/oauth/user-lumin/callback"],
+      "cursor://anysphere.cursor-retrieval/oauth/user-lumin/callback",
+    ],
+    [
+      "VS Code",
+      ["http://127.0.0.1:33418/", "vscode://vscode.github-authentication/did-authenticate"],
+      "http://127.0.0.1:33418/",
+    ],
+  ];
+
+  it.each(LEGITIMATE)(
+    "still completes registration, authorization and token exchange for %s",
+    async (_client, redirectUris, chosenRedirect, extraHosts) => {
+      if (extraHosts) vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", extraHosts);
+      const registration = await register(harness.origin, redirectUris);
+      expect(registration.status).toBe(201);
+      const registered = (await registration.json()) as OAuthClientInformationFull;
+      expect(registered.redirect_uris).toEqual(redirectUris);
+
+      oauthProvider.configure({ resolvePendingAuth: () => ({ fbUserId: "100000000000001" }) });
+      const verifier = randomBytes(32).toString("base64url");
+      const challenge = createHash("sha256").update(verifier).digest("base64url");
+      const authorize = await fetch(
+        `${harness.origin}/authorize?${new URLSearchParams({
+          client_id: registered.client_id,
+          response_type: "code",
+          redirect_uri: chosenRedirect,
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          state: "synthetic-state",
+        })}`,
+        { redirect: "manual" },
+      );
+      expect(authorize.status).toBe(302);
+      const location = new URL(authorize.headers.get("location")!);
+      expect(`${location.protocol}//${location.host}${location.pathname}`).toBe(
+        (() => {
+          const expected = new URL(chosenRedirect);
+          return `${expected.protocol}//${expected.host}${expected.pathname}`;
+        })(),
+      );
+      expect(location.searchParams.get("state")).toBe("synthetic-state");
+      const code = location.searchParams.get("code")!;
+      expect(code).toBeTruthy();
+
+      const token = await fetch(`${harness.origin}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: registered.client_id,
+          code,
+          code_verifier: verifier,
+          redirect_uri: chosenRedirect,
+        }),
+      });
+      expect(token.status).toBe(200);
+      expect(await token.json()).toMatchObject({ token_type: "Bearer" });
+    },
+  );
+
+  it("registers a client with a very long name under a bounded name", async () => {
+    const response = await fetch(`${harness.origin}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "N".repeat(90_000),
+        redirect_uris: ["http://127.0.0.1:38123/cb"],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    expect(response.status).toBe(201);
+    const registered = (await response.json()) as OAuthClientInformationFull;
+    expect(Array.from(registered.client_name ?? "")).toHaveLength(100);
+  });
+
+  it("accepts a ChatGPT-style registration only for hosts the operator allowlisted", async () => {
+    const hosted = ["https://tools.agency.example/oauth/callback"];
+    expect((await register(harness.origin, hosted)).status).toBe(400);
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "tools.agency.example");
+    expect((await register(harness.origin, hosted)).status).toBe(201);
+  });
+
+  it("registers ChatGPT's connector callbacks under the preset and refuses a Custom GPT callback however it is spelled", async () => {
+    const connector = [
+      "https://chatgpt.com/connector_platform_oauth_redirect",
+      "https://chatgpt.com/connector/oauth/synthetic-app-id",
+    ];
+    const hostile = [
+      "https://chatgpt.com/aip/g-SYNTHETIC/oauth/callback",
+      "https:/chatgpt.com/aip/g-SYNTHETIC/oauth/callback?x=://chatgpt.com/connector_platform_oauth_redirect",
+      "https:chatgpt.com/aip/g-SYNTHETIC/oauth/callback/://chatgpt.com/connector/oauth/zz",
+      "https:/claude.ai/x?y=://claude.ai/api/mcp/auth_callback",
+    ];
+    for (const uri of [...connector, ...hostile]) expect((await register(harness.origin, [uri])).status, uri).toBe(400);
+
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    for (const uri of connector) expect((await register(harness.origin, [uri])).status, uri).toBe(201);
+    for (const uri of hostile) expect((await register(harness.origin, [uri])).status, uri).toBe(400);
+  });
+
+  it("stops serving a stored ChatGPT client once the preset is turned off", async () => {
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    const response = await register(harness.origin, ["https://chatgpt.com/connector/oauth/synthetic-app-id"]);
+    expect(response.status).toBe(201);
+    const { client_id: clientId } = (await response.json()) as OAuthClientInformationFull;
+    expect(await oauthProvider.clientsStore.getClient(clientId)).toBeDefined();
+
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "");
+    expect(await oauthProvider.clientsStore.getClient(clientId)).toBeUndefined();
+
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_URIS", "https://chatgpt.com/connector/oauth/synthetic-app-id");
+    expect(await oauthProvider.clientsStore.getClient(clientId)).toBeDefined();
+  });
+});

@@ -131,15 +131,20 @@ describe("validateAuthorizeQuery", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("rejects array values for client_id (Express duplicates) by collapsing to first then validating", async () => {
+  it.each([
+    ["client_id", { client_id: ["claude-client", "evil-client"] }],
+    ["redirect_uri", { redirect_uri: ["https://claude.ai/api/mcp/auth_callback", "https://evil.example/cb"] }],
+    ["state", { state: ["one", "two"] }],
+    ["code_challenge", { code_challenge: ["a", "b"] }],
+  ])("rejects a repeated %s instead of choosing one of the copies (G1-16)", async (_name, repeated) => {
     const r = await validateAuthorizeQuery(
       {
-        client_id: ["claude-client", "evil-client"],
+        client_id: "claude-client",
         redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+        ...repeated,
       },
       makeGetClient({ "claude-client": claudeClient }),
     );
-    // first value used, valid client, valid redirect → accepted.
-    expect(r.ok).toBe(true);
+    expect(r).toMatchObject({ ok: false, kind: "repeated-parameter", status: 400 });
   });
 });

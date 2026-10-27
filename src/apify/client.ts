@@ -1,7 +1,9 @@
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
-import { hashToken } from "../auth/token-store.js";
+import { getRequestSignal, hashToken } from "../auth/token-store.js";
+import { abortableSleep, RequestAbortedError, throwIfAborted } from "../utils/abortable.js";
 import { getApifyTokenRepo } from "../store/apify-token-repo.js";
 import { logger } from "../utils/logger.js";
+import { singleLine } from "../utils/single-line.js";
 import { isSingleTenantMode, LOCAL_TENANT_ID, resolveTenantId } from "../auth/tenant.js";
 import { BodyTooLargeError, readBodyWithLimit } from "../utils/bounded-body.js";
 import type { ApifyErrorBody } from "./types.js";
@@ -147,14 +149,16 @@ function isApifyErrorBody(body: unknown): body is ApifyErrorBody {
     typeof body === "object" &&
     body !== null &&
     "error" in body &&
-    typeof (body as ApifyErrorBody).error === "object"
+    typeof (body as ApifyErrorBody).error === "object" &&
+    (body as ApifyErrorBody).error !== null
   );
 }
 
 function describeApifyError(body: unknown, status: number, exactToken?: string): string {
   if (isApifyErrorBody(body)) {
     const { type, message } = body.error;
-    return scrubApifyToken(`${type ?? "error"}: ${message ?? "(no message)"}`, exactToken);
+    // The provider's words, so one bounded line: line breaks cannot open a line of their own in the reply.
+    return singleLine(scrubApifyToken(`${type ?? "error"}: ${message ?? "(no message)"}`, exactToken), 500);
   }
   return `HTTP ${status}`;
 }
@@ -246,6 +250,8 @@ export class ApifyApiClient {
     tokenOverride: string | undefined,
     canRetry: boolean,
   ): Promise<T> {
+    const requestSignal = getRequestSignal();
+    throwIfAborted(requestSignal);
     const token = tokenOverride ?? (await resolveApifyToken());
     const tokenHash = hashToken(token);
     const url = this.buildUrl(path, params);
@@ -253,8 +259,11 @@ export class ApifyApiClient {
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      throwIfAborted(requestSignal);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+      const onRequestAbort = () => controller.abort();
+      requestSignal?.addEventListener("abort", onRequestAbort, { once: true });
 
       try {
         const response = await fetch(url, {
@@ -282,7 +291,7 @@ export class ApifyApiClient {
 
           if (response.status >= 500 && canRetry && attempt < this.maxRetries) {
             lastError = toMcpError(response.status, errorBody, null, token);
-            await this.backoff(attempt);
+            await this.backoff(attempt, requestSignal);
             continue;
           }
 
@@ -308,6 +317,7 @@ export class ApifyApiClient {
         if (response.status === 204) return undefined as T;
         return parseJsonBody(await readBoundedBody(response, MAX_RESPONSE_BYTES)) as T;
       } catch (error) {
+        if (error instanceof RequestAbortedError || requestSignal?.aborted) throw new RequestAbortedError();
         // Any failure after the request left the client is indeterminate for a
         // non-retryable (billable) call, not just a timeout: Apify may have
         // accepted the run and then dropped the connection or returned a
@@ -330,20 +340,24 @@ export class ApifyApiClient {
         } else {
           lastError = new McpError(
             ErrorCode.InternalError,
-            scrubApifyToken(
-              `Apify request failed: ${error instanceof Error ? error.message : String(error)}`,
-              token,
+            singleLine(
+              scrubApifyToken(
+                `Apify request failed: ${error instanceof Error ? error.message : String(error)}`,
+                token,
+              ),
+              300,
             ) + indeterminate,
           );
         }
 
         if (canRetry && attempt < this.maxRetries) {
-          await this.backoff(attempt);
+          await this.backoff(attempt, requestSignal);
           continue;
         }
         throw lastError;
       } finally {
         clearTimeout(timeoutId);
+        requestSignal?.removeEventListener("abort", onRequestAbort);
       }
     }
 
@@ -351,10 +365,10 @@ export class ApifyApiClient {
     throw lastError ?? new McpError(ErrorCode.InternalError, "Apify request failed after retries");
   }
 
-  private async backoff(attempt: number): Promise<void> {
+  private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
     const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
     const jitter = delay * (Math.random() * 0.4 - 0.2);
-    await new Promise((resolve) => setTimeout(resolve, delay + jitter));
+    await abortableSleep(delay + jitter, signal);
   }
 }
 

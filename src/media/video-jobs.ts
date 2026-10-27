@@ -7,6 +7,10 @@ export const VIDEO_TMP_PREFIX = "meta-ads-video-";
 
 const DEFAULT_MAX_CONCURRENT = 2;
 const DEFAULT_MAX_QUEUED = 8;
+// One tenant may wait for at most this many places, so a burst from one account cannot take the whole queue.
+const DEFAULT_MAX_QUEUED_PER_TENANT = 2;
+// Tenants remembered for fair dequeue; the oldest are forgotten first.
+const MAX_REMEMBERED_TENANTS = 1024;
 const DEFAULT_QUEUE_WAIT_MS = 20_000;
 // Cloud Run caps a request at 300 s; leave headroom to serialise the response.
 const DEFAULT_BUDGET_MS = 240_000;
@@ -17,6 +21,13 @@ export class VideoJobBusyError extends Error {
   constructor(message = "The server is busy processing other videos; retry in a few seconds.") {
     super(message);
     this.name = "VideoJobBusyError";
+  }
+}
+
+export class VideoJobTenantQueueFullError extends VideoJobBusyError {
+  constructor(limit: number) {
+    super(`This user already has ${limit} videos waiting for a free slot; retry when one has finished.`);
+    this.name = "VideoJobTenantQueueFullError";
   }
 }
 
@@ -45,6 +56,7 @@ export interface VideoJobContext {
 export interface VideoJobRunnerConfig {
   maxConcurrent?: number;
   maxQueued?: number;
+  maxQueuedPerTenant?: number;
   queueWaitMs?: number;
   budgetMs?: number;
   perTenantPerHour?: number;
@@ -65,6 +77,7 @@ export class VideoJobAbortedError extends Error {
 }
 
 interface Waiter {
+  tenantId: string;
   resolve: () => void;
   reject: (err: Error) => void;
   cancel: () => void;
@@ -73,6 +86,7 @@ interface Waiter {
 export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJobRunner {
   const maxConcurrent = config.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
   const maxQueued = config.maxQueued ?? DEFAULT_MAX_QUEUED;
+  const maxQueuedPerTenant = config.maxQueuedPerTenant ?? DEFAULT_MAX_QUEUED_PER_TENANT;
   const queueWaitMs = config.queueWaitMs ?? DEFAULT_QUEUE_WAIT_MS;
   const budgetMs = config.budgetMs ?? DEFAULT_BUDGET_MS;
   const perTenantPerHour = config.perTenantPerHour ?? DEFAULT_PER_TENANT_PER_HOUR;
@@ -82,17 +96,57 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
   let running = 0;
   const waiters: Waiter[] = [];
   const tenantWindows = new Map<string, number[]>();
+  // Insertion order is service order: the first key is the tenant that ran longest ago.
+  const lastServed = new Map<string, true>();
+
+  const markServed = (tenantId: string): void => {
+    lastServed.delete(tenantId);
+    lastServed.set(tenantId, true);
+    if (lastServed.size > MAX_REMEMBERED_TENANTS) {
+      const oldest = lastServed.keys().next().value;
+      if (oldest !== undefined) lastServed.delete(oldest);
+    }
+  };
+
+  // Round-robin across tenants: the waiting tenant that ran longest ago goes next
+  // (one that never ran, or is forgotten, before any that did), oldest waiter first
+  // within a tenant, so a tenant that keeps its places full cannot stand ahead of the rest.
+  const pickNextWaiter = (): Waiter | undefined => {
+    if (waiters.length === 0) return undefined;
+    const waiting = new Set(waiters.map((w) => w.tenantId));
+    let tenant: string | undefined;
+    for (const candidate of waiting) {
+      if (!lastServed.has(candidate)) {
+        tenant = candidate;
+        break;
+      }
+    }
+    if (tenant === undefined) {
+      for (const served of lastServed.keys()) {
+        if (waiting.has(served)) {
+          tenant = served;
+          break;
+        }
+      }
+    }
+    const index = waiters.findIndex((w) => w.tenantId === tenant);
+    return waiters.splice(index >= 0 ? index : 0, 1)[0];
+  };
 
   const removeWaiter = (waiter: Waiter) => {
     const idx = waiters.indexOf(waiter);
     if (idx >= 0) waiters.splice(idx, 1);
   };
 
-  const acquire = (signal: AbortSignal | undefined): Promise<void> => {
+  const acquire = (tenantId: string, signal: AbortSignal | undefined): Promise<void> => {
     if (signal?.aborted) return Promise.reject(new VideoJobAbortedError());
     if (running < maxConcurrent) {
       running += 1;
+      markServed(tenantId);
       return Promise.resolve();
+    }
+    if (waiters.filter((w) => w.tenantId === tenantId).length >= maxQueuedPerTenant) {
+      return Promise.reject(new VideoJobTenantQueueFullError(maxQueuedPerTenant));
     }
     if (waiters.length >= maxQueued) {
       return Promise.reject(new VideoJobBusyError());
@@ -101,10 +155,12 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
       const timer = setTimeout(() => waiter.cancel(new VideoJobBusyError()), queueWaitMs);
       const onAbort = () => waiter.cancel(new VideoJobAbortedError());
       const waiter: Waiter & { cancel: (err?: Error) => void } = {
+        tenantId,
         resolve: () => {
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
           running += 1;
+          markServed(tenantId);
           resolve();
         },
         reject,
@@ -124,7 +180,7 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
 
   const release = (): void => {
     running -= 1;
-    const next = waiters.shift();
+    const next = pickNextWaiter();
     if (next) next.resolve();
   };
 
@@ -136,22 +192,30 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
     }
   };
 
-  const checkTenantRate = (tenantId: string): void => {
+  const assertTenantRate = (tenantId: string): number[] => {
     const current = now();
     purgeExpiredWindows(current);
     const recent = tenantWindows.get(tenantId) ?? [];
     if (recent.length >= perTenantPerHour) {
       throw new VideoJobRateLimitError(perTenantPerHour);
     }
-    recent.push(current);
+    return recent;
+  };
+
+  // The allowance is spent when a job starts, not when it asks for a slot: a
+  // call turned away as busy, abandoned in the queue or aborted before it ran
+  // has done no work and must not cost the tenant one.
+  const spendTenantRate = (tenantId: string): void => {
+    const recent = assertTenantRate(tenantId);
+    recent.push(now());
     tenantWindows.set(tenantId, recent);
   };
 
   return {
     async run(request, job) {
       if (request.signal?.aborted) throw new VideoJobAbortedError();
-      checkTenantRate(request.tenantId);
-      await acquire(request.signal);
+      assertTenantRate(request.tenantId);
+      await acquire(request.tenantId, request.signal);
 
       const controller = new AbortController();
       const start = now();
@@ -164,6 +228,9 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
       try {
         if (request.signal?.aborted) throw new VideoJobAbortedError();
         dir = await fs.mkdtemp(path.join(tmpRoot, VIDEO_TMP_PREFIX));
+        if (request.signal?.aborted) throw new VideoJobAbortedError();
+        // Callers that passed the first check together are told apart here.
+        spendTenantRate(request.tenantId);
         const ctx: VideoJobContext = {
           dir,
           signal: controller.signal,
@@ -229,7 +296,11 @@ let defaultRunner: VideoJobRunner | undefined;
 export function getVideoJobRunner(): VideoJobRunner {
   if (!defaultRunner) {
     defaultRunner = createVideoJobRunner({
-      maxConcurrent: envInt("VIDEO_MAX_CONCURRENT_JOBS", DEFAULT_MAX_CONCURRENT),
+      // The agency deployment runs on one vCPU / 1 GB, where two heavy jobs can exhaust memory.
+      maxConcurrent: envInt(
+        "VIDEO_MAX_CONCURRENT_JOBS",
+        process.env.DEPLOYMENT_MODE === "agency" ? 1 : DEFAULT_MAX_CONCURRENT,
+      ),
       budgetMs: envInt("VIDEO_CALL_BUDGET_MS", DEFAULT_BUDGET_MS),
       perTenantPerHour: envInt("VIDEO_JOBS_PER_TENANT_PER_HOUR", DEFAULT_PER_TENANT_PER_HOUR),
     });

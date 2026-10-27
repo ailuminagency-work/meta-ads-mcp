@@ -94,11 +94,19 @@ describe("registerBillingTools", () => {
   });
 
   describe("ads_update_spend_cap handler", () => {
-    it("updates spend cap and returns confirmation", async () => {
+    const stubAccount = (spendCap: string) =>
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) =>
+          mockFetchResponse(init?.method === "POST" ? { success: true } : { id: "act_123", currency: "USD", spend_cap: spendCap }),
+        ),
+      );
+
+    it("lowers the spend cap and returns confirmation in the account currency", async () => {
       const server = createMockMcpServer();
       registerBillingTools(server as never);
 
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+      stubAccount("200000");
 
       const handler = server._registeredTools[2].handler;
       const result = await handler({ account_id: "123", spend_cap: 100000 }) as {
@@ -107,20 +115,18 @@ describe("registerBillingTools", () => {
 
       expect(result.content[0].text).toContain("Spend cap updated");
       expect(result.content[0].text).toContain("1000.00 USD");
+      expect(result.content[0].text).toContain("Previous spend cap: 2000.00 USD");
     });
 
-    it("handles removing spend cap (setting to 0)", async () => {
+    it("refuses to remove the spend cap (0) and makes no request", async () => {
       const server = createMockMcpServer();
       registerBillingTools(server as never);
 
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+      stubAccount("200000");
 
       const handler = server._registeredTools[2].handler;
-      const result = await handler({ account_id: "123", spend_cap: 0 }) as {
-        content: Array<{ type: string; text: string }>;
-      };
-
-      expect(result.content[0].text).toContain("No limit (removed)");
+      await expect(handler({ account_id: "123", spend_cap: 0 })).rejects.toThrow(/financial gate/);
+      expect(fetch).not.toHaveBeenCalled();
     });
   });
 

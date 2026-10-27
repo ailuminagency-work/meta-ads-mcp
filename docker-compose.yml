@@ -39,6 +39,7 @@ services:
       - GEMINI_ANALYSES_PER_TENANT_PER_HOUR=${GEMINI_ANALYSES_PER_TENANT_PER_HOUR:-20}
       - PORT=3000
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-upstream}
       - NODE_ENV=production
     # Scratch space for video jobs, in memory and size-limited like the Cloud
     # Run volume, so an oversize write fails with ENOSPC instead of filling disk.
@@ -46,7 +47,8 @@ services:
       - /tmp:size=768m
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
       interval: 30s
       timeout: 3s
       retries: 3
+      start_period: 30s

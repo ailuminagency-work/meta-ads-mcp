@@ -15,6 +15,7 @@ import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
 import { READ, CREATE, UPDATE, UPLOAD, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 export const ctaEnum = z.enum([
   // Core actions
@@ -168,17 +169,17 @@ export function registerCreativeTools(server: McpServer): void {
       const text =
         creatives.length === 0
           ? "No creatives found."
-          : creatives
-              .map(
+          : fenceBlock(
+              creatives.map(
                 (c) =>
-                  `• ${c.name ?? "Unnamed"} (${c.id}) — CTA: ${c.call_to_action_type ?? "N/A"} — Image: ${c.image_url ? "Yes" : "No"} — UTMs: ${c.url_tags ?? "N/A"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(c.name) || "Unnamed"} (${untrustedText(c.id, 40)}) — CTA: ${untrustedText(c.call_to_action_type, 60) || "N/A"} — Image: ${c.image_url ? "Yes" : "No"} — UTMs: ${untrustedText(c.url_tags, 300) || "N/A"}`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${creatives.length} creative(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(creatives, null, 2) },
+          { type: "text", text: fencedJsonBlock(creatives) },
         ],
       };
     },
@@ -207,18 +208,18 @@ export function registerCreativeTools(server: McpServer): void {
       const responseCreative = withDerivedEffectiveLinkUrl(creative);
 
       const lines: string[] = [
-        `Creative: ${creative.name ?? "Unnamed"} (${creative.id})`,
-        `Status: ${creative.status ?? "N/A"}`,
-        `CTA: ${creative.call_to_action_type ?? "N/A"}`,
-        `Link URL: ${responseCreative.effective_link_url ?? "N/A"}`,
-        `UTMs (url_tags): ${creative.url_tags ?? "N/A"}`,
-        `Post ID: ${creative.effective_object_story_id ?? "N/A"}`,
+        `Creative: ${untrustedText(creative.name) || "Unnamed"} (${untrustedText(creative.id, 40)})`,
+        `Status: ${untrustedText(creative.status, 40) || "N/A"}`,
+        `CTA: ${untrustedText(creative.call_to_action_type, 60) || "N/A"}`,
+        `Link URL: ${untrustedText(responseCreative.effective_link_url, 2048) || "N/A"}`,
+        `UTMs (url_tags): ${untrustedText(creative.url_tags, 300) || "N/A"}`,
+        `Post ID: ${untrustedText(creative.effective_object_story_id, 80) || "N/A"}`,
       ];
 
       return {
         content: [
-          { type: "text", text: lines.join("\n") },
-          { type: "text", text: JSON.stringify(responseCreative, null, 2) },
+          { type: "text", text: fenceBlock(lines) },
+          { type: "text", text: fencedJsonBlock(responseCreative) },
         ],
       };
     },
@@ -497,17 +498,19 @@ export function registerCreativeTools(server: McpServer): void {
       const text =
         images.length === 0
           ? "No images found."
-          : images
-              .map(
-                (img) =>
-                  `• ${img.name ?? "Unnamed"} — Hash: ${img.hash}\n  URL: ${img.url}\n  Size: ${img.width ?? "?"}x${img.height ?? "?"}`,
-              )
-              .join("\n\n");
+          : fenceBlock(
+              images.flatMap((img, index) => [
+                ...(index > 0 ? [""] : []),
+                `• ${untrustedText(img.name) || "Unnamed"} — Hash: ${untrustedText(img.hash, 80)}`,
+                `  URL: ${untrustedText(img.url, 2048)}`,
+                `  Size: ${untrustedText(img.width, 10) || "?"}x${untrustedText(img.height, 10) || "?"}`,
+              ]),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${images.length} image(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(images, null, 2) },
+          { type: "text", text: fencedJsonBlock(images) },
         ],
       };
     },
@@ -539,17 +542,19 @@ export function registerCreativeTools(server: McpServer): void {
       const text =
         videos.length === 0
           ? "No videos found."
-          : videos
-              .map(
-                (v) =>
-                  `• ${v.title ?? "Untitled"} (${v.id}) — Duration: ${v.length ? `${v.length}s` : "N/A"}\n  Source: ${v.source ?? "N/A"}\n  Thumbnail: ${v.picture ?? "N/A"}`,
-              )
-              .join("\n\n");
+          : fenceBlock(
+              videos.flatMap((v, index) => [
+                ...(index > 0 ? [""] : []),
+                `• ${untrustedText(v.title) || "Untitled"} (${untrustedText(v.id, 40)}) — Duration: ${v.length ? `${untrustedText(v.length, 20)}s` : "N/A"}`,
+                `  Source: ${untrustedText(v.source, 2048) || "N/A"}`,
+                `  Thumbnail: ${untrustedText(v.picture, 2048) || "N/A"}`,
+              ]),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${videos.length} video(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(videos, null, 2) },
+          { type: "text", text: fencedJsonBlock(videos) },
         ],
       };
     },
@@ -577,24 +582,24 @@ export function registerCreativeTools(server: McpServer): void {
       );
 
       const lines: string[] = [
-        `Video: ${video.title ?? "Untitled"} (${video.id})`,
-        `Duration: ${video.length ? `${video.length}s` : "N/A"}`,
-        `Status: ${video.status?.video_status ?? "N/A"}`,
-        `Source URL: ${video.source ?? "Not available"}`,
-        `Thumbnail: ${video.picture ?? "Not available"}`,
+        `Video: ${untrustedText(video.title) || "Untitled"} (${untrustedText(video.id, 40)})`,
+        `Duration: ${video.length ? `${untrustedText(video.length, 20)}s` : "N/A"}`,
+        `Status: ${untrustedText(video.status?.video_status, 60) || "N/A"}`,
+        `Source URL: ${untrustedText(video.source, 2048) || "Not available"}`,
+        `Thumbnail: ${untrustedText(video.picture, 2048) || "Not available"}`,
       ];
 
       if (video.thumbnails?.data && video.thumbnails.data.length > 0) {
-        lines.push(`\nThumbnails (${video.thumbnails.data.length}):`);
+        lines.push("", `Thumbnails (${video.thumbnails.data.length}):`);
         for (const thumb of video.thumbnails.data) {
-          lines.push(`  • ${thumb.width}x${thumb.height}: ${thumb.uri}`);
+          lines.push(`  • ${untrustedText(thumb.width, 10)}x${untrustedText(thumb.height, 10)}: ${untrustedText(thumb.uri, 2048)}`);
         }
       }
 
       return {
         content: [
-          { type: "text", text: lines.join("\n") },
-          { type: "text", text: JSON.stringify(video, null, 2) },
+          { type: "text", text: fenceBlock(lines) },
+          { type: "text", text: fencedJsonBlock(video) },
         ],
       };
     },

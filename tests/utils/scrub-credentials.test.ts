@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasCredential, isCredentialName, scrubCredentials, scrubUrlCredentials } from "../../src/utils/scrub-credentials.js";
+import { hasCredential, isCredentialName, redactTokenShapes, scrubCredentials, scrubUrlCredentials } from "../../src/utils/scrub-credentials.js";
 
 const SECRET = "SECRET123";
 
@@ -186,5 +186,42 @@ describe("round-6 review fixes", () => {
   it("leaves an ordinary warning about auth modes alone", () => {
     const warning = "Invalid auth=oauth mode; expected auth=bearer.";
     expect(scrubCredentials(warning)).toBe(warning);
+  });
+});
+
+describe("appsecret_proof", () => {
+  const proof = "d".repeat(64);
+
+  it("is a credential name in any spelling", () => {
+    for (const name of ["appsecret_proof", "APPSECRET_PROOF", "appsecret-proof", "appsecret%5Fproof"]) {
+      expect(isCredentialName(name), name).toBe(true);
+    }
+  });
+
+  it("is removed from text and from urls", () => {
+    expect(scrubCredentials(`GET /v26.0/me?fields=id&appsecret_proof=${proof}&limit=1`)).toBe(
+      "GET /v26.0/me?fields=id&appsecret_proof=[REDACTED]&limit=1",
+    );
+    const cleaned = scrubUrlCredentials(`https://graph.facebook.com/v26.0/me?appsecret_proof=${proof}&fields=id`);
+    expect(cleaned).not.toContain(proof);
+    expect(cleaned).toContain("fields=id");
+  });
+});
+
+describe("redactTokenShapes", () => {
+  const meta = "EAA" + "x".repeat(40);
+  const apify = "apify_api_" + "y".repeat(30);
+  const google = "AIza" + "z".repeat(35);
+
+  it("removes credentials that give themselves away by shape, wherever they sit", () => {
+    const text = `failed with ${meta} and ${apify}, key ${google}, header Bearer ${"q".repeat(40)} and ya29.${"w".repeat(30)}`;
+    const cleaned = redactTokenShapes(text);
+    for (const secret of [meta, apify, google, "q".repeat(40), "w".repeat(30)]) expect(cleaned).not.toContain(secret);
+    expect(cleaned).toContain("failed with [REDACTED]");
+  });
+
+  it("leaves ordinary text alone", () => {
+    const text = "Image download failed: HTTP 404 for scontent.xx.fbcdn.net, EAA is not a token.";
+    expect(redactTokenShapes(text)).toBe(text);
   });
 });

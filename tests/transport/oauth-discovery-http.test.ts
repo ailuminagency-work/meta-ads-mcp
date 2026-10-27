@@ -1,9 +1,8 @@
 import express from "express";
 import { createServer as createNodeServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { SignJWT } from "jose";
-import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { startHttpTransport } from "../../src/transport/http.js";
@@ -15,7 +14,7 @@ afterEach(() => {
   resetOAuthProviderForTests();
 });
 
-it("advertises the canonical resource metadata on missing and invalid MCP credentials", async () => {
+it("answers missing and invalid MCP credentials with the canonical 401 challenge, and serves no OAuth endpoints or discovery documents without a Meta login", async () => {
   for (const [key, value] of Object.entries({
     NODE_ENV: "production",
     DEPLOYMENT_MODE: "legacy",
@@ -42,12 +41,11 @@ it("advertises the canonical resource metadata on missing and invalid MCP creden
 
   try {
     const metadataPath = "/.well-known/oauth-protected-resource/mcp";
-    const metadata = await fetch(origin + metadataPath, { headers: { "x-forwarded-proto": "https" } });
-    expect(metadata.status).toBe(200);
-    expect(await metadata.json()).toMatchObject({
-      resource: "https://agency.example.com/mcp",
-      authorization_servers: ["https://agency.example.com/"],
-    });
+    for (const path of [metadataPath, "/.well-known/oauth-authorization-server"]) {
+      const metadata = await fetch(origin + path, { headers: { "x-forwarded-proto": "https" } });
+      expect(metadata.status, path).toBe(404);
+      expect(await metadata.json()).toMatchObject({ error: "oauth_unavailable" });
+    }
 
     for (const method of ["GET", "POST", "DELETE"]) {
       for (const credential of [undefined, "invalid-test-credential"]) {
@@ -62,60 +60,26 @@ it("advertises the canonical resource metadata on missing and invalid MCP creden
       }
     }
 
-    const registration = await fetch(origin + "/register", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
-      body: JSON.stringify({ redirect_uris: ["https://client.example.com/callback"], token_endpoint_auth_method: "none" }),
-    });
-    expect(registration.status).toBe(201);
-    const client = await registration.json() as OAuthClientInformationFull;
-    const verifier = randomBytes(32).toString("base64url");
-    const challenge = createHash("sha256").update(verifier).digest("base64url");
-    async function issueCode(resource = "https://agency.example.com/mcp", explicitRedirect = true) {
-      const query = new URLSearchParams({
-        client_id: client.client_id,
-        response_type: "code",
-        code_challenge: challenge,
-        code_challenge_method: "S256",
-        resource,
-      });
-      if (explicitRedirect) query.set("redirect_uri", "https://client.example.com/callback");
-      const response = await fetch(origin + "/authorize?" + query, {
-        headers: { "x-forwarded-proto": "https" }, redirect: "manual",
-      });
-      expect(response.status).toBe(302);
-      return new URL(response.headers.get("location")!).searchParams.get("code")!;
+    for (const [method, path] of [
+      ["POST", "/register"],
+      ["GET", "/authorize?client_id=x&response_type=code"],
+      ["POST", "/token"],
+      ["POST", "/revoke"],
+    ] as const) {
+      const response = await fetch(origin + path, { method, headers: { "x-forwarded-proto": "https" }, redirect: "manual" });
+      expect(response.status, `${method} ${path}`).toBe(404);
+      expect(await response.json()).toMatchObject({ error: "oauth_unavailable" });
     }
-    async function exchange(code: string, redirectUri?: string) {
-      const body = new URLSearchParams({ grant_type: "authorization_code", client_id: client.client_id, code, code_verifier: verifier });
-      if (redirectUri) body.set("redirect_uri", redirectUri);
-      return fetch(origin + "/token", {
-        method: "POST",
-        headers: { "x-forwarded-proto": "https", "content-type": "application/x-www-form-urlencoded" },
-        body,
-      });
-    }
-    expect((await exchange(await issueCode())).status).toBe(400);
-    expect((await exchange(await issueCode(), "https://client.example.com/different")).status).toBe(400);
-    expect((await exchange(await issueCode("https://agency.example.com/mcp", false))).status).toBe(200);
-    const accepted = await exchange(await issueCode(), "https://client.example.com/callback");
-    expect(accepted.status).toBe(200);
-    const tokens = await accepted.json() as { access_token: string };
-    async function getMcp(token: string) {
-      return fetch(origin + "/mcp", { headers: { "x-forwarded-proto": "https", Authorization: `Bearer ${token}` } });
-    }
-    expect((await getMcp(tokens.access_token)).status).toBe(405);
-    const wrongResource = await exchange(await issueCode("https://other.example.com/mcp"), "https://client.example.com/callback");
-    expect(wrongResource.status).toBe(200);
-    const wrongTokens = await wrongResource.json() as { access_token: string };
-    expect((await getMcp(wrongTokens.access_token)).status).toBe(401);
 
-    const legacyToken = await new SignJWT({ sub: client.client_id, type: "access" })
-      .setProtectedHeader({ alg: "HS256" })
-      .setAudience("mcp-oauth-access")
-      .setExpirationTime("1h")
-      .sign(new TextEncoder().encode(process.env.OAUTH_SECRET!));
-    expect((await getMcp(legacyToken)).status).toBe(405);
+    for (const claims of [{}, { fb_user_id: "100000000000001" }]) {
+      const signed = await new SignJWT({ sub: "forged-client", type: "access", ...claims })
+        .setProtectedHeader({ alg: "HS256" })
+        .setAudience("mcp-oauth-access")
+        .setExpirationTime("1h")
+        .sign(new TextEncoder().encode(process.env.OAUTH_SECRET!));
+      const response = await fetch(origin + "/mcp", { headers: { "x-forwarded-proto": "https", Authorization: `Bearer ${signed}` } });
+      expect(response.status).toBe(401);
+    }
   } finally {
     await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()));
   }

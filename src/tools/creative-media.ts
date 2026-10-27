@@ -8,7 +8,8 @@ import { VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
 import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/types/index.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
 import { resolveTenantId } from "../auth/tenant.js";
-import { sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
+import { errorLine, sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
+import { singleLine } from "../utils/single-line.js";
 import {
   deliverVideos as defaultDeliverVideos,
   responseBytesBudget,
@@ -58,7 +59,7 @@ interface ImageAssetMeta {
   bytes?: number;
   downloaded: boolean;
   error?: string;
-  skipped?: "max_images" | "size_budget";
+  skipped?: "max_images" | "size_budget" | "aborted" | "max_attempts" | "time_budget";
 }
 
 interface VideoAssetMeta {
@@ -304,7 +305,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
           try {
             hashMap = await resolveImageHashes(resolvedAccountId, [...hashesToResolve]);
           } catch (err) {
-            warnings.push(`Image hash lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+            warnings.push(`Image hash lookup failed: ${errorLine(err, 200)}`);
           }
         } else {
           const blockedByMissingAccount =
@@ -359,7 +360,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
             }
             videoAssets.push({
               video_id: video.id,
-              title: video.title,
+              title: singleLine(video.title, 200) || undefined,
               length_seconds: video.length,
               source_url: video.source,
               thumbnail_url: thumbnailUrl,
@@ -384,7 +385,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
             }
             videoAssets.push({
               video_id: ref.videoId,
-              error: err instanceof Error ? err.message : String(err),
+              error: errorLine(err),
             });
           }
         }
@@ -451,7 +452,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
           } else if (delivered.delivered.mode === "url") {
             deliverySummary.push(`Video ${asset.video_id}: signed URL(s) attached as resource_link block(s) ${asset.delivered.block_indexes.join(", ")}.`);
           } else if (delivered.error) {
-            deliverySummary.push(`Video ${asset.video_id}: ${delivered.error}`);
+            deliverySummary.push(`Video ${asset.video_id}: ${errorLine(delivered.error)}`);
           }
         }
         warnings.push(...delivery.warnings.filter((w) => w !== VIDEO_EXPIRY_WARNING));
@@ -470,7 +471,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         summaryLines.push(`No downloadable media found for creative ${creative.id}.`);
       } else {
         summaryLines.push(
-          `Creative ${creative.id} (${creative.name ?? "Unnamed"}): ${downloadedCount} image(s) attached below${failedCount ? `, ${failedCount} failed` : ""}${skippedCount ? `, ${skippedCount} skipped (limits)` : ""}.`,
+          `Creative ${creative.id} (${singleLine(creative.name, 120) || "Unnamed"}): ${downloadedCount} image(s) attached below${failedCount ? `, ${failedCount} failed` : ""}${skippedCount ? `, ${skippedCount} skipped (limits)` : ""}.`,
         );
         const roles = imageAssets
           .filter((a) => a.downloaded)

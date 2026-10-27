@@ -78,4 +78,13 @@ describe("email-allowlist", () => {
     expect(isAllowed({ email: "anyone@anywhere.com" })).toBe(false);
     expect(isAllowed({ fbUserId: "9999" })).toBe(false);
   });
+
+  it("matches a domain only for an address with a single @", () => {
+    process.env.AUTH_ALLOWED_DOMAINS = "corp.example";
+    expect(isAllowed({ email: "a@corp.example" })).toBe(true);
+    expect(isAllowed({ email: "attacker@corp.example@evil.test" })).toBe(false);
+    expect(isAllowed({ email: "x@evil.test@corp.example" })).toBe(false);
+    expect(isAllowed({ email: "@corp.example" })).toBe(false);
+    expect(isAllowed({ email: "corp.example" })).toBe(false);
+  });
 });

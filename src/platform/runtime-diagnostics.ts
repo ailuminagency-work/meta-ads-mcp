@@ -1,5 +1,7 @@
 import {getEncryptionKeyringStatus} from "../auth/crypto.js";
+import {parseKeyringEnv} from "../auth/keyring.js";
 import {getFirestore,getFirestoreRuntimeIdentity} from "../store/firestore.js";
+import {inspectLegacyTokenCensus} from "../store/legacy-token-census.js";
 import {decryptCredential} from "./connections.js";
 import {PlatformDenied,type PlatformPrincipal} from "./models.js";
 import type {PlatformRepository} from "./repository.js";
@@ -9,7 +11,8 @@ const MAX_CONNECTIONS = 100;
 /**
  * Bounded, read-only production compatibility inspection.
  * It deliberately returns metadata only; decrypted credential plaintext is
- * never returned, hashed, logged, or written back.
+ * never returned, hashed, logged, or written back. The legacy per-user token
+ * census covers only the calling administrator's own records, as counts.
  */
 export async function inspectRuntimeCompatibility(repo: PlatformRepository, principal: PlatformPrincipal) {
   const member = await repo.get("members", principal.tenantId, principal.operatorId);
@@ -48,6 +51,7 @@ export async function inspectRuntimeCompatibility(repo: PlatformRepository, prin
     }
   }
 
+  const legacyTokens = await inspectLegacyTokenCensus(firestore, parseKeyringEnv(), {kind: "user", fbUserId: principal.operatorId});
   const uniqueFailures = [...new Set(failures)];
   return {
     status: uniqueFailures.length === 0 ? "PASS" : "HOLD",
@@ -72,6 +76,7 @@ export async function inspectRuntimeCompatibility(repo: PlatformRepository, prin
       migration_candidates: [...requiredKeyVersions].filter(key => key !== keyring.activeKeyId),
       database_writes_performed: 0,
     },
+    legacy_tokens: legacyTokens,
     rollback: {
       current_records_are_versioned: [...envelopeVersions].every(version => version === 1),
       rollback_requires_old_key: true,

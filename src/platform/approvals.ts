@@ -15,12 +15,21 @@ import { encryptToken, decryptToken } from "../auth/crypto.js";
 import type { ApprovalRequest, AuthorizationSnapshot, OperationContext, OperationPlan, PlatformPrincipal } from "./models.js";
 import { PlatformDenied } from "./models.js";
 import type { Collection, PlatformRepository } from "./repository.js";
-import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, revisionHash } from "./policy.js";
+import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, planLockHash, revisionHash } from "./policy.js";
 import { resolveAuthorizedAssets } from "./assets.js";
+import { platformWritesEnabled } from "./runtime.js";
+import "./budget-ceiling-guard.js";
 import { selectConnection } from "./connections.js";
+import { assertNoUnreconciledAttempt } from "./plan-lock.js";
 import { assertContractEligibility, contractPlanParameters, validateContractParameters } from "./clients.js";
 import { PRODUCT_CONTRACTS, type ProductContract } from "./products/contracts.js";
 
+/** Separation of duties. On by default for an agency deployment with platform writes enabled; only a value of exactly "false" (any case) opts out, and any other value, including a typo or an empty string, fails closed to on. Other deployments keep the old default of off. */
+export function distinctApproverRequired():boolean{
+  const configured=process.env.LUMIN_APPROVAL_REQUIRE_DISTINCT_APPROVER;
+  if(configured===undefined)return process.env.DEPLOYMENT_MODE==="agency"&&platformWritesEnabled();
+  return configured.toLowerCase()!=="false";
+}
 const aad=(r:Pick<ApprovalRequest,"id"|"tenantId"|"clientId"|"actorId"|"planHash">)=>canonicalJson(["platform-approval-plan",1,r.id,r.tenantId,r.clientId,r.actorId,r.planHash]);
 async function snapshot(repo:PlatformRepository,ctx:OperationContext,plan:OperationPlan):Promise<AuthorizationSnapshot>{
   const tenant=await repo.get("tenants",ctx.principal.tenantId,ctx.principal.tenantId),member=await repo.get("members",ctx.principal.tenantId,ctx.principal.operatorId),client=await repo.get("clients",ctx.principal.tenantId,ctx.clientId);
@@ -30,8 +39,9 @@ async function snapshot(repo:PlatformRepository,ctx:OperationContext,plan:Operat
   const connection=await selectConnection(repo,ctx,plan,assets);
   const grants=(await repo.list("grants",ctx.principal.tenantId)).filter(g=>g.connectionId===connection.id && g.clientId===ctx.clientId && g.revokedAt===null && g.expiresAt>Date.now() && assets.some(a=>a.key===g.assetKey));
   const state={tenant,member,client,assets,connection,grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client),financialEvidence:await loadOwnershipEvidence(repo,ctx,assets),manualEligibilityEvidence:await loadManualEligibilityEvidence(repo,ctx,connection,[...(connection.appPromotionProfile&&plan.assets.some(a=>a.type==="APP")?[appPurchaseRequirement(connection.appPromotionProfile.bindingHash)]:[]),...Object.keys(PRODUCT_CONTRACTS.find(c=>c.tool===ctx.tool&&c.provider===ctx.provider)?.eligibilityPolicies??{}),...(ctx.provider==="META_MARKETING"?[legacyMarketingReadRequirement(),...(ctx.tool.startsWith("ads_")&&plan.classes.some(c=>c!=="READ")?[legacyMarketingWriteRequirement()]:[])]:[])])};
-  const decision=evaluatePolicy(ctx,plan,state,{writesEnabled:true});
+  const decision=evaluatePolicy(ctx,plan,state,{writesEnabled:platformWritesEnabled()});
   if(decision.decision!=="REQUIRE_CONFIRMATION")throw new PlatformDenied(decision.decision==="DENY"?decision.reason:"HUMAN_APPROVAL_NOT_REQUIRED_FOR_PLAN");
+  await assertNoUnreconciledAttempt(repo,ctx.principal.tenantId,planLockHash(ctx,plan));
   return state;
 }
 function expected(snapshot:AuthorizationSnapshot):Array<{collection:Collection;id:string;canonical:string}>{
@@ -63,6 +73,7 @@ export async function requestLegacyApproval(repo:PlatformRepository,ctx:Operatio
 export async function inspectApprovalRequest(repo:PlatformRepository,approver:PlatformPrincipal,id:string):Promise<{request:ApprovalRequest;ctx:OperationContext;plan:OperationPlan;snapshot:AuthorizationSnapshot;approverRevision:number}>{
   const request=await repo.get("approvalRequests",approver.tenantId,id),member=await repo.get("members",approver.tenantId,approver.operatorId);
   if(request&&["marketing_activate_ad","marketing_delete_paused_ad"].includes(request.tool)&&!member?.roles.includes("admin"))throw new PlatformDenied("MARKETING_HUMAN_ADMIN_APPROVAL_REQUIRED");
+  if(request&&request.actorId===approver.operatorId&&distinctApproverRequired())throw new PlatformDenied("SELF_APPROVAL_FORBIDDEN");
   if(!request || request.tenantId!==approver.tenantId || !member || member.operatorId!==approver.operatorId || member.tenantId!==approver.tenantId || member.disabledAt!==null || !member.allowedClientIds.includes(request.clientId) || !member.roles.some(r=>r==="admin"||r==="approver"))throw new PlatformDenied("HUMAN_APPROVER_MEMBERSHIP_REQUIRED");
   if(request.approvedAt!==null || request.expiresAt<=Date.now())throw new PlatformDenied("APPROVAL_REQUEST_EXPIRED_OR_CONSUMED");
   const {ctx,plan,legacyInput}=JSON.parse(decryptToken(request.encryptedPlan,aad(request))) as {ctx:OperationContext;plan:OperationPlan;legacyInput?:Record<string,unknown>};

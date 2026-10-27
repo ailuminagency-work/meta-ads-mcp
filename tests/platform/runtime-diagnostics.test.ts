@@ -3,7 +3,7 @@ import {encryptCredential} from "../../src/platform/connections.js";
 import {inspectRuntimeCompatibility} from "../../src/platform/runtime-diagnostics.js";
 
 vi.mock("../../src/store/firestore.js",()=>({
-  getFirestore:()=>({databaseId:"(default)",collection:()=>({doc:()=>({get:async()=>({exists:false})})})}),
+  getFirestore:()=>({databaseId:"(default)",collection:()=>({doc:()=>({get:async()=>({exists:false}),collection:()=>({limit:()=>({get:async()=>({docs:[]})})})})})}),
   getFirestoreRuntimeIdentity:()=>({configuredProjectId:"lumin-meta-mcp",credentialProjectId:"lumin-meta-mcp",serviceAccountEmail:"runtime@lumin-meta-mcp.iam.gserviceaccount.com",databaseId:"(default)",emulator:false}),
 }));
 
@@ -29,6 +29,7 @@ describe("runtime compatibility diagnostics",()=>{
     expect(result.firestore.read_only_probe.exists).toBe(false);
     expect(result.encryption.successful_in_memory_decryptions).toBe(1);
     expect(result.encryption.database_writes_performed).toBe(0);
+    expect(result.legacy_tokens).toMatchObject({readOnly:true,subject:"one-user",truncated:false,recordsNeedingNonPrimaryKey:0});
     expect(JSON.stringify(result)).not.toContain("opaque-token");
   });
 

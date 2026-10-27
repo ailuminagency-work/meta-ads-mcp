@@ -1,11 +1,12 @@
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { redirectUriMatches } from "@modelcontextprotocol/sdk/server/auth/handlers/authorize.js";
 
 export type AuthorizeValidationResult =
-  | { ok: true; redirectUri: string; redirectOrigin: string }
+  | { ok: true; redirectUri: string; redirectOrigin: string; clientName: string | null }
   | { ok: false; kind: "no-params"; status: 400; message: string }
   | {
       ok: false;
-      kind: "missing-field" | "unknown-client" | "redirect-mismatch" | "malformed-redirect";
+      kind: "missing-field" | "unknown-client" | "redirect-mismatch" | "malformed-redirect" | "repeated-parameter";
       status: number;
       message: string;
     };
@@ -41,6 +42,16 @@ export async function validateAuthorizeQuery(
     clientId: string,
   ) => Promise<OAuthClientInformationFull | undefined>,
 ): Promise<AuthorizeValidationResult> {
+  // A parameter given twice parses to an array. Which copy each part of the
+  // server reads would differ, so none is accepted.
+  if (Object.values(query).some((value) => typeof value !== "string")) {
+    return {
+      ok: false,
+      kind: "repeated-parameter",
+      status: 400,
+      message: "Each request parameter may appear only once.",
+    };
+  }
   const clientId = single(query.client_id);
   const redirectUri = single(query.redirect_uri);
 
@@ -75,8 +86,10 @@ export async function validateAuthorizeQuery(
     };
   }
 
+  // Same matching as the SDK's authorize handler, which the consent form posts
+  // to: exact, except that a loopback redirect may use any port (RFC 8252 7.3).
   const registered = client.redirect_uris ?? [];
-  if (!registered.includes(redirectUri)) {
+  if (!registered.some((candidate) => redirectUriMatches(redirectUri, candidate))) {
     return {
       ok: false,
       kind: "redirect-mismatch",
@@ -87,7 +100,10 @@ export async function validateAuthorizeQuery(
 
   let redirectOrigin: string;
   try {
-    redirectOrigin = new URL(redirectUri).origin;
+    const target = new URL(redirectUri);
+    // Custom schemes such as cursor:// have the opaque origin "null", which is
+    // not a valid CSP source; a scheme source is what lets the form reach them.
+    redirectOrigin = target.origin === "null" ? target.protocol : target.origin;
   } catch {
     return {
       ok: false,
@@ -97,5 +113,5 @@ export async function validateAuthorizeQuery(
     };
   }
 
-  return { ok: true, redirectUri, redirectOrigin };
+  return { ok: true, redirectUri, redirectOrigin, clientName: client.client_name ?? null };
 }

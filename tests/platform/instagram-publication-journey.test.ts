@@ -84,7 +84,7 @@ describe("native SDK Instagram approved JPEG lifecycle", () => {
       await draftAndObserve(client, f); const approval = await approve(client, f.repo, f.tools[2], { creation_id: "777" });
       const result = await call(client, f.tools[2], { client_id: "client", asset_id: "101", input: { creation_id: "777" }, approval_id: approval });
       expect(result.isError).toBe(mode === "partial" ? undefined : true);
-      expect((await f.repo.list("operations", "tenant")).map(o => o.state)).toContain(mode === "partial" ? "PARTIAL" : "UNKNOWN");
+      expect((await f.repo.list("operations", "tenant")).map(o => o.state)).toContain(mode === "partial" ? "PARTIAL" : mode === "quota" ? "FAILED" : "UNKNOWN");
       expect((await f.repo.list("assets", "tenant")).find(a => a.id === "777")?.publicationClaim).toBeTruthy();
       expect((await f.repo.list("assets", "tenant")).some(a => a.id === "888")).toBe(mode === "partial");
       if (mode === "partial") expect(decode(result).publication_status).toBe("PARTIAL_PUBLISHED_RECONCILE_DO_NOT_RETRY");

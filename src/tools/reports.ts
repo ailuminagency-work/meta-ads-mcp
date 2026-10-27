@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { getAccessTokenHash, getCurrentFbUserId, getRequestSignal } from "../auth/token-store.js";
+import { abortableSleep, throwIfAborted } from "../utils/abortable.js";
 import { metaApiClient } from "../meta/client.js";
 import { truncateResponse, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
@@ -33,7 +35,8 @@ const levelEnum = z.enum(["ad", "adset", "campaign", "account"]);
 const MIN_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_POLL_INTERVAL_SECONDS = 10;
 const DEFAULT_MAX_WAIT_SECONDS = 600;
-const MAX_MAX_WAIT_SECONDS = 3600;
+// A wait this long holds a connection, a handler and its memory; the tool names the report id so the caller can poll later.
+const MAX_MAX_WAIT_SECONDS = 900;
 
 interface AsyncReportRun {
   id: string;
@@ -53,7 +56,19 @@ interface ReportRunStatus {
   error_user_msg?: string;
 }
 
+const MAX_TRACKED_POLLS = 5_000;
+/** Insertion order is time order, so expiry and eviction both read from the front. */
 const lastPollAt = new Map<string, number>();
+const pollsInFlight = new Set<string>();
+
+export function resetReportPollThrottleForTests(): void {
+  lastPollAt.clear();
+  pollsInFlight.clear();
+}
+
+export function reportPollThrottleSizeForTests(): number {
+  return lastPollAt.size;
+}
 
 export function registerReportTools(server: McpServer): void {
   // ─── Create Async Report ──────────────────────────────────────
@@ -140,15 +155,23 @@ export function registerReportTools(server: McpServer): void {
     },
     async ({ report_run_id }) => {
       const id = validateMetaId(report_run_id, "report_run");
-      enforceMinPollInterval(id);
+      const key = pollKey(id);
+      enforceMinPollInterval(id, key);
 
-      const status = await metaApiClient.get<ReportRunStatus>(
-        `/${id}`,
-        {
-          fields:
-            "id,async_status,async_percent_completion,date_start,date_stop,error_code,error_subcode,error_message,error_user_title,error_user_msg",
-        },
-      );
+      pollsInFlight.add(key);
+      let status: ReportRunStatus;
+      try {
+        status = await metaApiClient.get<ReportRunStatus>(
+          `/${id}`,
+          {
+            fields:
+              "id,async_status,async_percent_completion,date_start,date_stop,error_code,error_subcode,error_message,error_user_title,error_user_msg",
+          },
+        );
+      } finally {
+        pollsInFlight.delete(key);
+      }
+      recordPoll(key);
 
       return { content: [{ type: "text", text: formatStatus(id, status) }] };
     },
@@ -199,7 +222,7 @@ export function registerReportTools(server: McpServer): void {
   server.registerTool(
     "ads_run_report_and_wait",
     {
-      description: `${WRITE_WARNING}Create an async report and wait for completion in one call. Uses safe polling (start 10s, backoff to 60s max) and returns results directly when Job Completed. On timeout, returns the report_run_id so you can continue polling later. Max wait: 3600s.`,
+      description: `${WRITE_WARNING}Create an async report and wait for completion in one call. Uses safe polling (start 10s, backoff to 60s max) and returns results directly when Job Completed. On timeout, returns the report_run_id so you can continue polling later. Max wait: ${MAX_MAX_WAIT_SECONDS}s.`,
       inputSchema: {
         object_id: z.string(),
         level: levelEnum.optional(),
@@ -233,8 +256,11 @@ export function registerReportTools(server: McpServer): void {
     async ({
       object_id, level, time_range, date_preset, breakdowns, fields,
       use_unified_attribution_setting, time_increment,
-      max_wait_seconds, poll_interval_seconds, result_limit,
-    }) => {
+      max_wait_seconds: requestedWaitSeconds, poll_interval_seconds, result_limit,
+    }, extra?: { signal?: AbortSignal }) => {
+      const signal = extra?.signal ?? getRequestSignal();
+      throwIfAborted(signal);
+      const max_wait_seconds = Math.min(requestedWaitSeconds, MAX_MAX_WAIT_SECONDS);
       const objectId = validateMetaId(object_id, "object");
       enforceInsightsGuardrails({
         level,
@@ -263,7 +289,7 @@ export function registerReportTools(server: McpServer): void {
       let interval = Math.max(MIN_POLL_INTERVAL_MS, poll_interval_seconds * 1000);
 
       while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, interval));
+        await abortableSleep(interval, signal);
         interval = Math.min(60_000, Math.round(interval * 1.5));
 
         const status = await metaApiClient.get<ReportRunStatus>(
@@ -323,17 +349,41 @@ export function registerReportTools(server: McpServer): void {
   );
 }
 
-function enforceMinPollInterval(reportId: string): void {
+/** The throttle protects one caller's quota, so it is that caller's own: tenant first, token as the fallback identity. */
+function pollKey(reportId: string): string {
+  return `${getCurrentFbUserId() ?? `token:${getAccessTokenHash()}`}:${reportId}`;
+}
+
+function enforceMinPollInterval(reportId: string, key: string): void {
   const now = Date.now();
-  const prev = lastPollAt.get(reportId);
-  if (prev !== undefined && now - prev < MIN_POLL_INTERVAL_MS) {
-    const waitMs = MIN_POLL_INTERVAL_MS - (now - prev);
+  const prev = lastPollAt.get(key);
+  const waitMs = pollsInFlight.has(key)
+    ? MIN_POLL_INTERVAL_MS
+    : prev !== undefined && now - prev < MIN_POLL_INTERVAL_MS
+      ? MIN_POLL_INTERVAL_MS - (now - prev)
+      : 0;
+  if (waitMs > 0) {
     throw new McpError(
       ErrorCode.InvalidRequest,
       `Polling too fast for report ${reportId}. Wait ${Math.ceil(waitMs / 1000)}s before the next status check (minimum ${MIN_POLL_INTERVAL_MS / 1000}s between polls to protect your quota).`,
     );
   }
-  lastPollAt.set(reportId, now);
+}
+
+/** Only a poll Meta answered counts, and an entry older than the interval can no longer throttle anything. */
+function recordPoll(key: string): void {
+  const now = Date.now();
+  lastPollAt.delete(key);
+  lastPollAt.set(key, now);
+  for (const [oldKey, at] of lastPollAt) {
+    if (now - at < MIN_POLL_INTERVAL_MS) break;
+    lastPollAt.delete(oldKey);
+  }
+  while (lastPollAt.size > MAX_TRACKED_POLLS) {
+    const oldest = lastPollAt.keys().next().value;
+    if (oldest === undefined) break;
+    lastPollAt.delete(oldest);
+  }
 }
 
 function formatStatus(reportId: string, status: ReportRunStatus): string {

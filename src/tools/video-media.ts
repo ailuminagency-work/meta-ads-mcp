@@ -3,7 +3,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { resolveTenantId } from "../auth/tenant.js";
 import { validateApifyId } from "../apify/client.js";
-import { textBlock } from "../media/content-blocks.js";
+import { errorLine, textBlock, untrustedFenceLines } from "../media/content-blocks.js";
+import { singleLine } from "../utils/single-line.js";
 import {
   deliverVideos,
   type DeliveredVideo,
@@ -123,7 +124,8 @@ export function progressReporter(extra: ToolExtra | undefined) {
 export function describeDelivered(video: DeliveredVideo): string {
   const dims = video.width && video.height ? ` ${video.width}x${video.height}` : "";
   const dur = video.duration_seconds ? ` ${video.duration_seconds.toFixed(1)}s` : "";
-  const head = `${video.label}${dur}${dims}${video.has_audio === false ? " (no audio)" : ""}`;
+  const head = `${singleLine(video.label, 160)}${dur}${dims}${video.has_audio === false ? " (no audio)" : ""}`;
+  const error = video.error ? errorLine(video.error) : undefined;
   switch (video.delivered.mode) {
     case "frames": {
       const ts = (video.delivered.frame_timestamps ?? []).map((t) => `${t.toFixed(1)}s`).join(", ");
@@ -139,13 +141,13 @@ export function describeDelivered(video: DeliveredVideo): string {
     case "url":
       return `${head}: signed CDN URL(s) returned as resource_link blocks${video.expires_at ? `, valid until ${video.expires_at}` : ""}.`;
     case "thumbnail":
-      return `${head}: thumbnail image only${video.error ? ` — ${video.error}` : ""}.`;
+      return `${head}: thumbnail image only${error ? ` — ${error}` : ""}.`;
     case "skipped_time_budget":
       return `${head}: skipped, the per-call time budget ran out.`;
     case "skipped_size_budget":
       return `${head}: skipped, the response size budget is exhausted.`;
     default:
-      return `${head}: not delivered${video.error ? ` — ${video.error}` : ""}.`;
+      return `${head}: not delivered${error ? ` — ${error}` : ""}.`;
   }
 }
 
@@ -229,7 +231,16 @@ export function registerVideoMediaTools(server: McpServer, deps: VideoMediaDeps 
         };
         summary.push(`• ${describeDelivered(shifted)}`);
       }
-      if (allWarnings.length > 0) summary.push(...allWarnings.map((w) => `⚠ ${w}`));
+      // Titles and page names are the advertiser's words: they appear only inside the fence.
+      summary.push(
+        ...untrustedFenceLines(
+          result.videos.flatMap((v) => [
+            { label: `${singleLine(v.label, 60)} title`, value: v.title },
+            { label: `${singleLine(v.label, 60)} advertiser page`, value: v.advertiser_page },
+          ]),
+        ),
+      );
+      if (allWarnings.length > 0) summary.push(...allWarnings.map((w) => `⚠ ${singleLine(w, 500)}`));
 
       const metadata = {
         delivery,

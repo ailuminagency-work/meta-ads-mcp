@@ -6,6 +6,7 @@ import { truncateResponse, validateMetaId } from "../utils/format.js";
 import { LEAD_FORM_DEFAULT_FIELDS, LEAD_DEFAULT_FIELDS } from "../meta/types/lead.js";
 import type { LeadForm, Lead, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, fencedJsonBlock, untrustedJson, untrustedText } from "../media/content-blocks.js";
 import { readPageLeadForms } from "../meta/page-lead-forms.js";
 import { platformEnabled } from "../platform/runtime.js";
 
@@ -36,17 +37,17 @@ export function registerLeadTools(server: McpServer): void {
       const text =
         forms.length === 0
           ? "No lead forms found."
-          : forms
-              .map(
+          : fenceBlock(
+              forms.map(
                 (f) =>
-                  `• ${f.name} (${f.id}) — Status: ${f.status} — Leads: ${f.leads_count ?? "N/A"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(f.name) || "Unnamed"} (${untrustedText(f.id, 40)}) — Status: ${untrustedText(f.status, 40)} — Leads: ${untrustedText(f.leads_count, 20) || "N/A"}`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${forms.length} lead form(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(forms, null, 2) },
+          { type: "text", text: fencedJsonBlock(forms) },
         ],
       };
     },
@@ -100,17 +101,16 @@ export function registerLeadTools(server: McpServer): void {
         };
       }
 
-      const summary = leads
-        .slice(0, 10)
-        .map((l) => {
-          const fieldSummary = l.field_data
-            .map((f) => `${f.name}: ${f.values.join(", ")}`)
+      const summary = fenceBlock(
+        leads.slice(0, 10).map((l) => {
+          const fieldSummary = (Array.isArray(l.field_data) ? l.field_data : [])
+            .map((f) => `${untrustedText(f?.name, 60)}: ${untrustedText(Array.isArray(f?.values) ? f.values.join(", ") : f?.values, 200)}`)
             .join(" | ");
-          return `• ${l.id} (${l.created_time}) — ${fieldSummary}`;
-        })
-        .join("\n");
+          return `• ${untrustedText(l.id, 40)} (${untrustedText(l.created_time, 40)}) — ${fieldSummary}`;
+        }),
+      );
 
-      const jsonStr = truncateResponse(JSON.stringify(leads, null, 2));
+      const jsonStr = fenceBlock([truncateResponse(untrustedJson(leads))]);
 
       return {
         content: [
@@ -153,7 +153,7 @@ export function registerLeadTools(server: McpServer): void {
         };
       }
 
-      const jsonStr = truncateResponse(JSON.stringify(leads, null, 2));
+      const jsonStr = fenceBlock([truncateResponse(untrustedJson(leads))]);
 
       return {
         content: [

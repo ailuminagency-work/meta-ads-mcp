@@ -2,8 +2,11 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { metaApiClient } from "../meta/client.js";
+import { getRequestSignal } from "../auth/token-store.js";
+import { abortableSleep, throwIfAborted } from "../utils/abortable.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
+import { errorLine } from "../media/content-blocks.js";
 import { ctaEnum } from "./creatives.js";
 import { CREATE, WRITE_WARNING } from "./_register.js";
 
@@ -64,7 +67,9 @@ function isItemScopedError(err: unknown): boolean {
 async function waitForVideoReady(videoId: string, maxWaitSeconds: number): Promise<VideoStatus> {
   const deadline = Date.now() + maxWaitSeconds * 1000;
 
+  const signal = getRequestSignal();
   for (;;) {
+    throwIfAborted(signal);
     const video = await metaApiClient.get<VideoStatus>(`/${videoId}`, {
       fields: "status,thumbnails{uri,is_preferred}",
     });
@@ -83,7 +88,7 @@ async function waitForVideoReady(videoId: string, maxWaitSeconds: number): Promi
       );
     }
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    await abortableSleep(POLL_INTERVAL_MS, signal);
   }
 }
 
@@ -178,7 +183,7 @@ export function registerBulkAdTools(server: McpServer): void {
             await assertSafePublicUrl(video.file_url);
           } catch (err) {
             if (err instanceof UnsafeUrlError) {
-              throw new StageError("upload", `Refusing to forward file_url to Meta: ${err.message}`);
+              throw new StageError("upload", `Refusing to forward file_url to Meta: ${errorLine(err)}`);
             }
             throw err;
           }
@@ -255,7 +260,7 @@ export function registerBulkAdTools(server: McpServer): void {
           lastFailure = undefined;
           repeatedFailures = 0;
         } catch (err) {
-          result.error = err instanceof Error ? err.message : String(err);
+          result.error = errorLine(err);
           result.failed_stage = err instanceof StageError ? err.stage : stage;
 
           // Only Meta's own verdicts can betray a shared bad input. Locally
@@ -295,7 +300,7 @@ export function registerBulkAdTools(server: McpServer): void {
         lines.push(
           "",
           `⚠️ The batch stopped early — this error affects every video, not just one: ${
-            systemicError instanceof Error ? systemicError.message : String(systemicError)
+            errorLine(systemicError)
           }`,
           "Fix that first, then re-run with the skipped videos only.",
         );

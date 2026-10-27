@@ -6,6 +6,7 @@ import { PLATFORM_SERVER_INSTRUCTIONS } from "./platform/instructions.js";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAllTools } from "./tools/index.js";
+import { installToolRuntime } from "./tools/tool-runtime.js";
 import { SERVER_INSTRUCTIONS } from "./skills/instructions.js";
 import { registerSkillPrompts } from "./skills/prompts.js";
 import { registerSkillResources } from "./skills/resources.js";
@@ -50,16 +51,19 @@ export function createServer(): McpServer {
     { instructions: platformEnabled()?PLATFORM_SERVER_INSTRUCTIONS:SERVER_INSTRUCTIONS },
   );
 
+  installToolRuntime(server);
   platformEnabled();
   const finishLegacyRegistration = installLegacyGuard(server);
   registerAllTools(server);
   finishLegacyRegistration();
   if (platformEnabled()) registerPlatformTools(server,new Set(LEGACY_MANIFEST.map(t=>t.name)));
-  if (process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true") {
+  // Startup already refuses writes without the policy engine; this keeps a server built from a drifted environment read-only instead of exposing the unguarded baseline writes.
+  const agencyWritesAllowed = process.env.AGENCY_WRITES_ENABLED === "true" && platformEnabled();
+  if (process.env.DEPLOYMENT_MODE === "agency" && !agencyWritesAllowed) {
     const tools = (server as unknown as { _registeredTools: Record<string, { annotations?: { readOnlyHint?: boolean }; disable(): void }> })._registeredTools;
     for (const [name, tool] of Object.entries(tools)) {
-      if(platformEnabled()&&name==="ads_update_ad_url_tags")continue;
-      if(name==="meta_discover_signal_assets"||name==="meta_prepare_app_promotion_access"||name==="meta_plan_ad_tracking_change"||name==="meta_plan_paused_ads"||name==="meta_prepare_action"||name==="meta_prepare_publication"||name==="meta_discover_ad_assets"||name==="meta_lookup_ad_targeting"||name==="meta_observe_ads_compatibility"||name==="meta_observe_account_owner")continue;
+      // Preparation tools that only stage a proposal for a later write stay hidden while writes are off; discovery and observation tools below only read and store evidence.
+      if(name==="meta_discover_signal_assets"||name==="meta_prepare_app_promotion_access"||name==="meta_discover_ad_assets"||name==="meta_lookup_ad_targeting"||name==="meta_observe_ads_compatibility"||name==="meta_observe_account_owner")continue;
       if (tool.annotations?.readOnlyHint !== true || name === "ads_analyze_video" || name.startsWith("ads_library_")) tool.disable();
     }
   }

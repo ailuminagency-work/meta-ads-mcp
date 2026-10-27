@@ -10,7 +10,33 @@ import {
   loadMetaOAuthConfig,
   type MetaProfile,
 } from "../auth/meta-oauth.js";
+import { hashPii } from "../auth/token-store.js";
 import { logger } from "../utils/logger.js";
+
+/**
+ * Token names become Firestore document ids and are bound into the ciphertext
+ * AAD, and they arrive from forms and tool arguments. Anything outside this
+ * set (path separators, dots, whitespace, control characters) is refused
+ * before any Firestore reference is built. Firestore reserves document ids of
+ * the form __.*__ (the client accepts them and the backend answers with an
+ * error), so those are refused here with the same clean failure.
+ */
+export const TOKEN_NAME_PATTERN = /^(?!__.*__$)[A-Za-z0-9_-]{1,64}$/;
+
+export class InvalidTokenNameError extends Error {
+  constructor() {
+    super("Invalid token name: use 1-64 characters from a-z, A-Z, 0-9, _ and -.");
+    this.name = "InvalidTokenNameError";
+  }
+}
+
+export function isValidTokenName(name: unknown): name is string {
+  return typeof name === "string" && TOKEN_NAME_PATTERN.test(name);
+}
+
+function assertValidTokenName(name: unknown): asserts name is string {
+  if (!isValidTokenName(name)) throw new InvalidTokenNameError();
+}
 
 const REFRESH_THRESHOLD_SECONDS = 7 * 24 * 60 * 60;
 
@@ -24,12 +50,43 @@ function aadFor(fbUserId: string, tokenName: string): string {
   return `mcp_token:${fbUserId}:${tokenName}`;
 }
 
+const LEGACY_NO_AAD_ENV = "TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD";
+let legacyNoAadLogged = false;
+
 /**
- * Decrypt a token, transparently handling docs encrypted with AAD (new)
- * or without (legacy). On AAD-tag mismatch we retry without AAD; if that
- * also fails the underlying error propagates. Once every doc has been
- * re-encrypted with AAD (e.g. via natural rotation or a one-shot
- * migration script), the legacy fallback can be removed.
+ * Whether a token that fails identity-bound (AAD) decryption may be retried
+ * without AAD. Records written before AAD existed need the retry, so the
+ * default is on; but the retry is also what lets someone with Firestore write
+ * access move a legacy ciphertext from one user to another. Turn it off once
+ * the legacy token census reports no AAD-less records. Anything other than
+ * "true" or "false" is a configuration error and fails closed.
+ */
+export function legacyNoAadDecryptAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[LEGACY_NO_AAD_ENV]?.trim().toLowerCase();
+  if (raw === undefined || raw === "" || raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${LEGACY_NO_AAD_ENV} must be "true" or "false"`);
+}
+
+/** Call once at startup. Logs a single count-free warning while the fallback is on. */
+export function logLegacyNoAadPolicyAtStartup(env: NodeJS.ProcessEnv = process.env): void {
+  if (!legacyNoAadDecryptAllowed(env) || legacyNoAadLogged) return;
+  legacyNoAadLogged = true;
+  logger.warn(
+    { event: "legacy_no_aad_decrypt_enabled", setting: LEGACY_NO_AAD_ENV },
+    "Legacy token decryption without identity binding is enabled; set TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD=false once the legacy token census reports no AAD-less records",
+  );
+}
+
+export function resetLegacyNoAadLogForTests(): void {
+  legacyNoAadLogged = false;
+}
+
+/**
+ * Decrypt a token bound to its owner and name (AAD). A record written before
+ * AAD existed is retried without AAD only while the explicit legacy policy
+ * allows it (see legacyNoAadDecryptAllowed); the migration re-encrypts such
+ * records with AAD, after which the policy can be switched off.
  */
 function decryptCompat(
   payload: EncryptedPayload,
@@ -38,7 +95,8 @@ function decryptCompat(
 ): string {
   try {
     return decryptToken(payload, aadFor(fbUserId, tokenName));
-  } catch {
+  } catch (error) {
+    if (!legacyNoAadDecryptAllowed()) throw error;
     return decryptToken(payload);
   }
 }
@@ -109,6 +167,26 @@ export interface MetaTokenRepo {
   ): Promise<string>;
 }
 
+/**
+ * Sets written by main and by staging 1f08563 can hold a token whose flag was
+ * cleared by a re-login. When nothing is flagged and exactly one token exists
+ * that token is the default; with none or several there is no default. Read
+ * time only: nothing is written to repair the stored flag.
+ */
+function readTimeDefaultName(entries: ReadonlyArray<readonly [string, Pick<MetaTokenDoc, "isDefault">]>): string | null {
+  const flagged = entries.find(([, doc]) => doc.isDefault === true);
+  if (flagged) return flagged[0];
+  return entries.length === 1 ? entries[0][0] : null;
+}
+
+function summaries(entries: ReadonlyArray<readonly [string, MetaTokenDoc]>, now: number): MetaTokenSummary[] {
+  const resolved = readTimeDefaultName(entries);
+  return entries.map(([name, doc]) => {
+    const summary = summarize(name, doc, now);
+    return name === resolved ? { ...summary, isDefault: true } : summary;
+  });
+}
+
 function summarize(name: string, doc: MetaTokenDoc, now: number): MetaTokenSummary {
   return {
     name,
@@ -147,7 +225,7 @@ async function maybeRefresh(
   const config = serverUrl ? loadMetaOAuthConfig(serverUrl) : null;
   if (!config) {
     logger.warn(
-      { fbUserId, tokenName },
+      { fbUserId: hashPii(fbUserId), tokenName },
       "Cannot refresh long-lived token: META_APP_ID/SECRET not configured",
     );
     return plaintext;
@@ -167,7 +245,7 @@ async function maybeRefresh(
     });
     logger.info(
       {
-        fbUserId,
+        fbUserId: hashPii(fbUserId),
         tokenName,
         expiresAt: refreshed.expiresAt,
         event: "meta_token_refreshed",
@@ -181,7 +259,7 @@ async function maybeRefresh(
     if (alreadyExpired) {
       logger.warn(
         {
-          fbUserId,
+          fbUserId: hashPii(fbUserId),
           tokenName,
           error: errorMessage,
           event: "meta_token_refresh_failed_expired",
@@ -194,7 +272,7 @@ async function maybeRefresh(
     }
     logger.warn(
       {
-        fbUserId,
+        fbUserId: hashPii(fbUserId),
         tokenName,
         error: errorMessage,
         event: "meta_token_refresh_failed",
@@ -211,6 +289,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
   }
 
   private tokenDocRef(fbUserId: string, name: string) {
+    assertValidTokenName(name);
     return this.userDocRef(fbUserId).collection("meta_tokens").doc(name);
   }
 
@@ -244,6 +323,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
   }
 
   async saveToken(input: SaveTokenInput): Promise<void> {
+    assertValidTokenName(input.name);
     const now = Math.floor(Date.now() / 1000);
     const encryptedToken = encryptToken(
       input.accessToken,
@@ -268,8 +348,10 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     if (input.setAsDefault) {
       await this.clearDefaults(input.fbUserId);
     } else {
-      const existingDefault = await this.getDefaultTokenName(input.fbUserId);
-      if (!existingDefault) {
+      const existingDefault = await this.flaggedDefaultName(input.fbUserId);
+      // set() replaces the doc, so re-saving the current default under its own
+      // name must keep the flag or the user is left with no default token.
+      if (!existingDefault || existingDefault === input.name) {
         doc.isDefault = true;
       }
     }
@@ -299,27 +381,21 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     const ref = this.tokenDocRef(fbUserId, name);
     const snap = await ref.get();
     if (!snap.exists) return false;
-    const wasDefault = (snap.data() as MetaTokenDoc).isDefault;
+    // Deleting the default leaves the set without one. Promoting whichever
+    // document happens to come first would silently point every MCP request
+    // at an arbitrary client's token; the read-time rule applies instead
+    // (a single survivor is the default, otherwise the user must choose).
     await ref.delete();
-    if (wasDefault) {
-      const remaining = await this.userDocRef(fbUserId)
-        .collection("meta_tokens")
-        .limit(1)
-        .get();
-      if (!remaining.empty) {
-        await remaining.docs[0].ref.update({ isDefault: true });
-      }
-    }
     return true;
   }
 
   async listTokens(fbUserId: string): Promise<MetaTokenSummary[]> {
     const snap = await this.userDocRef(fbUserId).collection("meta_tokens").get();
     const now = Math.floor(Date.now() / 1000);
-    return snap.docs.map((d) => summarize(d.id, d.data() as MetaTokenDoc, now));
+    return summaries(snap.docs.map((d) => [d.id, d.data() as MetaTokenDoc] as const), now);
   }
 
-  async getDefaultTokenName(fbUserId: string): Promise<string | null> {
+  private async flaggedDefaultName(fbUserId: string): Promise<string | null> {
     const snap = await this.userDocRef(fbUserId)
       .collection("meta_tokens")
       .where("isDefault", "==", true)
@@ -329,20 +405,28 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     return snap.docs[0].id;
   }
 
+  async getDefaultTokenName(fbUserId: string): Promise<string | null> {
+    const flagged = await this.flaggedDefaultName(fbUserId);
+    if (flagged) return flagged;
+    const tokens = await this.userDocRef(fbUserId).collection("meta_tokens").limit(2).get();
+    return tokens.docs.length === 1 ? tokens.docs[0].id : null;
+  }
+
   async getDecryptedToken(
     fbUserId: string,
     name?: string,
     serverUrl?: URL,
   ): Promise<string> {
+    if (name !== undefined) assertValidTokenName(name);
     const tokenName = name ?? (await this.getDefaultTokenName(fbUserId));
     if (!tokenName) {
-      throw new Error(`No Meta token registered for user ${fbUserId}`);
+      throw new Error(`No Meta token registered for user ${hashPii(fbUserId)}`);
     }
 
     const ref = this.tokenDocRef(fbUserId, tokenName);
     const snap = await ref.get();
     if (!snap.exists) {
-      throw new Error(`Meta token "${tokenName}" not found for user ${fbUserId}`);
+      throw new Error(`Meta token "${tokenName}" not found for user ${hashPii(fbUserId)}`);
     }
 
     const data = snap.data() as MetaTokenDoc;
@@ -392,6 +476,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async saveToken(input: SaveTokenInput): Promise<void> {
+    assertValidTokenName(input.name);
     const now = Math.floor(Date.now() / 1000);
     const bucket = this.getUserTokens(input.fbUserId);
 
@@ -401,8 +486,8 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
         bucket.set(k, { ...v, isDefault: false });
       }
     } else {
-      const existingDefault = await this.getDefaultTokenName(input.fbUserId);
-      if (!existingDefault) {
+      const existingDefault = [...bucket.entries()].find(([, v]) => v.isDefault)?.[0];
+      if (!existingDefault || existingDefault === input.name) {
         isDefault = true;
       }
     }
@@ -428,6 +513,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async setDefaultToken(fbUserId: string, name: string): Promise<boolean> {
+    assertValidTokenName(name);
     const bucket = this.tokens.get(fbUserId);
     if (!bucket || !bucket.has(name)) return false;
     const now = Math.floor(Date.now() / 1000);
@@ -438,18 +524,11 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async deleteToken(fbUserId: string, name: string): Promise<boolean> {
+    assertValidTokenName(name);
     const bucket = this.tokens.get(fbUserId);
     if (!bucket) return false;
-    const existing = bucket.get(name);
-    if (!existing) return false;
+    if (!bucket.has(name)) return false;
     bucket.delete(name);
-    if (existing.isDefault) {
-      const next = bucket.entries().next();
-      if (!next.done) {
-        const [k, v] = next.value;
-        bucket.set(k, { ...v, isDefault: true });
-      }
-    }
     return true;
   }
 
@@ -457,16 +536,13 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
     const bucket = this.tokens.get(fbUserId);
     if (!bucket) return [];
     const now = Math.floor(Date.now() / 1000);
-    return [...bucket.entries()].map(([name, doc]) => summarize(name, doc, now));
+    return summaries([...bucket.entries()], now);
   }
 
   async getDefaultTokenName(fbUserId: string): Promise<string | null> {
     const bucket = this.tokens.get(fbUserId);
     if (!bucket) return null;
-    for (const [name, doc] of bucket) {
-      if (doc.isDefault) return name;
-    }
-    return null;
+    return readTimeDefaultName([...bucket.entries()]);
   }
 
   async getDecryptedToken(
@@ -474,14 +550,15 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
     name?: string,
     serverUrl?: URL,
   ): Promise<string> {
+    if (name !== undefined) assertValidTokenName(name);
     const tokenName = name ?? (await this.getDefaultTokenName(fbUserId));
     if (!tokenName) {
-      throw new Error(`No Meta token registered for user ${fbUserId}`);
+      throw new Error(`No Meta token registered for user ${hashPii(fbUserId)}`);
     }
     const bucket = this.tokens.get(fbUserId);
     const doc = bucket?.get(tokenName);
     if (!doc) {
-      throw new Error(`Meta token "${tokenName}" not found for user ${fbUserId}`);
+      throw new Error(`Meta token "${tokenName}" not found for user ${hashPii(fbUserId)}`);
     }
 
     return maybeRefresh(doc, fbUserId, tokenName, serverUrl, async (next) => {

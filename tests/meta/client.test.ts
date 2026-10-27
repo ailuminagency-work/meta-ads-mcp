@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MetaApiClient } from "../../src/meta/client.js";
 import { setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
@@ -589,6 +590,193 @@ describe("MetaApiClient", () => {
         "/act_123/campaigns",
       );
       expect(result).toEqual([{ id: "1" }, { id: "2" }]);
+    });
+  });
+
+  // Meta documents the proof as HMAC-SHA256 of the access token, keyed with the
+  // app secret, hex encoded. All values below are synthetic.
+  describe("appsecret_proof", () => {
+    const APP_SECRET = "synthetic-app-secret-not-real";
+    const TOKEN = "synthetic-access-token-not-real";
+    const proofOf = (token: string, secret = APP_SECRET) => createHmac("sha256", secret).update(token).digest("hex");
+
+    const sentUrl = (call = 0) => new URL(String(vi.mocked(fetch).mock.calls[call][0]));
+    const sentBody = (call = 0) => vi.mocked(fetch).mock.calls[call][1]?.body;
+
+    beforeEach(() => {
+      setupTestToken(TOKEN);
+      vi.stubEnv("META_APP_SECRET", APP_SECRET);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+    });
+
+    it("matches the published HMAC-SHA256 test vector", async () => {
+      setupTestToken("The quick brown fox jumps over the lazy dog");
+      vi.stubEnv("META_APP_SECRET", "key");
+      await client.get("/me/adaccounts");
+      expect(sentUrl().searchParams.get("appsecret_proof")).toBe(
+        "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
+      );
+    });
+
+    it("is sent on GET with the token it was computed from", async () => {
+      await client.get("/me/adaccounts", { fields: "id" });
+      const url = sentUrl();
+      expect(url.searchParams.get("access_token")).toBe(TOKEN);
+      expect(url.searchParams.get("appsecret_proof")).toBe(proofOf(TOKEN));
+      expect(url.searchParams.get("fields")).toBe("id");
+    });
+
+    it.each([
+      ["post", (c: MetaApiClient) => c.post("/123", { name: "x" })],
+      ["postForm", (c: MetaApiClient) => c.postForm("/123", { name: "x" })],
+      ["delete", (c: MetaApiClient) => c.delete("/123")],
+    ])("is sent on %s", async (_name, call) => {
+      await call(client);
+      expect(sentUrl().searchParams.get("appsecret_proof")).toBe(proofOf(TOKEN));
+      expect(sentUrl().searchParams.get("access_token")).toBe(TOKEN);
+    });
+
+    it("is sent on every page of a paginated read", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(mockFetchResponse({ data: [{ id: "1" }], paging: { cursors: { after: "c1" }, next: "n" } }))
+          .mockResolvedValueOnce(mockFetchResponse({ data: [{ id: "2" }] })),
+      );
+      await client.getPaginated("/act_1/campaigns");
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+      for (const call of [0, 1]) expect(sentUrl(call).searchParams.get("appsecret_proof")).toBe(proofOf(TOKEN));
+      expect(sentUrl(1).searchParams.get("after")).toBe("c1");
+    });
+
+    it("rides in the form body of a multipart upload, next to the token, and not in the url", async () => {
+      const form = new FormData();
+      form.set("name", "clip");
+      await client.postMultipart("/act_1/advideos", form);
+
+      const body = sentBody() as FormData;
+      expect(body.get("access_token")).toBe(TOKEN);
+      expect(body.get("appsecret_proof")).toBe(proofOf(TOKEN));
+      expect(sentUrl().search).toBe("");
+    });
+
+    it("is recomputed for the token each call uses", async () => {
+      await client.get("/me");
+      setupTestToken("another-synthetic-token-not-real");
+      tokenManager.resetForTests();
+      await client.get("/me");
+      expect(sentUrl(0).searchParams.get("appsecret_proof")).toBe(proofOf(TOKEN));
+      expect(sentUrl(1).searchParams.get("appsecret_proof")).toBe(proofOf("another-synthetic-token-not-real"));
+      expect(sentUrl(0).searchParams.get("appsecret_proof")).not.toBe(sentUrl(1).searchParams.get("appsecret_proof"));
+    });
+
+    it("stays on a retry", async () => {
+      const retrying = new MetaApiClient({ apiVersion: "v26.0", baseUrl: "https://graph.facebook.com", maxRetries: 1 });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(mockFetchResponse({ error: { message: "x", type: "OAuthException", code: 2 } }, { status: 500 }))
+          .mockResolvedValueOnce(mockFetchResponse({ data: [] })),
+      );
+      vi.spyOn(retrying as unknown as { backoff: () => Promise<void> }, "backoff").mockResolvedValue(undefined);
+      await retrying.get("/me");
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+      for (const call of [0, 1]) expect(sentUrl(call).searchParams.get("appsecret_proof")).toBe(proofOf(TOKEN));
+    });
+
+    it("is not sent when no app secret is configured", async () => {
+      vi.stubEnv("META_APP_SECRET", "");
+      await client.get("/me");
+      expect(sentUrl().searchParams.has("appsecret_proof")).toBe(false);
+      expect(sentUrl().searchParams.get("access_token")).toBe(TOKEN);
+
+      const form = new FormData();
+      await client.postMultipart("/act_1/advideos", form);
+      expect((sentBody(1) as FormData).has("appsecret_proof")).toBe(false);
+    });
+
+    it("can be switched off for tokens that belong to another app", async () => {
+      vi.stubEnv("META_APPSECRET_PROOF", "off");
+      await client.get("/me");
+      expect(sentUrl().searchParams.has("appsecret_proof")).toBe(false);
+    });
+
+    it("prefers a secret handed to the client over the environment", async () => {
+      const configured = new MetaApiClient({ apiVersion: "v26.0", maxRetries: 0, appSecret: "configured-secret-not-real" });
+      await configured.get("/me");
+      expect(sentUrl().searchParams.get("appsecret_proof")).toBe(proofOf(TOKEN, "configured-secret-not-real"));
+    });
+
+    describe("never reaches an error or a log line", () => {
+      const levels = ["fatal", "error", "warn", "info", "debug", "trace"] as const;
+
+      function captureLogs() {
+        const calls: unknown[][] = [];
+        for (const level of levels) {
+          vi.spyOn(logger, level).mockImplementation(((...args: unknown[]) => { calls.push(args); }) as never);
+        }
+        return calls;
+      }
+
+      function expectNoSecretsIn(text: string) {
+        expect(text).not.toContain(APP_SECRET);
+        expect(text).not.toContain(TOKEN);
+        expect(text).not.toContain(proofOf(TOKEN));
+      }
+
+      it("when Meta answers with an error that quotes the request", async () => {
+        const logs = captureLogs();
+        vi.stubGlobal(
+          "fetch",
+          vi.fn().mockResolvedValue(
+            mockFetchResponse(
+              { error: { message: `bad call /me?access_token=${TOKEN}&appsecret_proof=${proofOf(TOKEN)} secret ${APP_SECRET}`, type: "OAuthException", code: 190 } },
+              { status: 400 },
+            ),
+          ),
+        );
+        const error = await client.get("/me").catch((e: unknown) => e as Error);
+        expect(error).toBeInstanceOf(Error);
+        expectNoSecretsIn(String((error as Error).message) + JSON.stringify(error));
+        expectNoSecretsIn(JSON.stringify(logs));
+      });
+
+      it("when the transport fails and the underlying error names the url", async () => {
+        const logs = captureLogs();
+        vi.stubGlobal(
+          "fetch",
+          vi.fn().mockRejectedValue(
+            Object.assign(new TypeError("fetch failed"), {
+              cause: new Error(`connect ECONNRESET https://graph.facebook.com/v26.0/me?access_token=${TOKEN}&appsecret_proof=${proofOf(TOKEN)}`),
+            }),
+          ),
+        );
+        const error = await client.get("/me").catch((e: unknown) => e as Error);
+        expect(error).toBeInstanceOf(Error);
+        expectNoSecretsIn(String((error as Error).message) + String((error as Error).stack ?? "") + JSON.stringify(error));
+        expectNoSecretsIn(JSON.stringify(logs, (_k, v) => (v instanceof Error ? { message: v.message, stack: v.stack, cause: String((v as { cause?: unknown }).cause) } : v)));
+      });
+
+      it("when the request times out, and when the body is not JSON", async () => {
+        const logs = captureLogs();
+        vi.stubGlobal("fetch", vi.fn().mockRejectedValue(Object.assign(new Error(`aborted ${TOKEN}`), { name: "AbortError" })));
+        const timeout = await client.get("/me").catch((e: unknown) => e as Error);
+        expectNoSecretsIn(String((timeout as Error).message));
+
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), json: async () => { throw new SyntaxError(`Unexpected token in ${TOKEN}`); } } as unknown as Response));
+        const malformed = await client.get("/me").catch((e: unknown) => e as Error);
+        expectNoSecretsIn(String((malformed as Error).message));
+        expectNoSecretsIn(JSON.stringify(logs, (_k, v) => (v instanceof Error ? { message: v.message, stack: v.stack } : v)));
+      });
+
+      it("on the multipart path too", async () => {
+        const logs = captureLogs();
+        vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error(`multipart failed ${TOKEN} ${proofOf(TOKEN)}`)));
+        const error = await client.postMultipart("/act_1/advideos", new FormData()).catch((e: unknown) => e as Error);
+        expect(error).toBeInstanceOf(Error);
+        expectNoSecretsIn(String((error as Error).message));
+        expectNoSecretsIn(JSON.stringify(logs, (_k, v) => (v instanceof Error ? { message: v.message, stack: v.stack } : v)));
+      });
     });
   });
 });

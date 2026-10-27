@@ -87,6 +87,7 @@ import { evaluatePolicy } from "./policy.js";
 import { FirstPartySignalDispatcher } from "./signals-dispatch.js";
 import { firstPartySignalRuntime } from "./signals-runtime.js";
 import { getExecutionScope, authorizeOperation, revalidateExecutionPermit, finishOperation, finishCreatedAsset, runWithExecutionPermit } from "./execution.js";
+import { outcomeAfterFailure } from "./failure-outcome.js";
 import { contractPlanParameters, signalPlanParameters, assertContractEligibility, validateContractParameters, MetaGraphClient, ProductApiError } from "./clients.js";
 import { PlatformDenied, type OperationPlan } from "./models.js";
 import { LEGACY_CORE_WRITE_TOOLS } from "./legacy-write.js";
@@ -136,7 +137,7 @@ export function registerPlatformTools(server: McpServer, existingNames: Readonly
         let permit:Awaited<ReturnType<typeof authorizeOperation>>|undefined;
         try{const ctx=await resolveOperationContext(client_id,contract.tool,contract.provider),repo=getPlatformRepository();if(!platformWritesEnabled()||!crmSignalsEnabled())throw new PlatformDenied("DISABLED_BY_LUMIN_POLICY");if(!hasCrmCredentialInspector())throw new PlatformDenied("CRM_REVIEWED_CREDENTIAL_INSPECTOR_REQUIRED");const input={source_reference,consent_reference},plan:OperationPlan={parameters:contractPlanParameters(contract,asset_id,input),assets:[{type:"PIXEL",id:asset_id}],classes:[...contract.operationClasses],capability:contract.id,requiredScopes:[...contract.requiredScopes],tokenTypes:[...contract.tokenTypes]};permit=await authorizeOperation(repo,ctx,plan,{writesEnabled:platformWritesEnabled(),selectedConnectionId:connection_id,approvalId:approval_id});const activePermit=permit;
           const output=await runWithExecutionPermit(activePermit,async()=>{const scope={tenantId:ctx.principal.tenantId,clientId:ctx.clientId,appId:getExecutionScope().snapshot.connection.appId,pixelId:asset_id},entry=getCrmRuntime().select(scope,connection_id);return new CrmSignalDispatcher(entry.source,entry.journal,new CrmGraphTransport(input),entry.key).dispatch(scope,entry.profile.funnel,input);});await finishOperation(activePermit,"SUCCEEDED");return result(output);
-        }catch(error){if(permit)try{await finishOperation(permit,"UNKNOWN");}catch{return failure(new PlatformDenied("CRM_OPERATION_RECONCILIATION_REQUIRED"));}return failure(error);}
+        }catch(error){if(permit)try{await finishOperation(permit,outcomeAfterFailure(permit,error));}catch{return failure(new PlatformDenied("CRM_OPERATION_RECONCILIATION_REQUIRED"));}return failure(error);}
       });continue;
     }
     if(contract.tool==="signals_send_pixel_events"){
@@ -156,7 +157,7 @@ export function registerPlatformTools(server: McpServer, existingNames: Readonly
             if(target.tenantId!==scope.tenantId||target.clientId!==scope.clientId||target.datasetId!==scope.datasetId)throw new PlatformDenied("SIGNAL_DISPATCH_SCOPE_MISMATCH");
             const permit=await authorizeOperation(repo,ctx,{...plan,parameters:signalPlanParameters(contract,asset_id,input,event)},{writesEnabled:platformWritesEnabled(),selectedConnectionId:connection.id});
             try{const response=await runWithExecutionPermit(permit,()=>new MetaGraphClient(contract.provider).requestPreparedSignal(contract,asset_id,input,prepared)) as {events_received?:unknown};if(response.events_received!==1)throw new PlatformDenied("SIGNAL_PROVIDER_ACCEPTANCE_UNVERIFIED");await finishOperation(permit,"SUCCEEDED");return {eventsReceived:1};}
-            catch(error){try{await finishOperation(permit,"UNKNOWN");}catch{throw new PlatformDenied("SIGNAL_OPERATION_RECONCILIATION_REQUIRED");}throw error;}
+            catch(error){try{await finishOperation(permit,outcomeAfterFailure(permit,error));}catch{throw new PlatformDenied("SIGNAL_OPERATION_RECONCILIATION_REQUIRED");}throw error;}
           }});
           return result(await dispatcher.dispatch(scope,input));
         }catch(error){return failure(error);}
@@ -218,9 +219,9 @@ export async function executePlatformProductAction(tool:string,args:{client_id:s
       }catch(error){
         if(resolvedContext)await recordScopedHealthFailure(resolvedContext,error);
         if(permit) {
-          // Once authorization has created a durable mutation record, an uncertain
-          // transport or completion outcome must never be reported as safely retryable.
-          try {await finishOperation(permit,"UNKNOWN");}catch{return {...result({status:"HOLD",reason:"DURABLE_COMPLETION_PENDING",operation_id:permit.operationId}),isError:true};}
+          // A failure that provably never reached Meta finishes FAILED and frees the plan; anything that
+          // may have reached it stays UNKNOWN and keeps the plan locked until it is reconciled.
+          try {await finishOperation(permit,outcomeAfterFailure(permit,error));}catch{return {...result({status:"HOLD",reason:"DURABLE_COMPLETION_PENDING",operation_id:permit.operationId}),isError:true};}
         }
         return failure(error);
       }

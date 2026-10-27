@@ -12,6 +12,7 @@ import { assertNoCredentialShapedString } from "./input-safety.js";
 import { z } from "zod";
 import { resolveMetaApiVersion } from "../meta/api-version.js";
 import { readBodyWithLimit } from "../utils/bounded-body.js";
+import { providerRejection } from "./failure-outcome.js";
 import { PlatformDenied, type AssetRef, type AuthorizationSnapshot, type OperationPlan } from "./models.js";
 import { authorizeOperation, assertExecutionPermit, claimMutationStep, finishCreatedAsset, finishRepointedAd, finishOperation, getExecutionScope, revalidateExecutionPermit, runWithExecutionPermit, withConnectionCredential } from "./execution.js";
 import { canonicalJson, classifyPlan } from "./policy.js";
@@ -161,15 +162,16 @@ async function singleWrite(tool:string,plan:OperationPlan):Promise<{id:string;re
     productRateController.bind(bucket,connection.appId);
     productRateController.check(bucket);
     claimMutationStep(permit);
+    let rejected=false;
     try {
       const response=await fetch(`https://graph.facebook.com/v26.0${step.path}`,{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/x-www-form-urlencoded"},body:form.toString(),redirect:"error",signal:AbortSignal.timeout(15000)});
       productRateController.observe(bucket,response,null);
-      const raw=JSON.parse(await readBodyWithLimit(response,128*1024)) as {id?:unknown;error?:{code?:unknown};success?:unknown};
+      const raw=JSON.parse(await readBodyWithLimit(response,128*1024)) as {id?:unknown;error?:{code?:unknown;is_transient?:unknown};success?:unknown};
       productRateController.observe(bucket,response,typeof raw.error?.code==="number"?raw.error.code:null);
-      if(!response.ok || raw.error || (update?raw.success!==true:typeof raw.id!=="string"||!/^\d{1,32}$/.test(raw.id)))throw new Error("invalid response");
+      if(!response.ok || raw.error || (update?raw.success!==true:typeof raw.id!=="string"||!/^\d{1,32}$/.test(raw.id))){rejected=providerRejection(response.status,typeof raw.error?.code==="number"?raw.error.code:null,raw.error?.is_transient===true);throw new Error("invalid response");}
       const requestId=response.headers.get("x-fb-request-id");
       return {id:update?plan.assets[0].id:raw.id as string,...(requestId&&/^[A-Za-z0-9_-]{1,128}$/.test(requestId)?{requestId}:{})};
-    } catch {throw new PlatformDenied("LEGACY_WRITE_OUTCOME_UNKNOWN_RECONCILIATION_REQUIRED");}
+    } catch {throw new PlatformDenied(rejected?"LEGACY_WRITE_REJECTED_BY_PROVIDER":"LEGACY_WRITE_OUTCOME_UNKNOWN_RECONCILIATION_REQUIRED");}
   });
 }
 export async function executeStrictLegacyWrite(tool:string,input:Record<string,unknown>):Promise<{content:Array<{type:"text";text:string}>}> {

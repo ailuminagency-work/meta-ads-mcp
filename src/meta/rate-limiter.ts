@@ -1,4 +1,6 @@
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { logger } from "../utils/logger.js";
+import { abortableSleep, throwIfAborted } from "../utils/abortable.js";
 import { createHash } from "node:crypto";
 
 /**
@@ -69,11 +71,27 @@ interface ReachThrottleHeader {
  *  - Otherwise fall back to a usage-based staircase (linear 75–95 %,
  *    exponential above 95 %) so we self-slow before Meta throttles us.
  */
+export const USAGE_BUCKET_TTL_MS = 60 * 60 * 1000;
+export const MAX_USAGE_BUCKETS = 5_000;
+/** The longest pause a call is held for; a longer block is reported to the caller instead of slept through. */
+export const MAX_SELF_THROTTLE_WAIT_MS = 30_000;
+const SWEEP_INTERVAL_MS = 60_000;
+// The platform limiter (src/platform/product-rate-usage.ts) caps the same Meta field at 1440 minutes.
+export const MAX_REGAIN_ACCESS_MS = 24 * 60 * 60 * 1000;
+const CLOCK_STEP_TOLERANCE_MS = 1_000;
+
 export class RateLimiter {
   private readonly buckets = new Map<string, UsageBucket>();
+  private lastSweepMs = 0;
+
+  constructor(
+    private readonly bucketTtlMs = USAGE_BUCKET_TTL_MS,
+    private readonly maxBuckets = MAX_USAGE_BUCKETS,
+  ) {}
 
   updateFromHeaders(headers: Headers, context: RequestContext): void {
     const now = Date.now();
+    this.sweep(now);
 
     // ── X-App-Usage ──────────────────────────────────────
     const appUsage = headers.get("x-app-usage");
@@ -204,16 +222,18 @@ export class RateLimiter {
     type: string,
     retryAfterMs: number,
   ): void {
+    if (!(retryAfterMs > 0)) return;
     const scope = context.accountId ?? "_";
     const key = bucketKey("local_retry", context.tokenHash, scope, type);
     const now = Date.now();
+    this.sweep(now);
     this.buckets.set(key, {
       kind: "local_retry",
       key,
       callCount: 0,
       cpuTime: 0,
       totalTime: 0,
-      estimatedTimeToRegainAccessMs: retryAfterMs,
+      estimatedTimeToRegainAccessMs: Math.min(retryAfterMs, MAX_REGAIN_ACCESS_MS),
       updatedAt: now,
     });
   }
@@ -227,26 +247,48 @@ export class RateLimiter {
     let maxDelay = 0;
 
     for (const bucket of this.buckets.values()) {
+      if (this.isExpired(bucket, now)) continue;
       if (!this.bucketAppliesTo(bucket, context)) continue;
 
-      const explicitWait = Math.max(
-        0,
-        bucket.estimatedTimeToRegainAccessMs - (now - bucket.updatedAt),
-      );
+      // Both delays are measured from the reading's own timestamp and shrink
+      // with the clock. A call that is refused is never sent, so no response
+      // arrives to replace the reading: a delay held constant until the next
+      // response would block the token for the whole bucket lifetime.
+      const elapsed = Math.max(0, now - bucket.updatedAt);
+      const explicitWait = Math.max(0, bucket.estimatedTimeToRegainAccessMs - elapsed);
       if (explicitWait > 0) {
         maxDelay = Math.max(maxDelay, explicitWait);
         continue;
       }
 
       const usage = Math.max(bucket.callCount, bucket.cpuTime, bucket.totalTime);
-      maxDelay = Math.max(maxDelay, staircaseDelay(usage));
+      maxDelay = Math.max(maxDelay, staircaseDelay(usage) - elapsed);
     }
 
     return maxDelay;
   }
 
-  async waitIfNeeded(context: RequestContext): Promise<void> {
+  /**
+   * Sleeps out a short self-throttle. A wait longer than MAX_SELF_THROTTLE_WAIT_MS
+   * is not served by holding the call (and its admission slot and memory) for
+   * minutes: it is refused at once with the time left. The sleep ends, timer
+   * cleared, when the signal aborts.
+   */
+  async waitIfNeeded(context: RequestContext, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const delay = this.getThrottleDelay(context);
+    if (delay > MAX_SELF_THROTTLE_WAIT_MS) {
+      const retryInSeconds = Math.ceil(delay / 1000);
+      logger.warn(
+        { event: "meta_rate_throttle_refused", tokenHash: context.tokenHash, accountId: context.accountId, retryInSeconds },
+        "Refusing a Meta request during a long rate-limit block",
+      );
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `Meta rate limit active for this token, retry in ${retryInSeconds} seconds. No request was sent; Meta asked for this pause, and continuing to call during it extends it.`,
+        { retry_after_seconds: retryInSeconds },
+      );
+    }
     if (delay > 0) {
       logger.warn(
         {
@@ -257,7 +299,7 @@ export class RateLimiter {
         },
         "Self-throttling before Meta request",
       );
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await abortableSleep(delay, signal);
     }
   }
 
@@ -265,12 +307,41 @@ export class RateLimiter {
    * Snapshot for observability / the `ads_rate_status` tool.
    */
   snapshot(): UsageBucket[] {
+    this.sweep(Date.now());
     return Array.from(this.buckets.values()).map((b) => ({ ...b }));
   }
 
   /** Clear state — used by tests. */
   reset(): void {
     this.buckets.clear();
+    this.lastSweepMs = 0;
+  }
+
+  /**
+   * A reading older than Meta's rolling one-hour window (or than its own
+   * regain-access hint, if that is longer) says nothing about current load, so
+   * it must neither keep delaying requests nor stay in memory.
+   */
+  private isExpired(bucket: UsageBucket, now: number): boolean {
+    // A reading stamped in the future means the wall clock stepped back; it would neither age nor expire
+    // until the clock caught up, and a refused call sends nothing that could replace it.
+    if (bucket.updatedAt - now > CLOCK_STEP_TOLERANCE_MS) return true;
+    return now - bucket.updatedAt > Math.max(this.bucketTtlMs, bucket.estimatedTimeToRegainAccessMs);
+  }
+
+  private sweep(now: number): void {
+    if (now - this.lastSweepMs < SWEEP_INTERVAL_MS && this.buckets.size <= this.maxBuckets) return;
+    this.lastSweepMs = now;
+    for (const [key, bucket] of this.buckets) {
+      if (this.isExpired(bucket, now)) this.buckets.delete(key);
+    }
+    if (this.buckets.size <= this.maxBuckets) return;
+    const target = Math.floor(this.maxBuckets * 0.9);
+    const oldestFirst = [...this.buckets.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+    for (const [key] of oldestFirst) {
+      if (this.buckets.size <= target) break;
+      this.buckets.delete(key);
+    }
   }
 
   private writeBucket(bucket: UsageBucket): void {
@@ -281,7 +352,7 @@ export class RateLimiter {
       callCount: Math.min(bucket.callCount, 10_000),
       cpuTime: Math.min(bucket.cpuTime, 10_000),
       totalTime: Math.min(bucket.totalTime, 10_000),
-      estimatedTimeToRegainAccessMs: Math.min(bucket.estimatedTimeToRegainAccessMs, 7 * 24 * 60 * 60 * 1000),
+      estimatedTimeToRegainAccessMs: Math.min(bucket.estimatedTimeToRegainAccessMs, MAX_REGAIN_ACCESS_MS),
       adsApiAccessTier: safeTier(bucket.adsApiAccessTier),
     });
   }

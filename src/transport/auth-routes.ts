@@ -23,6 +23,7 @@ import {
 import {
   deleteToken,
   getDefaultTokenName,
+  isValidTokenName,
   listTokens,
   saveToken,
   setDefaultToken,
@@ -95,6 +96,21 @@ function isSameOriginPost(req: express.Request): boolean {
     origin: req.get("origin"),
     selfOrigin: `${req.protocol}://${req.get("host")}`,
   });
+}
+
+/** Route guard for state-changing form posts that carry the session cookie. */
+export function requireSameOriginPost(path: string): express.RequestHandler {
+  return (req, res, next) => {
+    if (isSameOriginPost(req)) {
+      next();
+      return;
+    }
+    logger.warn(
+      { event: "cross_origin_post_rejected", path },
+      "Rejected a cross-origin form post",
+    );
+    renderError(res, 403, "Cross-origin request rejected.");
+  };
 }
 
 export type ApifyTokenInputResult =
@@ -405,7 +421,7 @@ export function mountAuthRoutes(
     }
   });
 
-  app.post("/auth/logout", async (req, res) => {
+  app.post("/auth/logout", requireSameOriginPost("/auth/logout"), async (req, res) => {
     await clearSession(req, res);
     res.setHeader(
       "Content-Security-Policy",
@@ -426,6 +442,7 @@ export function mountAuthRoutes(
 
   app.post(
     "/auth/select-token",
+    requireSameOriginPost("/auth/select-token"),
     express.urlencoded({ extended: false }),
     async (req, res) => {
       const session = await getSession(req);
@@ -436,6 +453,10 @@ export function mountAuthRoutes(
       const name = typeof req.body?.name === "string" ? req.body.name : null;
       if (!name) {
         res.status(400).json({ error: "Missing name" });
+        return;
+      }
+      if (!isValidTokenName(name)) {
+        res.status(400).json({ error: "Invalid token name (1-64 chars: a-z, A-Z, 0-9, _, -)." });
         return;
       }
       const ok = await setDefaultToken(session.fbUserId, name);
@@ -450,6 +471,7 @@ export function mountAuthRoutes(
 
   app.post(
     "/auth/register-system-token",
+    requireSameOriginPost("/auth/register-system-token"),
     express.urlencoded({ extended: false }),
     async (req, res) => {
       const session = await getSession(req);
@@ -464,7 +486,7 @@ export function mountAuthRoutes(
           ? req.body.access_token.trim()
           : "";
 
-      if (!name || !/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+      if (!isValidTokenName(name)) {
         renderError(res, 400, "Invalid token name (1-64 chars: a-z, A-Z, 0-9, _, -).");
         return;
       }
@@ -515,6 +537,7 @@ export function mountAuthRoutes(
 
   app.post(
     "/auth/delete-token",
+    requireSameOriginPost("/auth/delete-token"),
     express.urlencoded({ extended: false }),
     async (req, res) => {
       const session = await getSession(req);
@@ -525,6 +548,10 @@ export function mountAuthRoutes(
       const name = typeof req.body?.name === "string" ? req.body.name : null;
       if (!name) {
         res.status(400).json({ error: "Missing name" });
+        return;
+      }
+      if (!isValidTokenName(name)) {
+        res.status(400).json({ error: "Invalid token name (1-64 chars: a-z, A-Z, 0-9, _, -)." });
         return;
       }
       const ok = await deleteToken(session.fbUserId, name);

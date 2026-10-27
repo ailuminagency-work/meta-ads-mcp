@@ -204,6 +204,20 @@ export function sampleTimestamps(durationSeconds: number, count: number): number
   return Array.from({ length: n }, (_, i) => Math.round((step * i + step / 2) * 1000) / 1000);
 }
 
+/**
+ * Both values reach the command line, so neither is taken on trust: the
+ * demuxer must be one the probe could have reported, and the input an absolute
+ * path, which ffmpeg cannot read as an option, a URL or a "concat:" list.
+ */
+function assertSafeInvocation(demuxer: string | undefined, input: string): void {
+  if (demuxer !== undefined && !ALLOWED_DEMUXERS.has(demuxer)) {
+    throw new FfmpegError("ffmpeg refused an unsupported container");
+  }
+  if (!path.isAbsolute(input) || input.includes("\0") || /[\r\n]/.test(input)) {
+    throw new FfmpegError("ffmpeg refused a non-local input path");
+  }
+}
+
 function inputArgs(demuxer: string): string[] {
   return [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats", "-y", "-xerror",
@@ -311,6 +325,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
     },
 
     async probe(input, options = {}) {
+      assertSafeInvocation(undefined, input);
       const { size } = await fs.stat(input).catch(() => ({ size: 0 }));
       const stdout = await run(
         ffprobePath,
@@ -329,6 +344,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
     },
 
     async extractFrames(input, options) {
+      assertSafeInvocation(options.demuxer, input);
       const timestamps = sampleTimestamps(options.durationSeconds, options.count);
       const frames: FrameExtraction[] = [];
       for (let i = 0; i < timestamps.length; i++) {
@@ -350,6 +366,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
     },
 
     async contactSheet(input, options) {
+      assertSafeInvocation(options.demuxer, input);
       const timestamps = sampleTimestamps(options.durationSeconds, options.count);
       const columns = Math.max(1, options.columns);
       const rows = Math.ceil(timestamps.length / columns);
@@ -371,6 +388,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
     },
 
     async compact(input, options) {
+      assertSafeInvocation(options.demuxer, input);
       const clipSeconds = Math.min(options.durationSeconds, options.maxSeconds);
       const renditions: Array<{ height: number; crf: number }> = [
         { height: options.height, crf: 30 },
@@ -401,6 +419,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
     },
 
     async extractAudio(input, options) {
+      assertSafeInvocation(options.demuxer, input);
       const out = path.join(options.outDir, "audio.aac");
       await run(
         ffmpegPath,

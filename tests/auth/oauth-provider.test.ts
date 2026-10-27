@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Response } from "express";
 import { SignJWT } from "jose";
@@ -12,6 +13,9 @@ import {
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 const original = process.env.OAUTH_SECRET;
+
+const VERIFIER = "v".repeat(64);
+const CHALLENGE = createHash("sha256").update(VERIFIER).digest("base64url");
 
 const fakeClient: OAuthClientInformationFull = {
   client_id: "test-client",
@@ -34,6 +38,7 @@ describe("MetaAdsOAuthProvider", () => {
   beforeEach(() => {
     process.env.OAUTH_SECRET = "x".repeat(64);
     resetOAuthProviderForTests();
+    oauthProvider.configure({ resolvePendingAuth: () => ({ fbUserId: "fb-default" }) });
   });
 
   afterEach(() => {
@@ -51,7 +56,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -71,6 +76,7 @@ describe("MetaAdsOAuthProvider", () => {
     const tokens = await oauthProvider.exchangeAuthorizationCode(
       fakeClient,
       code!,
+      VERIFIER,
     );
     expect(tokens.access_token).toBeTruthy();
 
@@ -89,7 +95,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -106,14 +112,14 @@ describe("MetaAdsOAuthProvider", () => {
     };
 
     await expect(
-      oauthProvider.exchangeAuthorizationCode(otherClient, code),
+      oauthProvider.exchangeAuthorizationCode(otherClient, code, VERIFIER),
     ).rejects.toThrow(/different client/);
   });
 
   async function issueResourceCode(resource = new URL("https://example.com/mcp")) {
     const res = fakeRes();
     await oauthProvider.authorize(fakeClient, {
-      codeChallenge: "ch",
+      codeChallenge: CHALLENGE,
       codeChallengeMethod: "S256",
       redirectUri: "https://example.com/cb",
       scopes: [],
@@ -124,7 +130,7 @@ describe("MetaAdsOAuthProvider", () => {
 
   it("preserves the authorized resource through repeated refreshes without a resource parameter", async () => {
     const code = await issueResourceCode();
-    let tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, code);
+    let tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, code, VERIFIER);
     for (let rotation = 0; rotation < 3; rotation++) {
       expect((await oauthProvider.verifyAccessToken(tokens.access_token)).resource?.href).toBe("https://example.com/mcp");
       tokens = await oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!);
@@ -134,19 +140,19 @@ describe("MetaAdsOAuthProvider", () => {
 
   it("rejects changing the resource during code exchange", async () => {
     const code = await issueResourceCode();
-    await expect(oauthProvider.exchangeAuthorizationCode(fakeClient, code, undefined, undefined,
+    await expect(oauthProvider.exchangeAuthorizationCode(fakeClient, code, VERIFIER, undefined,
       new URL("https://other.example.com/mcp"))).rejects.toThrow(/resource mismatch/);
   });
 
   it("rejects a different redirect URI during code exchange", async () => {
     const code = await issueResourceCode();
-    await expect(oauthProvider.exchangeAuthorizationCode(fakeClient, code, undefined,
+    await expect(oauthProvider.exchangeAuthorizationCode(fakeClient, code, VERIFIER,
       "https://example.com/different-callback")).rejects.toThrow(/redirect URI mismatch/);
   });
 
   it("rejects changing the refresh resource without consuming the valid refresh token", async () => {
     const code = await issueResourceCode();
-    const tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, code);
+    const tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, code, VERIFIER);
     await expect(oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!, undefined,
       new URL("https://other.example.com/mcp"))).rejects.toThrow(/resource mismatch/);
     const refreshed = await oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!);
@@ -158,7 +164,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -172,8 +178,8 @@ describe("MetaAdsOAuthProvider", () => {
     // Two concurrent exchanges race. With the atomic consume(), exactly
     // one wins.
     const settled = await Promise.allSettled([
-      oauthProvider.exchangeAuthorizationCode(fakeClient, code),
-      oauthProvider.exchangeAuthorizationCode(fakeClient, code),
+      oauthProvider.exchangeAuthorizationCode(fakeClient, code, VERIFIER),
+      oauthProvider.exchangeAuthorizationCode(fakeClient, code, VERIFIER),
     ]);
     const fulfilled = settled.filter((s) => s.status === "fulfilled");
     const rejected = settled.filter((s) => s.status === "rejected");
@@ -253,7 +259,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -266,6 +272,7 @@ describe("MetaAdsOAuthProvider", () => {
     const tokens = await oauthProvider.exchangeAuthorizationCode(
       fakeClient,
       code,
+      VERIFIER,
     );
 
     // First refresh succeeds and rotates the jti.
@@ -290,7 +297,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -303,6 +310,7 @@ describe("MetaAdsOAuthProvider", () => {
     const tokens = await oauthProvider.exchangeAuthorizationCode(
       fakeClient,
       code,
+      VERIFIER,
     );
 
     const settled = await Promise.allSettled([
@@ -323,7 +331,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -336,6 +344,7 @@ describe("MetaAdsOAuthProvider", () => {
     const tokens = await oauthProvider.exchangeAuthorizationCode(
       fakeClient,
       code,
+      VERIFIER,
     );
 
     await oauthProvider.revokeToken({...fakeClient, client_id: "other-client"}, {
@@ -354,7 +363,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -367,6 +376,7 @@ describe("MetaAdsOAuthProvider", () => {
     const tokens = await oauthProvider.exchangeAuthorizationCode(
       fakeClient,
       code,
+      VERIFIER,
     );
 
     // Pass the access token where a refresh is expected.
@@ -380,7 +390,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -393,6 +403,7 @@ describe("MetaAdsOAuthProvider", () => {
     const tokens = await oauthProvider.exchangeAuthorizationCode(
       fakeClient,
       code,
+      VERIFIER,
     );
 
     // Pass the refresh token where an access verifier is expected.
@@ -462,7 +473,7 @@ describe("MetaAdsOAuthProvider", () => {
     await oauthProvider.authorize(
       fakeClient,
       {
-        codeChallenge: "ch",
+        codeChallenge: CHALLENGE,
         codeChallengeMethod: "S256",
         redirectUri: "https://example.com/cb",
         scopes: [],
@@ -475,6 +486,7 @@ describe("MetaAdsOAuthProvider", () => {
     const tokens = await oauthProvider.exchangeAuthorizationCode(
       fakeClient,
       code,
+      VERIFIER,
     );
 
     const refreshed = await oauthProvider.exchangeRefreshToken(

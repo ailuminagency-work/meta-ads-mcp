@@ -1,6 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
+import { getAccessTokenHash } from "../auth/token-store.js";
 import { READ } from "./_register.js";
+
+// The limiter, circuit and pacer state is process-wide and every key embeds the
+// owning token's hash. A multi-tenant server must only show the caller's own.
+function ownedBy(tokenHash: string): (entry: { key: string }) => boolean {
+  return (entry) => entry.key.split(":").includes(tokenHash);
+}
 
 /**
  * Read-only operator view of how close we are to Meta's throttles, which
@@ -12,19 +19,28 @@ export function registerRateStatusTools(server: McpServer): void {
     "ads_rate_status",
     {
       description:
-        "Show the current Meta API rate-limit usage across tokens, accounts, and use-case types, plus any open circuits and the write-pacer state. Does NOT call Meta — returns in-process state.",
+        "Show the current Meta API rate-limit usage for the connected token across its accounts and use-case types, plus any open circuits and the write-pacer state. Does NOT call Meta — returns in-process state.",
       inputSchema: {},
       annotations: { ...READ },
     },
     async () => {
-      const { usage, circuits, writePacer } = metaApiClient.getUsageSnapshot();
+      const snapshot = metaApiClient.getUsageSnapshot();
+      let mine: (entry: { key: string }) => boolean = () => false;
+      try {
+        mine = ownedBy(getAccessTokenHash());
+      } catch {
+        // No token resolves for this request, so there is no state of its own to show.
+      }
+      const usage = snapshot.usage.filter(mine);
+      const circuits = snapshot.circuits.filter(mine);
+      const writePacer = snapshot.writePacer.filter(mine);
 
       if (usage.length === 0 && circuits.length === 0 && writePacer.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: "No Meta API usage recorded yet in this process.",
+              text: "No Meta API usage recorded yet for this connection.",
             },
           ],
         };

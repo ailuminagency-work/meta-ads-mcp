@@ -1,4 +1,9 @@
 import type { MetaApiResponse, Paging } from "./types/common.js";
+import { getRequestSignal } from "../auth/token-store.js";
+import { throwIfAborted } from "../utils/abortable.js";
+
+/** Pages one collection may take, however small the pages are; maxItems still bounds the rows. */
+const MAX_PAGES = 1000;
 
 /**
  * Helper to handle cursor-based pagination from the Meta Graph API.
@@ -26,14 +31,20 @@ export async function collectAllPages<T>(
 ): Promise<T[]> {
   const items: T[] = [...firstPage.data];
 
+  // A cursor the server hands back twice, or a run of empty pages, would keep
+  // this loop calling Graph for as long as the response says there is more.
+  const seenCursors = new Set<string>();
   let paging = firstPage.paging;
-  while (items.length < maxItems && hasNextPage(paging)) {
+  const signal = getRequestSignal();
+  while (items.length < maxItems && hasNextPage(paging) && seenCursors.size < MAX_PAGES) {
+    throwIfAborted(signal);
     const after = getAfterCursor(paging);
-    if (!after) break;
+    if (!after || seenCursors.has(after)) break;
+    seenCursors.add(after);
 
     const nextPage = await fetchPage(after);
-    items.push(...nextPage.data);
-    paging = nextPage.paging;
+    if (Array.isArray(nextPage?.data)) items.push(...nextPage.data);
+    paging = nextPage?.paging;
   }
 
   return items.slice(0, maxItems);

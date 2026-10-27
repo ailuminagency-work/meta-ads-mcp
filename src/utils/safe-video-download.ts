@@ -3,6 +3,7 @@ import https from "node:https";
 import type { RequestOptions } from "node:https";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "./url-guard.js";
 import {
+  abortError,
   assertAllowedHost,
   buildPinnedLookup,
   followSafeRedirects,
@@ -14,6 +15,8 @@ import {
 } from "./safe-http.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_DEADLINE_MS = 60_000;
+const MAX_DEADLINE_MS = 120_000;
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_REDIRECTS = 0;
 const ALLOWED_VIDEO_TYPES = new Set(["video/mp4"]);
@@ -21,9 +24,12 @@ const ALLOWED_VIDEO_TYPES = new Set(["video/mp4"]);
 export interface SafeVideoDownloadOptions extends AssertSafeUrlOptions {
   maxBytes?: number;
   maxRedirects?: number;
+  /** Idle timeout of one request; a peer that keeps dripping bytes restarts it. */
   timeoutMs?: number;
+  /** Wall-clock cap on the whole download, DNS included. */
+  deadlineMs?: number;
   signal?: AbortSignal;
-  /** Optional host allowlist by suffix, enforced on every hop. */
+  /** Optional host allowlist by suffix, enforced on every hop before its DNS lookup. */
   allowedHostSuffixes?: string[];
   request?: typeof https.request;
 }
@@ -48,7 +54,7 @@ function requestVideo(
   return new Promise((resolve, reject) => {
     let settled = false;
     if (options.signal?.aborted) {
-      reject(new UnsafeUrlError("Video download aborted"));
+      reject(abortError(options.signal, "Video"));
       return;
     }
     const reqOptions: RequestOptions = {
@@ -134,7 +140,7 @@ function requestVideo(
       req.destroy(new UnsafeUrlError(`Video download timed out after ${options.timeoutMs}ms`));
     });
 
-    const onAbort = () => req.destroy(new UnsafeUrlError("Video download aborted"));
+    const onAbort = () => req.destroy(abortError(options.signal, "Video"));
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
     req.on("error", (err) => {
@@ -157,17 +163,20 @@ export async function downloadSafePublicVideo(
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > DEFAULT_MAX_BYTES || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 || maxRedirects !== 0 || !options.allowedHostSuffixes?.length) throw new UnsafeUrlError("Exact bounded video download policy required");
+  const deadlineMs = options.deadlineMs ?? DEFAULT_DEADLINE_MS;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > DEFAULT_MAX_BYTES || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 || !Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > MAX_DEADLINE_MS || maxRedirects !== 0 || !options.allowedHostSuffixes?.length) throw new UnsafeUrlError("Exact bounded video download policy required");
 
   return followSafeRedirects(
     rawUrl,
     {
       maxRedirects,
       resolve: options.resolve,
+      allowedPorts: options.allowedPorts,
       signal: options.signal,
+      deadlineMs,
       what: "video",
       validateHop: options.allowedHostSuffixes ? (url) => assertAllowedHost(url, options.allowedHostSuffixes as string[], "video") : undefined,
     },
-    (resolved) => requestVideo(resolved, { request, maxBytes, timeoutMs, signal: options.signal }),
+    (resolved, signal) => requestVideo(resolved, { request, maxBytes, timeoutMs, signal }),
   );
 }

@@ -4,8 +4,11 @@ import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
 import { CAMPAIGN_DEFAULT_FIELDS } from "../meta/types/campaign.js";
+import { MINOR_UNIT_NOTE, minorUnitAmount } from "../meta/currency.js";
+import { platformEnabled } from "../platform/runtime.js";
 import type { Campaign, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 const objectiveEnum = z.enum([
   "OUTCOME_AWARENESS",
@@ -35,10 +38,48 @@ const specialAdCategoryEnum = z.enum([
   "ONLINE_GAMBLING_AND_GAMING",
 ]);
 
+const specialAdCategoryCountrySchema = z
+  .array(z.string().regex(/^[A-Z]{2}$/, "ISO 3166-1 alpha-2 country code, upper case"))
+  .min(1)
+  .max(250)
+  .describe(
+    'Countries the special ad category campaign targets, as ISO 3166-1 alpha-2 codes (for example ["US"]). Required by Meta whenever special_ad_categories contains anything other than NONE; not allowed with NONE.',
+  );
+
+function resolveSpecialAdCategories(
+  categories: z.infer<typeof specialAdCategoryEnum>[],
+  countries: string[] | undefined,
+): { categories: string[]; countries: string[] | undefined } {
+  const unique = [...new Set(categories)];
+  const real = unique.filter((category) => category !== "NONE");
+  if (real.length > 0 && real.length !== unique.length) {
+    throw new Error("special_ad_categories cannot combine NONE with another category.");
+  }
+  const uniqueCountries = countries === undefined ? undefined : [...new Set(countries)];
+  if (real.length > 0 && (uniqueCountries === undefined || uniqueCountries.length === 0)) {
+    throw new Error(
+      `special_ad_category_country is required when special_ad_categories contains ${real.join(", ")}: Meta rejects a special ad category campaign without the countries it targets. Pass ISO 3166-1 alpha-2 codes, for example ["US"].`,
+    );
+  }
+  if (real.length === 0 && uniqueCountries !== undefined) {
+    throw new Error("special_ad_category_country is only valid together with a special ad category other than NONE.");
+  }
+  return { categories: unique, countries: uniqueCountries };
+}
+
 const ADSET_BUDGET_SHARING_EXPLAINER =
   "Ad set budget sharing lets Meta move up to 20% of each ad set's daily budget to other ad sets in the same campaign when that is likely to perform better. It only works when the budget lives on the ad sets (Meta rejects it next to a campaign daily_budget or lifetime_budget, error 4834002), only with daily ad set budgets, and every ad set in the campaign must use the same bid strategy (Meta rejects enabling it without one, error 4834005). Meta recommends true.";
 
 export function registerCampaignTools(server: McpServer): void {
+  // Strict mode holds every special ad category (only NONE is created) and pins this tool's input keys to the
+  // legacy manifest, so the country list is only offered where a special category can actually be sent.
+  const specialCategoryCountryShape = (
+    platformEnabled() ? {} : { special_ad_category_country: specialAdCategoryCountrySchema.optional() }
+  ) as { special_ad_category_country: z.ZodOptional<typeof specialAdCategoryCountrySchema> };
+  const specialCategoryCountryNote = platformEnabled()
+    ? ""
+    : " When special_ad_categories contains anything other than NONE, special_ad_category_country is required.";
+
   // ─── Get Campaigns ───────────────────────────────────────────
   server.registerTool(
     "ads_get_campaigns",
@@ -84,17 +125,17 @@ export function registerCampaignTools(server: McpServer): void {
       const text =
         campaigns.length === 0
           ? "No campaigns found."
-          : campaigns
-              .map(
+          : fenceBlock(
+              campaigns.map(
                 (c) =>
-                  `• ${c.name} (${c.id}) — ${c.status} — Objective: ${c.objective} — Budget: ${c.daily_budget ? `${c.daily_budget}/day` : c.lifetime_budget ? `${c.lifetime_budget} lifetime` : "N/A"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(c.name) || "Unnamed"} (${untrustedText(c.id, 40)}) — ${untrustedText(c.status, 40)} — Objective: ${untrustedText(c.objective, 60)} — Budget: ${c.daily_budget ? `${untrustedText(c.daily_budget, 30)}/day` : c.lifetime_budget ? `${untrustedText(c.lifetime_budget, 30)} lifetime` : "N/A"}`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${campaigns.length} campaign(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(campaigns, null, 2) },
+          { type: "text", text: fencedJsonBlock(campaigns) },
         ],
       };
     },
@@ -122,9 +163,19 @@ export function registerCampaignTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Campaign: ${campaign.name}\nID: ${campaign.id}\nStatus: ${campaign.status} (effective: ${campaign.effective_status})\nObjective: ${campaign.objective}\nBuying Type: ${campaign.buying_type}\nBid Strategy: ${campaign.bid_strategy ?? "N/A"}\nDaily Budget: ${campaign.daily_budget ?? "N/A"}\nLifetime Budget: ${campaign.lifetime_budget ?? "N/A"}\nCreated: ${campaign.created_time}`,
+            text: fenceBlock([
+              `Campaign: ${untrustedText(campaign.name) || "Unnamed"}`,
+              `ID: ${untrustedText(campaign.id, 40)}`,
+              `Status: ${untrustedText(campaign.status, 40)} (effective: ${untrustedText(campaign.effective_status, 40)})`,
+              `Objective: ${untrustedText(campaign.objective, 60)}`,
+              `Buying Type: ${untrustedText(campaign.buying_type, 40)}`,
+              `Bid Strategy: ${untrustedText(campaign.bid_strategy, 60) || "N/A"}`,
+              `Daily Budget: ${untrustedText(campaign.daily_budget, 30) || "N/A"}`,
+              `Lifetime Budget: ${untrustedText(campaign.lifetime_budget, 30) || "N/A"}`,
+              `Created: ${untrustedText(campaign.created_time, 40)}`,
+            ]),
           },
-          { type: "text", text: JSON.stringify(campaign, null, 2) },
+          { type: "text", text: fencedJsonBlock(campaign) },
         ],
       };
     },
@@ -134,7 +185,7 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "ads_create_campaign",
     {
-      description: `${WRITE_WARNING}Create a new Meta advertising campaign. Uses outcome-based (ODAX) objectives. Campaigns are created in PAUSED status by default. Budget belongs at exactly one level: pass daily_budget or lifetime_budget here for a campaign budget, or omit both and set budgets on each ad set. For ad-set budgets Meta requires an explicit is_adset_budget_sharing_enabled; this tool sends false unless you pass true.`,
+      description: `${WRITE_WARNING}Create a new Meta advertising campaign. Uses outcome-based (ODAX) objectives. Campaigns are created in PAUSED status by default. Budget belongs at exactly one level: pass daily_budget or lifetime_budget here for a campaign budget, or omit both and set budgets on each ad set. For ad-set budgets Meta requires an explicit is_adset_budget_sharing_enabled; this tool sends false unless you pass true. Budget amounts are whole numbers of the ad account currency's minor units, not always cents.${specialCategoryCountryNote}`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         name: z.string().min(1).max(400).describe("Campaign name"),
@@ -146,14 +197,13 @@ export function registerCampaignTools(server: McpServer): void {
           .array(specialAdCategoryEnum)
           .default(["NONE"])
           .describe("Special ad categories (NONE, EMPLOYMENT, HOUSING, CREDIT, FINANCIAL_PRODUCTS_SERVICES, ISSUES_ELECTIONS_POLITICS, ONLINE_GAMBLING_AND_GAMING)"),
-        daily_budget: z
-          .number()
-          .optional()
-          .describe("Campaign daily budget in cents (e.g., 5000 = $50.00). Omit to set budgets on the ad sets instead."),
-        lifetime_budget: z
-          .number()
-          .optional()
-          .describe("Campaign lifetime budget in cents. Omit to set budgets on the ad sets instead."),
+        ...specialCategoryCountryShape,
+        daily_budget: minorUnitAmount(
+          `Campaign daily budget ${MINOR_UNIT_NOTE}. Omit to set budgets on the ad sets instead.`,
+        ).optional(),
+        lifetime_budget: minorUnitAmount(
+          `Campaign lifetime budget ${MINOR_UNIT_NOTE}. Omit to set budgets on the ad sets instead.`,
+        ).optional(),
         is_adset_budget_sharing_enabled: z
           .boolean()
           .optional()
@@ -169,6 +219,7 @@ export function registerCampaignTools(server: McpServer): void {
       objective,
       status,
       special_ad_categories,
+      special_ad_category_country,
       daily_budget,
       lifetime_budget,
       is_adset_budget_sharing_enabled,
@@ -176,12 +227,14 @@ export function registerCampaignTools(server: McpServer): void {
       buying_type,
     }) => {
       const id = normalizeAccountId(account_id);
+      const special = resolveSpecialAdCategories(special_ad_categories, special_ad_category_country);
 
       const body: Record<string, unknown> = {
         name,
         objective,
         status,
-        special_ad_categories,
+        special_ad_categories: JSON.stringify(special.categories),
+        ...(special.countries ? { special_ad_category_country: JSON.stringify(special.countries) } : {}),
         buying_type,
       };
 
@@ -227,8 +280,8 @@ export function registerCampaignTools(server: McpServer): void {
         campaign_id: z.string().describe("Campaign ID to update"),
         name: z.string().optional(),
         status: statusEnum.optional(),
-        daily_budget: z.number().optional().describe("Daily budget in cents"),
-        lifetime_budget: z.number().optional().describe("Lifetime budget in cents"),
+        daily_budget: minorUnitAmount(`Daily budget ${MINOR_UNIT_NOTE}`).optional(),
+        lifetime_budget: minorUnitAmount(`Lifetime budget ${MINOR_UNIT_NOTE}`).optional(),
         is_adset_budget_sharing_enabled: z
           .boolean()
           .optional()

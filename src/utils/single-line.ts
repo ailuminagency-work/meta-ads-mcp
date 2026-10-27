@@ -1,5 +1,11 @@
-const CONTROL_CHARS = new RegExp("[\\x00-\\x1f\\x7f]+", "g");
-const LINE_SEPARATORS = new RegExp("[" + String.fromCharCode(0x2028, 0x2029) + "]", "g");
+// Every control character (C0, DEL and C1, which includes NEL U+0085) and the Unicode line and paragraph separators: anything a line-splitting reader could take for a line break.
+const CONTROL_CHARS = /[\p{Cc}\p{Zl}\p{Zp}]+/gu;
+/**
+ * Format characters render as nothing or reorder what is around them: bidi
+ * overrides, zero-width spaces and joiners, the byte order mark, Unicode tag
+ * characters. None belongs in a one-line label, and each can hide or disguise text.
+ */
+const FORMAT_CHARS = /\p{Cf}/gu;
 /** Three or more hyphens are how this server fences untrusted content; inside it they are just text. */
 const FENCE_RUN = /-{3,}/g;
 
@@ -16,8 +22,8 @@ export function singleLine(value: string | null | undefined, max: number): strin
   const cut = value.length > max * 4;
   const head = cut ? value.slice(0, max * 4) : value;
   const flat = head
+    .replace(FORMAT_CHARS, "")
     .replace(CONTROL_CHARS, " ")
-    .replace(LINE_SEPARATORS, " ")
     .replace(FENCE_RUN, "--")
     .replace(/\s+/g, " ")
     .trim();

@@ -1,5 +1,7 @@
+import { createHmac } from "node:crypto";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
-import { getAccessToken, hashToken } from "../auth/token-store.js";
+import { getAccessToken, getRequestSignal, hashToken } from "../auth/token-store.js";
+import { abortableSleep, RequestAbortedError, throwIfAborted } from "../utils/abortable.js";
 import { logger } from "../utils/logger.js";
 import { RateLimiter, type RequestContext } from "./rate-limiter.js";
 import { CircuitBreaker, type CircuitContext } from "./circuit-breaker.js";
@@ -21,17 +23,62 @@ import { assertExecutionPermit, getExecutionScope, persistProviderReadEligibilit
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
 const MAX_RETRIES = 3;
+const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const STRICT_MAX_RESPONSE_BYTES = 2_000_000;
 const RETRY_BASE_DELAY = 1000;
 const USAGE_LOG_INTERVAL_MS = 60_000;
 const VERSION_WARNING_LOG_INTERVAL_MS = 60 * 60_000;
 
 class ProviderHttpError extends Error {}
 
+/**
+ * A transport retry replays the request after a timeout, 5xx or dropped
+ * connection, where the first attempt may already have succeeded on Meta's
+ * side. Meta has no native idempotency key, so that is only safe for reads,
+ * DELETEs and a POST that updates a node in place (`/{id}`, `/act_{id}`).
+ * Every POST to an edge (`/act_N/campaigns`, `/{id}/copies`, `/{id}/feed`,
+ * `/{id}/media_publish`, `/{id}/messages`, the WhatsApp creating edges...)
+ * creates a resource or sends something, and the batch endpoint (`POST /`) can
+ * carry any of those, so none of them is ever replayed. New edges are
+ * protected by default rather than by remembering to list them.
+ */
+export function isTransportRetrySafe(method: string, path: string): boolean {
+  if (method === "GET" || method === "DELETE") return true;
+  if (method !== "POST") return false;
+  return /^\/?[A-Za-z0-9_]+$/.test(path.split("?")[0]);
+}
+
+/**
+ * The request timer covers the body read, not just the headers, and a body is
+ * read under a byte budget. The race with the abort signal makes the deadline
+ * ours rather than a property of the fetch implementation: a server that sends
+ * headers and then drips (or stops) can no longer hold the call open.
+ */
+function readBounded(response: Response, signal: AbortSignal, maxBytes: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const onAbort = (): void => {
+      void response.body?.cancel().catch(() => undefined);
+      reject(new DOMException("The operation was aborted", "AbortError"));
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    readBodyWithLimit(response, maxBytes)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 export interface MetaApiClientConfig {
   apiVersion?: string;
   baseUrl?: string;
+  /** App secret for appsecret_proof; defaults to META_APP_SECRET, read per request. */
+  appSecret?: string;
   timeout?: number;
   maxRetries?: number;
+  maxResponseBytes?: number;
 }
 
 interface RequestScope {
@@ -58,8 +105,10 @@ interface RequestScope {
 export class MetaApiClient {
   readonly apiVersion: string;
   private readonly baseUrl: string;
+  private readonly appSecret: string | undefined;
   private readonly timeout: number;
   private readonly maxRetries: number;
+  private readonly maxResponseBytes: number;
   private readonly rateLimiter = new RateLimiter();
   private readonly circuitBreaker = new CircuitBreaker();
   private readonly writePacer = new WritePacer();
@@ -69,8 +118,10 @@ export class MetaApiClient {
   constructor(config?: MetaApiClientConfig) {
     this.apiVersion = assertMetaApiVersion(config?.apiVersion ?? resolveMetaApiVersion());
     this.baseUrl = config?.baseUrl ?? DEFAULT_BASE_URL;
+    this.appSecret = config?.appSecret?.trim() || undefined;
     this.timeout = config?.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = config?.maxRetries ?? MAX_RETRIES;
+    this.maxResponseBytes = config?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   }
 
   async get<T>(
@@ -117,6 +168,8 @@ export class MetaApiClient {
       ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),async selected=>selected)
       : getAccessToken();
     formData.set("access_token", token);
+    const proof = this.appSecretProof(token);
+    if (proof) formData.set("appsecret_proof", proof);
     return this.execute<T>("POST", url, path, { body: formData }, true);
   }
 
@@ -190,6 +243,9 @@ export class MetaApiClient {
     skipTokenParam = false,
     scope?: RequestScope,
   ): Promise<T> {
+    // The caller of this tool call may be gone: nothing below starts, waits or retries after that.
+    const requestSignal = getRequestSignal();
+    throwIfAborted(requestSignal);
     await assertLegacyReadEgress(method,path,url);
     const token = platformEnabled()
       ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),async selected=>selected)
@@ -211,41 +267,40 @@ export class MetaApiClient {
       (method === "POST" || method === "DELETE") &&
       accountId !== undefined;
     if (isWrite) {
-      await this.writePacer.acquire(tokenHash, accountId);
+      await this.writePacer.acquire(tokenHash, accountId, requestSignal);
     }
 
     // Reactive self-throttle based on last-known usage headers.
-    await this.rateLimiter.waitIfNeeded(context);
+    await this.rateLimiter.waitIfNeeded(context, requestSignal);
 
-    const reqUrl = platformEnabled() || skipTokenParam ? url : this.appendToken(url, token);
+    // The proof travels wherever the token does not: in the url for every call
+    // but the multipart one, whose body already carries it. Only the url that is
+    // fetched gets it; the egress checks above and below read the plain one.
+    const proof = skipTokenParam ? undefined : this.appSecretProof(token);
+    const reqUrl = this.appendCredentials(url, platformEnabled() || skipTokenParam ? undefined : token, proof);
 
-    // POST to /act_<id>/<collection> creates new resources without native
-    // idempotency on Meta's side — retrying a timeout/5xx/network error can
-    // mint duplicates (e.g. two ad sets for one user intent). The /<id>/copies
-    // edge (ad/ad set/campaign duplication) creates a resource on a non-act_
-    // path, so it must be classed as creating too — otherwise a retried copy
-    // mints a duplicate ad. The WhatsApp creating edges live on plain-numeric
-    // WABA/phone paths: /message_templates, /flows, /message_qrdls create
-    // resources, and /request_code sends a real SMS/voice call — all mint
-    // duplicates on retry. Other POSTs (updates on /<id>) and DELETEs are
-    // idempotent at the API level.
-    const isCreatingRequest =
-      method === "POST" &&
-      (/^\/?act_[A-Za-z0-9]+\//.test(path) ||
-        /\/copies$/.test(path) ||
-        /\/(message_templates|flows|message_qrdls|request_code)$/.test(path));
-    const canRetryTransport = !isCreatingRequest;
+    const canRetryTransport = isTransportRetrySafe(method, path);
 
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      if (attempt > 0 && !canRetryTransport) {
+        throw new Error("INVARIANT_VIOLATED: a non-idempotent request must not be retried");
+      }
       try {
+        throwIfAborted(requestSignal);
         await assertLegacyReadEgress(method,path,url);
         const controller = new AbortController();
         const timeoutId = setTimeout(
           () => controller.abort(),
           this.timeout,
         );
+        const onRequestAbort = () => controller.abort();
+        requestSignal?.addEventListener("abort", onRequestAbort, { once: true });
+        const disarm = () => {
+          clearTimeout(timeoutId);
+          requestSignal?.removeEventListener("abort", onRequestAbort);
+        };
 
         const performFetch = async (selectedToken:string):Promise<Response> => {
           if(platformEnabled()) {
@@ -264,9 +319,7 @@ export class MetaApiClient {
         try { response=platformEnabled()
           ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),performFetch)
           : await performFetch(token);
-        } catch(error){clearTimeout(timeoutId);throw error;}
-
-        if(!platformEnabled()) clearTimeout(timeoutId);
+        } catch(error){disarm();throw error;}
 
         // Update rate-limiter + pacer from response headers — regardless of
         // whether the response was OK. Throttle signals travel on error
@@ -277,8 +330,8 @@ export class MetaApiClient {
         this.maybeLogVersionWarning(response.headers);
 
         let body:unknown;
-        try { body=platformEnabled()?JSON.parse(await readBodyWithLimit(response,2_000_000)):await response.json(); }
-        finally { clearTimeout(timeoutId); }
+        try { body=JSON.parse(await readBounded(response,controller.signal,platformEnabled()?STRICT_MAX_RESPONSE_BYTES:this.maxResponseBytes)); }
+        finally { disarm(); }
 
         if (typeof body === "object" && body !== null && Object.hasOwn(body, "error") && !isMetaApiError(body)) {
           if (platformEnabled()) throw new PlatformDenied("LEGACY_PROVIDER_ERROR_SCHEMA_INVALID");
@@ -312,7 +365,7 @@ export class MetaApiClient {
 
           if (classification.retryable && canRetryTransport && attempt < this.maxRetries) {
             lastError = classification.mcpError;
-            await this.backoff(attempt);
+            await this.backoff(attempt, requestSignal);
             continue;
           }
 
@@ -323,12 +376,13 @@ export class MetaApiClient {
           // Non-Graph error bodies are just as untrusted as Graph error text.
           lastError = new ProviderHttpError(`Meta provider HTTP ${response.status}`);
           if (response.status >= 500 && canRetryTransport && attempt < this.maxRetries) {
-            await this.backoff(attempt);
+            await this.backoff(attempt, requestSignal);
             continue;
           }
           throw lastError;
         }
 
+        this.writePacer.learnFromResponse(tokenHash, accountId, path, body);
         const projected=projectLegacyReadResponse(path,url,body) as T;
         const requestUrl=new URL(url);
         const scope=platformEnabled()?getExecutionScope():undefined;
@@ -340,12 +394,15 @@ export class MetaApiClient {
         }
         return projected;
       } catch (error) {
+        if (error instanceof RequestAbortedError) throw error;
+        if (requestSignal?.aborted) throw new RequestAbortedError();
         if(error instanceof PlatformDenied)throw error;
         if(platformEnabled()&&(error instanceof BodyTooLargeError||error instanceof SyntaxError))throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_INVALID_OR_TOO_LARGE");
+        if(error instanceof BodyTooLargeError)throw new ProviderHttpError("META_PROVIDER_RESPONSE_TOO_LARGE");
         if (error instanceof Error && error.name === "AbortError") {
           lastError = new Error(`Request timeout after ${this.timeout}ms`);
           if (canRetryTransport && attempt < this.maxRetries) {
-            await this.backoff(attempt);
+            await this.backoff(attempt, requestSignal);
             continue;
           }
           throw lastError;
@@ -358,27 +415,41 @@ export class MetaApiClient {
 
         lastError = new Error(platformEnabled() ? "STRICT_PROVIDER_TRANSPORT_FAILED" : "META_PROVIDER_TRANSPORT_FAILED");
         if (canRetryTransport && attempt < this.maxRetries) {
-          await this.backoff(attempt);
+          await this.backoff(attempt, requestSignal);
           continue;
         }
         throw lastError;
       }
     }
 
-    logger.error({ error: lastError }, "All retries exhausted");
+    logger.error({ err: lastError }, "All retries exhausted");
     throw lastError ?? new Error("Request failed after retries");
   }
 
-  private appendToken(url: string, token: string): string {
+  private appendCredentials(url: string, token: string | undefined, proof: string | undefined): string {
+    if (token === undefined && proof === undefined) return url;
     const u = new URL(url);
-    u.searchParams.set("access_token", token);
+    if (token !== undefined) u.searchParams.set("access_token", token);
+    if (proof !== undefined) u.searchParams.set("appsecret_proof", proof);
     return u.toString();
   }
 
-  private async backoff(attempt: number): Promise<void> {
+  /**
+   * HMAC-SHA256 of the access token keyed with the app secret, hex encoded
+   * (https://developers.facebook.com/docs/graph-api/guides/secure-requests).
+   * Neither the secret nor the proof is ever logged or put in an error.
+   * META_APPSECRET_PROOF=off disables it for a deployment whose tokens come
+   * from an app other than the one META_APP_SECRET belongs to, where Meta
+   * would reject every call as carrying an invalid proof.
+   */
+  private appSecretProof(token: string): string | undefined {
+    return metaAppSecretProof(token, this.appSecret);
+  }
+
+  private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
     const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
     const jitter = delay * (Math.random() * 0.4 - 0.2); // ±20%
-    await new Promise((resolve) => setTimeout(resolve, delay + jitter));
+    await abortableSleep(delay + jitter, signal);
   }
 
   private maybeUpdatePacerTierFromHeaders(
@@ -512,6 +583,13 @@ function guessBucType(method: string, path: string): string {
     return "ads_management";
   }
   return "ads_management";
+}
+
+export function metaAppSecretProof(token: string, appSecret?: string): string | undefined {
+  if (process.env.META_APPSECRET_PROOF?.trim().toLowerCase() === "off") return undefined;
+  const secret = appSecret ?? (process.env.META_APP_SECRET?.trim() || undefined);
+  if (!secret) return undefined;
+  return createHmac("sha256", secret).update(token).digest("hex");
 }
 
 /**

@@ -13,7 +13,7 @@ const contract = PRODUCT_CONTRACTS.find(c => c.tool === "pages_create_feed")!;
 const ctx: OperationContext = { principal: { tenantId: "tenant-fixture", operatorId: "actor-fixture" }, clientId: "client-fixture", tool: contract.tool, provider: contract.provider, requestId: "request-fixture" };
 const human = { tenantId: "tenant-fixture", operatorId: "human-fixture" };
 let server: Server | undefined;
-beforeEach(() => vi.stubEnv("TOKEN_ENCRYPTION_KEY", Buffer.alloc(32, 4).toString("hex")));
+beforeEach(() => { vi.stubEnv("LUMIN_PLATFORM_WRITES_ENABLED","true");vi.stubEnv("AGENCY_WRITES_ENABLED","true"); vi.stubEnv("TOKEN_ENCRYPTION_KEY", Buffer.alloc(32, 4).toString("hex")); });
 afterEach(async () => { vi.unstubAllEnvs(); if (server) await new Promise<void>(resolve => server!.close(() => resolve())); server = undefined; });
 
 async function fixture() {

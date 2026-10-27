@@ -11,7 +11,14 @@ export interface AllowlistInput {
   fbUserId?: string | null;
 }
 
+export function isDenied(fbUserId: string | null | undefined): boolean {
+  if (!fbUserId) return false;
+  return parseList(process.env.AUTH_DENIED_FB_USER_IDS).includes(fbUserId.toLowerCase());
+}
+
 export function isAllowed(input: AllowlistInput): boolean {
+  if (isDenied(input.fbUserId)) return false;
+
   const emails = parseList(process.env.AUTH_ALLOWED_EMAILS);
   const domains = parseList(process.env.AUTH_ALLOWED_DOMAINS);
   const fbIds = parseList(process.env.AUTH_ALLOWED_FB_USER_IDS);
@@ -33,12 +40,20 @@ export function isAllowed(input: AllowlistInput): boolean {
 
   if (email && emails.includes(email)) return true;
   if (email) {
-    const domain = email.split("@")[1];
-    if (domain && domains.includes(domain)) return true;
+    // Exactly one "@": "a@corp.example@evil.test" must not count as corp.example.
+    const at = email.indexOf("@");
+    if (at > 0 && at === email.lastIndexOf("@") && domains.includes(email.slice(at + 1))) return true;
   }
   if (fbUserId && fbIds.includes(fbUserId)) return true;
 
   return false;
+}
+
+export function allowlistHasEmailRules(): boolean {
+  return (
+    parseList(process.env.AUTH_ALLOWED_EMAILS).length > 0 ||
+    parseList(process.env.AUTH_ALLOWED_DOMAINS).length > 0
+  );
 }
 
 export function isAllowlistConfigured(): boolean {

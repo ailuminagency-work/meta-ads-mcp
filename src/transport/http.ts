@@ -23,7 +23,7 @@ import {createOEmbedPreviewRouter,oEmbedEnabled} from "../platform/oembed-previe
 import {environmentOwnershipRouter} from "../platform/ownership-runtime.js";
 import {environmentMediaRouters} from "../platform/media-runtime.js";
 import {environmentDiscoveryRouter} from "../platform/discovery-runtime.js";
-import { createApprovalRouter } from "../platform/approval-router.js";
+import { mountApprovalRoutes } from "../platform/approval-runtime.js";
 import { environmentSourceIngressRouter } from "../platform/source-ingress.js";
 import {environmentOperationalRouter} from "../platform/operational-runtime.js";
 import {environmentRuntimeDiagnosticsRouter} from "../platform/runtime-diagnostics-runtime.js";
@@ -45,14 +45,36 @@ import {
   mcpAuthRouter,
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import { oauthProvider } from "../auth/oauth-provider.js";
-import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
+import { assertApiKeyStrength, isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { hashPii, requestContext } from "../auth/token-store.js";
 import { tokenManager } from "../auth/token-manager.js";
-import { configureSessionJtiStore, getSession } from "../auth/session.js";
+import { clearSession, configureSessionJtiStore, getSession, readSession } from "../auth/session.js";
+import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
-import { mountAuthRoutes, safeReturnTo } from "./auth-routes.js";
+import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
+import { clientIpKey } from "../utils/client-ip-key.js";
+import { resolveTrustProxyHops } from "./trust-proxy.js";
+import { WindowCounter } from "../utils/window-counter.js";
+import { ApiKeyLockout, API_KEY_FAILURE_WINDOW_MS } from "./api-key-lockout.js";
+import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
+import {
+  authorizeExactPathOnly,
+  DEFAULT_CORS_ALLOWED_ORIGINS,
+  mcpBodyErrorHandler,
+  mcpOriginGuard,
+  oauthEndpointsUnavailable,
+  rejectEveryToken,
+} from "./mcp-guards.js";
 import { escapeHtml } from "../utils/html.js";
+import { singleLine } from "../utils/single-line.js";
+import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
+import { createMcpAdmission, readMcpAdmissionConfig } from "./mcp-admission.js";
+import { readToolRuntimeConfig } from "../tools/tool-runtime.js";
+import { applyServerTimeouts } from "./server-timeouts.js";
+import { installGracefulShutdown } from "./graceful-shutdown.js";
+import { createReadinessCheck, createReadinessHandler } from "./readiness.js";
 import {
   CONNECTIONS_PATH,
   PAGE_STYLES,
@@ -84,7 +106,9 @@ import {
   InMemoryMetaTokenRepo,
   getDecryptedToken,
   getDefaultTokenName,
+  isValidTokenName,
   listTokens,
+  logLegacyNoAadPolicyAtStartup,
   setDefaultToken,
 } from "../store/meta-token-repo.js";
 import { isFirestoreEnabled } from "../store/firestore.js";
@@ -163,6 +187,7 @@ export function healthPayload(extras: { ffmpeg?: boolean } = {}): { status: "ok"
 
 interface ConsentContext {
   query: Record<string, string>;
+  client?: { name: string | null };
   user: { fbUserId: string; email: string | null; name: string | null };
   tokens: Awaited<ReturnType<typeof listTokens>>;
   activeName: string | null;
@@ -170,9 +195,24 @@ interface ConsentContext {
   gemini: GeminiKeyStatus;
 }
 
+// Dynamic client registration is open, so both the name and the redirect are
+// chosen by whoever registered the client. Showing them is what lets the
+// operator notice a lookalike client before approving.
+function describeRedirectTarget(redirectUri: string | undefined): string {
+  if (!redirectUri) return "?";
+  try {
+    const url = new URL(redirectUri);
+    return url.host ? `${url.protocol}//${url.host}` : url.protocol;
+  } catch {
+    return "?";
+  }
+}
+
 export function renderConsentPage(ctx: ConsentContext): string {
   const readOnlyAgency = process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true";
   const clientId = escapeHtml(ctx.query.client_id || "Unknown");
+  const clientLabel = singleLine(ctx.client?.name?.normalize("NFKC"), 80);
+  const redirectTarget = describeRedirectTarget(ctx.query.redirect_uri);
   const hiddenFields = Object.entries(ctx.query)
     .map(
       ([k, v]) =>
@@ -240,7 +280,15 @@ ${PAGE_STYLES}
 
     <h1>Autorizar Meta Ads MCP</h1>
     <p class="subtitle">
-      <span class="client">${clientId}</span> quiere acceder a tu servidor Meta Ads MCP.
+      <span class="client">${escapeHtml(clientLabel || clientId)}</span> quiere acceder a tu servidor Meta Ads MCP.
+    </p>
+    <p class="subtitle" id="destination" style="color:#fff;border:1px solid #666;border-radius:8px;padding:0.6rem 0.8rem;margin:0.8rem 0">
+      Al aprobar, el código se enviará a:<br />
+      <b style="font-size:1.25rem">${escapeHtml(redirectTarget)}</b>
+    </p>
+    <p class="subtitle">
+      ID: ${clientId}<br />
+      Cualquiera puede registrar un cliente con cualquier nombre. Aprueba solo si tú iniciaste esta conexión desde esa aplicación.
     </p>
 
     <div class="section">
@@ -268,7 +316,7 @@ ${PAGE_STYLES}
       <summary>Registrar System User token (no caduca)</summary>
       <form method="POST" action="/auth/register-system-token">
         ${returnHidden}
-        <input type="text" name="name" placeholder="Nombre (ej. byads, client_acme)" required maxlength="64" pattern="[a-zA-Z0-9_-]{1,64}" />
+        <input type="text" name="name" placeholder="Nombre (ej. byads, client_acme)" required maxlength="64" pattern="(?!__.*__$)[a-zA-Z0-9_-]{1,64}" />
         <input type="password" name="access_token" placeholder="Pega el System User access token" required minlength="10" autocomplete="off" />
         <button type="submit">Validar y guardar</button>
       </form>
@@ -296,29 +344,28 @@ ${PAGE_STYLES}
 </html>`;
 }
 
-function createRateLimiter(maxRequests: number, windowMs: number) {
-  const requests = new Map<string, { count: number; resetAt: number }>();
+async function sessionStillAllowed(
+  req: express.Request,
+  res: express.Response,
+  session: { fbUserId: string; email: string | null },
+): Promise<boolean> {
+  if (isAllowed({ email: session.email, fbUserId: session.fbUserId })) return true;
+  await clearSession(req, res);
+  logger.warn({ fbUserId: hashPii(session.fbUserId) }, "Rejected /authorize: account is no longer allowed");
+  res.setHeader("Cache-Control", "no-store");
+  res.status(403).type("html").send(
+    "<h1>Access denied</h1><p>This Meta account is not allowed to use this server. Contact the administrator.</p>",
+  );
+  return false;
+}
 
-  setInterval(() => {
-    const now = Date.now();
-    for (const [ip, entry] of requests) {
-      if (entry.resetAt < now) requests.delete(ip);
-    }
-  }, windowMs).unref();
+export function createRateLimiter(maxRequests: number, windowMs: number, maxKeys?: number) {
+  const requests = new WindowCounter({ limit: maxRequests + 1, windowMs, maxKeys });
 
   return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
-    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
-    const now = Date.now();
-    const entry = requests.get(ip);
-
-    if (!entry || entry.resetAt < now) {
-      requests.set(ip, { count: 1, resetAt: now + windowMs });
-      next();
-      return;
-    }
-
-    entry.count++;
-    if (entry.count > maxRequests) {
+    const ip = clientIpKey(req.ip ?? req.socket.remoteAddress);
+    requests.record(ip);
+    if (requests.isBlocked(ip)) {
       logger.warn({ ip, path: req.path }, "Rate limit exceeded");
       res.status(429).json({ error: "Too many requests, please try again later" });
       return;
@@ -359,34 +406,89 @@ function sendMcpAuthRequired(
   });
 }
 
+function bearerTokenOf(req: express.Request): string | undefined {
+  const [type, token] = (req.headers.authorization ?? "").split(" ");
+  return type?.toLowerCase() === "bearer" && token ? token : undefined;
+}
+
 function createCombinedAuthMiddleware(
   oauthMiddleware: express.RequestHandler,
+  oauthVerifier: OAuthTokenVerifier,
+  lockout: ApiKeyLockout = new ApiKeyLockout(),
 ): express.RequestHandler {
-  return (req, res, next) => {
+  const isValidOAuthBearer = async (req: express.Request): Promise<boolean> => {
+    const token = bearerTokenOf(req);
+    if (!token) return false;
+    try {
+      await oauthVerifier.verifyAccessToken(token);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const refuseLocked = (req: express.Request, res: express.Response, client: string): void => {
+    logger.warn({ ip: client, path: req.path }, "Too many failed /mcp credentials");
+    res.setHeader("Retry-After", String(Math.ceil(API_KEY_FAILURE_WINDOW_MS / 1000)));
+    res.status(429).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Too many failed attempts, please try again later" },
+      id: null,
+    });
+  };
+
+  return async (req, res, next) => {
     if (!isApiKeyConfigured()) {
+      oauthMiddleware(req, res, next);
+      return;
+    }
+
+    const client = clientIpKey(req.ip ?? req.socket.remoteAddress);
+    const presented = extractApiKey(req);
+    const keyValid = presented !== undefined && validateApiKey(presented);
+
+    if (lockout.isLocked(client)) {
+      // The lock covers the API-key credential only. A request with no credential still gets the
+      // challenge and a valid OAuth bearer is served. Every presented credential has already gone
+      // through the digest comparison and the bearer is probed whatever it said, so a right key and
+      // a wrong one are refused after the same work and with the same answer.
+      if (presented === undefined && !req.headers.authorization) {
+        oauthMiddleware(req, res, next);
+        return;
+      }
+      if (await isValidOAuthBearer(req)) {
+        oauthMiddleware(req, res, next);
+        return;
+      }
+      refuseLocked(req, res, client);
+      return;
+    }
+
+    if (keyValid) {
+      logger.debug("Authenticated via API key");
+      next();
+      return;
+    }
+
+    // A bearer that is not the key may be a valid OAuth token, so it only
+    // counts as a failure when the OAuth check refuses it as well. A request
+    // with no credential at all is just the client asking how to authenticate.
+    if (req.headers.authorization) {
+      res.once("finish", () => {
+        if (res.statusCode === 401) lockout.recordFailure(client);
+      });
       oauthMiddleware(req, res, next);
       return;
     }
 
     const xApiKey = req.headers["x-api-key"];
     if (typeof xApiKey === "string" && xApiKey) {
-      if (validateApiKey(xApiKey)) {
-        logger.debug("Authenticated via X-API-Key header");
-        next();
-        return;
-      }
+      lockout.recordFailure(client);
       res.status(401).json({
         jsonrpc: "2.0",
         error: { code: -32000, message: "Invalid API key" },
         id: null,
       });
-      return;
-    }
-
-    const candidate = extractApiKey(req);
-    if (candidate && validateApiKey(candidate)) {
-      logger.debug("Authenticated via Bearer token (API key match)");
-      next();
       return;
     }
 
@@ -428,10 +530,11 @@ export function buildMetaTokenMiddleware(
         );
         return;
       } catch (err) {
+        const hashedId = hashPii(fbUserId) ?? "";
         logger.warn(
           {
-            fbUserId,
-            error: err instanceof Error ? err.message : String(err),
+            fbUserId: hashedId,
+            error: (err instanceof Error ? err.message : String(err)).split(fbUserId).join(hashedId),
           },
           "Failed to resolve user Meta token",
         );
@@ -492,15 +595,18 @@ export async function startHttpTransport(
   const app = express();
   const isProduction = process.env.NODE_ENV === "production";
   const config = resolveSecurityConfig();
+  assertApiKeyStrength();
 
   app.disable("x-powered-by");
-  app.set("trust proxy", 1);
+  const trustProxyHops = resolveTrustProxyHops();
+  app.set("trust proxy", trustProxyHops);
+  logger.info({ trustProxyHops }, "Proxy trust configured");
   // CORS: explicit allowlist instead of wildcard. The previous app.use(cors())
   // set Access-Control-Allow-Origin: * on every response, which let any origin
   // invoke /mcp with a stolen Bearer token. We only need cross-origin reads
   // for Claude.ai (and any operator-configured peers); /authorize and /auth/*
   // are top-level navigations that don't depend on CORS.
-  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || "https://claude.ai")
+  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || DEFAULT_CORS_ALLOWED_ORIGINS.join(","))
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -547,7 +653,7 @@ export async function startHttpTransport(
   if(utilityIngress)app.use("/platform/messenger-utility/source",utilityIngress);
   const sourceIngress=environmentSourceIngressRouter();
   if(sourceIngress)app.use("/platform/first-party",sourceIngress);
-  app.use(express.json({ limit: "10mb" }));
+  app.use(preAuthJsonParser());
 
   app.use((_req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -561,7 +667,7 @@ export async function startHttpTransport(
 
   if (isProduction) {
     app.use((req, res, next) => {
-      if (req.path === "/health") { next(); return; }
+      if (req.path === "/health" || req.path === "/ready") { next(); return; }
       if (req.header("x-forwarded-proto") !== "https") {
         res.redirect(301, `${getServerUrl().origin}${req.originalUrl}`);
         return;
@@ -611,7 +717,10 @@ export async function startHttpTransport(
   const platformConnections=platformConnectionRouters(serverUrl.origin);
   if(platformConnections){app.use("/platform/oauth",platformConnections.oauth);app.use("/platform/connections",platformConnections.connections);}
   if(platformEnabled()&&oEmbedEnabled())app.use("/platform/embeds",createOEmbedPreviewRouter({repo:getPlatformRepository(),resolveSession:async req=>{const session=await getSession(req);return session?getPlatformRepository().resolvePrincipal(session.fbUserId):null;}}));
-  if (platformEnabled()) app.use("/platform/approvals",createApprovalRouter({repo:getPlatformRepository(),origin:serverUrl.origin,csrfSecret:process.env.SESSION_COOKIE_SECRET ?? "",resolveSession:async req=>{const session=await getSession(req);return session?getPlatformRepository().resolvePrincipal(session.fbUserId):null;}}));
+  // --- BEGIN human approval routes (campaign authorization) ---
+  // Mounted only while LUMIN_PLATFORM_ENABLED=true and served only while platform writes are enabled.
+  mountApprovalRoutes(app, { origin: serverUrl.origin, resolveOperatorId: async req => (await getSession(req))?.fbUserId ?? null });
+  // --- END human approval routes ---
 
   if (config.multiTenantEnabled) {
     if (!isFirestoreEnabled()) {
@@ -640,6 +749,7 @@ export async function startHttpTransport(
       });
       configureSessionJtiStore(new FirestoreJtiStore("mcp_session_jti"));
       configureMetaTokenRepo(new FirestoreMetaTokenRepo());
+      logLegacyNoAadPolicyAtStartup();
     }
   }
 
@@ -687,6 +797,8 @@ export async function startHttpTransport(
     res.json(healthPayload({ ffmpeg: ffmpegRuntime.lastKnownAvailability() }));
   });
 
+  app.get("/ready", createReadinessHandler(createReadinessCheck()));
+
   if (config.multiTenantEnabled) {
     // Registered BEFORE mountAuthRoutes on purpose: Express matches in
     // registration order, so a limiter added after the route handler would
@@ -702,6 +814,11 @@ export async function startHttpTransport(
       "/auth/register-gemini-key",
       createRateLimiter(10, 15 * 60 * 1000),
     );
+    // Each of these reads Firestore and the callback also calls Meta, and none
+    // needs a session, so an anonymous caller could drive that cost.
+    app.get("/auth/meta", createRateLimiter(60, 15 * 60 * 1000));
+    app.get("/auth/meta/callback", createRateLimiter(60, 15 * 60 * 1000));
+    app.use("/authorize", createRateLimiter(120, 15 * 60 * 1000));
 
     mountAuthRoutes(app, {
       serverUrl,
@@ -742,14 +859,15 @@ export async function startHttpTransport(
         );
         return;
       }
-      const { redirectOrigin } = validation;
+      const { redirectOrigin, clientName } = validation;
 
-      const session = await getSession(req);
+      const session = await readSession(req);
       if (!session) {
         const returnTo = req.originalUrl;
         res.redirect(302, `/auth/meta?return=${encodeURIComponent(returnTo)}`);
         return;
       }
+      if (!(await sessionStillAllowed(req, res, session))) return;
 
       const [tokens, activeName, apify, gemini] = await Promise.all([
         listTokens(session.fbUserId),
@@ -796,6 +914,7 @@ export async function startHttpTransport(
       res.type("html").send(
         renderConsentPage({
           query,
+          client: { name: clientName },
           user: {
             fbUserId: session.fbUserId,
             email: session.email,
@@ -811,9 +930,10 @@ export async function startHttpTransport(
 
     app.post(
       "/authorize",
+      requireSameOriginPost("/authorize"),
       express.urlencoded({ extended: false }),
       async (req, res, next) => {
-        const session = await getSession(req);
+        const session = await readSession(req);
         if (!session) {
           const recoverTo = safeReturnTo(req.body?.return);
           const link =
@@ -823,6 +943,7 @@ export async function startHttpTransport(
           res.status(401).type("html").send(`<p>Sesión expirada. ${link}</p>`);
           return;
         }
+        if (!(await sessionStillAllowed(req, res, session))) return;
 
         let activeName: string | null = null;
         const requestedToken =
@@ -830,6 +951,10 @@ export async function startHttpTransport(
             ? req.body.token
             : null;
         if (requestedToken) {
+          if (!isValidTokenName(requestedToken)) {
+            res.status(400).type("html").send("<p>Nombre de token no válido. Vuelve a iniciar la autorización desde tu cliente MCP.</p>");
+            return;
+          }
           await setDefaultToken(session.fbUserId, requestedToken);
           activeName = requestedToken;
         } else {
@@ -858,6 +983,14 @@ export async function startHttpTransport(
 
   oauthProvider.configure({ defaultResource: new URL("/mcp", serverUrl), requireRedirectUri: true });
 
+  if (!config.multiTenantEnabled) {
+    app.use(
+      ["/authorize", "/register", "/token", "/revoke", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource"],
+      oauthEndpointsUnavailable,
+    );
+  }
+  app.use("/authorize", authorizeExactPathOnly);
+  app.use("/authorize", echoStateOnAuthorizeErrors());
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
@@ -866,15 +999,32 @@ export async function startHttpTransport(
     }),
   );
 
+  const oauthVerifier: OAuthTokenVerifier = config.multiTenantEnabled ? oauthProvider : rejectEveryToken;
   const oauthBearerAuth = requireBearerAuth({
-    verifier: oauthProvider,
+    verifier: oauthVerifier,
     resourceMetadataUrl: getMcpProtectedResourceMetadataUrl(serverUrl),
     expectedResource: new URL("/mcp", serverUrl),
   });
-  const auth = createCombinedAuthMiddleware(oauthBearerAuth);
+  const auth = createCombinedAuthMiddleware(oauthBearerAuth, oauthVerifier);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
-  app.post("/mcp", auth, metaTokenMw, async (req, res) => {
+  const admissionConfig = readMcpAdmissionConfig();
+  const toolRuntimeConfig = readToolRuntimeConfig();
+  logger.info(
+    {
+      maxInFlight: admissionConfig.maxInFlight,
+      perSubjectInFlight: admissionConfig.perSubjectInFlight,
+      maxRunningPerSubject: toolRuntimeConfig.maxRunningPerSubject,
+      perSubjectPerMinute: admissionConfig.perSubjectPerWindow,
+      requestTimeoutSeconds: (admissionConfig.requestTimeoutMs ?? 0) / 1000,
+      heapPressurePercent: admissionConfig.heapPressurePercent,
+    },
+    "MCP admission limits",
+  );
+  const mcpAdmission = createMcpAdmission(admissionConfig);
+
+  app.use("/mcp", mcpOriginGuard(corsAllowedOrigins));
+  app.post("/mcp", auth, mcpAdmission, metaTokenMw, mcpJsonParser(), async (req, res) => {
     try {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -898,7 +1048,7 @@ export async function startHttpTransport(
 
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
-      logger.error({ error }, "Error handling MCP request");
+      logger.error({ err: error }, "Error handling MCP request");
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
@@ -924,12 +1074,13 @@ export async function startHttpTransport(
       id: null,
     });
   });
+  app.use("/mcp", mcpBodyErrorHandler);
 
   const authModes: string[] = [];
   if (isApiKeyConfigured()) authModes.push("API Key");
   authModes.push(config.multiTenantEnabled ? "Meta OAuth" : "OAuth 2.1");
 
-  app.listen(port, () => {
+  const httpServer = app.listen(port, () => {
     logger.info(
       {
         port,
@@ -941,4 +1092,6 @@ export async function startHttpTransport(
       `Meta Ads MCP server listening (HTTP transport — auth: ${authModes.join(", ")})`,
     );
   });
+  applyServerTimeouts(httpServer);
+  installGracefulShutdown(httpServer);
 }

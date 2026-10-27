@@ -3,6 +3,8 @@ import {productRateController} from "../../src/platform/clients.js";
 import {establishFinancialFixture,attachFinancialSnapshot} from "./financial-fixture.js";
 import {compatibilityIntentHash} from "../../src/platform/compatibility-intent.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {stubBudgetCeilings} from "./budget-ceiling-fixture.js";
+beforeEach(()=>stubBudgetCeilings());
 import { buildStrictLegacyWritePlan, executeStrictLegacyWrite, LEGACY_CORE_WRITE_TOOLS, validateLegacyWriteSnapshot } from "../../src/platform/legacy-write.js";
 import { InMemoryPlatformRepository } from "../../src/platform/repository.js";
 import { configurePlatformRepository } from "../../src/platform/runtime.js";

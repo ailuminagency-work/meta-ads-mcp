@@ -4,6 +4,7 @@ import { metaApiClient } from "../meta/client.js";
 import { truncateResponse, validateMetaId } from "../utils/format.js";
 import type { MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, TOGGLE, DELETE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, untrustedJson, untrustedText } from "../media/content-blocks.js";
 
 interface AdComment {
   id: string;
@@ -72,14 +73,14 @@ export function registerCommentTools(server: McpServer): void {
         };
       }
 
-      const text = comments
-        .map(
+      const text = fenceBlock(
+        comments.map(
           (c) =>
-            `• [${c.is_hidden ? "HIDDEN" : "VISIBLE"}] ${c.from?.name ?? "Unknown"} (${c.created_time}): "${c.message ?? ""}" — Likes: ${c.like_count ?? 0}`,
-        )
-        .join("\n");
+            `• [${c.is_hidden ? "HIDDEN" : "VISIBLE"}] ${untrustedText(c.from?.name, 80) || "Unknown"} (${untrustedText(c.created_time, 40)}): "${untrustedText(c.message, 500)}" — Likes: ${untrustedText(c.like_count ?? 0, 20)}`,
+        ),
+      );
 
-      const jsonStr = truncateResponse(JSON.stringify(comments, null, 2));
+      const jsonStr = fenceBlock([truncateResponse(untrustedJson(comments))]);
 
       return {
         content: [

@@ -7,6 +7,7 @@ import { isStdioTransport } from "../utils/transport-mode.js";
 import {
   audioBlock,
   blobResourceBlock,
+  errorLine,
   imageBlock,
   resourceLinkBlock,
   safeHostname,
@@ -22,6 +23,7 @@ import {
 } from "./safe-video-download.js";
 import { assertAllowedHost } from "../utils/safe-http.js";
 import { getVideoJobRunner, type VideoJobContext, type VideoJobRunner } from "./video-jobs.js";
+import { singleLine } from "../utils/single-line.js";
 import { fbcdnExpiresAt, resourceUriFor, type VideoSource } from "./video-sources.js";
 
 export const VIDEO_EXPIRY_WARNING =
@@ -66,6 +68,7 @@ const GRID_TILE_WIDTH = 512;
 const GRID_COLUMNS = 3;
 const COMPACT_HEIGHT = 480;
 const THUMBNAIL_MAX_BYTES = 4 * MB;
+const THUMBNAIL_DEADLINE_MS = 20_000;
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
@@ -103,6 +106,7 @@ export interface DeliveredVideo {
   ad_archive_id?: string;
   card_index?: number;
   title?: string;
+  advertiser_page?: string;
   duration_seconds?: number;
   width?: number;
   height?: number;
@@ -159,7 +163,18 @@ function clampInlineBytes(requested: number | undefined, transport: "http" | "st
 function publicErrorMessage(err: unknown): string {
   const code = (err as { code?: unknown })?.code;
   if (typeof code === "string" && /^E[A-Z]+$/.test(code)) return `Local processing failed (${code})`;
-  return err instanceof Error ? err.message : String(err);
+  return errorLine(err);
+}
+
+async function readHead(filePath: string, bytes: number): Promise<Buffer> {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
 }
 
 export function looksLikeMp4(buffer: Buffer): boolean {
@@ -176,6 +191,7 @@ function baseMeta(source: VideoSource): DeliveredVideo {
     ad_archive_id: source.ad_archive_id,
     card_index: source.card_index,
     title: source.title,
+    advertiser_page: source.advertiser_page,
     duration_seconds: source.duration_seconds,
     delivered: { mode: "none", block_indexes: [] },
     source_url: sanitizeMetadataUrl(source.source_url),
@@ -183,7 +199,7 @@ function baseMeta(source: VideoSource): DeliveredVideo {
     thumbnail_url: sanitizeMetadataUrl(source.thumbnail_url),
     permalink_url: sanitizeMetadataUrl(source.permalink_url),
     expires_at: fbcdnExpiresAt(source.source_url ?? source.low_res_url),
-    error: source.error,
+    error: source.error === undefined ? undefined : errorLine(source.error),
   };
 }
 
@@ -214,7 +230,7 @@ export async function deliverVideos(
   const selected = sources.slice(0, maxVideos);
   const dropped = sources.slice(maxVideos);
   if (dropped.length > 0) {
-    warnings.push(`${dropped.length} video(s) not processed because of max_videos=${maxVideos}: ${dropped.map((s) => s.label).join(", ")}.`);
+    warnings.push(`${dropped.length} video(s) not processed because of max_videos=${maxVideos}: ${dropped.map((s) => singleLine(s.label, 120)).join(", ")}.`);
   }
 
   const pushBlock = (block: ContentBlock, bytes: number): number => {
@@ -239,17 +255,19 @@ export async function deliverVideos(
       if (suffixes) assertAllowedHost(parsed, suffixes, "video");
       return { url: sanitizeMetadataUrl(url) };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : "Video URL rejected." };
+      return { error: err instanceof Error ? errorLine(err) : "Video URL rejected." };
     }
   };
 
+  // A poster url is as free-form as the video url beside it, whatever the
+  // origin: every thumbnail stays on the Meta CDN hosts.
   const fetchThumbnail = async (source: VideoSource, signal?: AbortSignal): Promise<{ block: ContentBlock; bytes: number } | undefined> => {
     if (!source.thumbnail_url || signal?.aborted) return undefined;
     try {
-      const image = await downloadImage(source.thumbnail_url, { maxBytes: THUMBNAIL_MAX_BYTES, signal, allowedHostSuffixes: allowlistFor(source) });
+      const image = await downloadImage(source.thumbnail_url, { maxBytes: THUMBNAIL_MAX_BYTES, signal, deadlineMs: THUMBNAIL_DEADLINE_MS, allowedHostSuffixes: hostSuffixes });
       return { block: imageBlock(image.buffer, image.contentType), bytes: image.buffer.length };
     } catch (err) {
-      logger.warn({ host: safeHostname(source.thumbnail_url), err: err instanceof Error ? err.message : String(err) }, "Video thumbnail download failed");
+      logger.warn({ host: safeHostname(source.thumbnail_url), err: errorLine(err) }, "Video thumbnail download failed");
       return undefined;
     }
   };
@@ -334,13 +352,13 @@ export async function deliverVideos(
       const errors: string[] = [];
       const primary = safeLink(source, source.source_url);
       if (primary.url) {
-        links.push(pushBlock(resourceLinkBlock(primary.url, `${source.label} (source)`, { mimeType: "video/mp4", description: "Signed CDN URL; expires" }), 0));
+        links.push(pushBlock(resourceLinkBlock(primary.url, `${singleLine(source.label, 120)} (source)`, { mimeType: "video/mp4", description: "Signed CDN URL; expires" }), 0));
       } else if (primary.error) {
         errors.push(primary.error);
       }
       const lowRes = safeLink(source, source.low_res_url);
       if (lowRes.url) {
-        links.push(pushBlock(resourceLinkBlock(lowRes.url, `${source.label} (low-res)`, { mimeType: "video/mp4" }), 0));
+        links.push(pushBlock(resourceLinkBlock(lowRes.url, `${singleLine(source.label, 120)} (low-res)`, { mimeType: "video/mp4" }), 0));
       } else if (lowRes.error) {
         errors.push(lowRes.error);
       }
@@ -376,7 +394,7 @@ export async function deliverVideos(
         signal: job.signal,
       });
     } catch (err) {
-      meta.error = `Video download failed: ${err instanceof Error ? err.message : String(err)}`;
+      meta.error = `Video download failed: ${errorLine(err)}`;
       logger.warn({ host: safeHostname(downloadUrl), event: "video_download_failed" }, meta.error);
       await fallbackToThumbnail(source, meta, job);
       return;
@@ -392,7 +410,7 @@ export async function deliverVideos(
         meta.fps = probe.fps;
         meta.has_audio = probe.has_audio;
       } catch (err) {
-        meta.error = `Video rejected: ${err instanceof Error ? err.message : String(err)}`;
+        meta.error = `Video rejected: ${errorLine(err)}`;
         await fallbackToThumbnail(source, meta, job);
         return;
       }
@@ -430,7 +448,7 @@ export async function deliverVideos(
 
       if (!(await attachWithThumbnail(source, meta, pending, job.signal))) {
         meta.delivered.mode = "skipped_size_budget";
-        warnings.push(`${source.label}: frames skipped because the response size budget is exhausted; request fewer videos or frames.`);
+        warnings.push(`${singleLine(source.label, 120)}: frames skipped because the response size budget is exhausted; request fewer videos or frames.`);
         return;
       }
       meta.delivered.mode = "frames";
@@ -446,16 +464,18 @@ export async function deliverVideos(
       let transcoded = false;
 
       if (!ffmpegAvailable || quality === "original") {
-        const original = await fs.readFile(file.path);
-        if (!looksLikeMp4(original)) {
+        // Size and header only: the file can be far larger than the inline cap,
+        // and holding it whole on a small instance is how the process gets OOM-killed.
+        const originalBytes = (await fs.stat(file.path)).size;
+        if (!looksLikeMp4(await readHead(file.path, 12))) {
           meta.error = "Downloaded file is not a valid MP4 (missing ftyp header).";
           await fallbackToThumbnail(source, meta, job);
           return;
         }
-        if (original.length <= cap) {
-          payload = original;
+        if (originalBytes <= cap) {
+          payload = await fs.readFile(file.path);
         } else if (!ffmpegAvailable) {
-          meta.error = `Original video is ${original.length} bytes, above max_inline_bytes=${cap}, and ffmpeg is unavailable to compact it.`;
+          meta.error = `Original video is ${originalBytes} bytes, above max_inline_bytes=${cap}, and ffmpeg is unavailable to compact it.`;
           await fallbackToThumbnail(source, meta, job);
           return;
         }
@@ -489,7 +509,7 @@ export async function deliverVideos(
       const uri = resourceUriFor(source);
       if (!(await attachWithThumbnail(source, meta, [{ block: blobResourceBlock(uri, payload, "video/mp4"), bytes: payload.length }], job.signal))) {
         meta.delivered.mode = "skipped_size_budget";
-        warnings.push(`${source.label}: inline video skipped because the response size budget is exhausted.`);
+        warnings.push(`${singleLine(source.label, 120)}: inline video skipped because the response size budget is exhausted.`);
         return;
       }
       meta.delivered.mode = "inline";
@@ -523,7 +543,7 @@ export async function deliverVideos(
       });
     } catch (err) {
       // Busy / rate-limited / aborted before the job started: report per video, never throw.
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorLine(err);
       for (const source of heavy) {
         if (videos.some((v) => v.key === source.key)) continue;
         const meta = baseMeta(source);

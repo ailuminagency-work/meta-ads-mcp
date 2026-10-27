@@ -57,8 +57,8 @@ function makeRequest(responses: FakeResponse[], behaviour: { holdHeaders?: boole
 }
 
 const PUBLIC = fakeResolve({
-  "video.xx.fbcdn.net": ["203.0.113.10"],
-  "evil.example.com": ["203.0.113.99"],
+  "video.xx.fbcdn.net": ["93.184.216.34"],
+  "evil.example.com": ["93.184.216.99"],
 });
 
 describe("downloadSafePublicVideo", () => {

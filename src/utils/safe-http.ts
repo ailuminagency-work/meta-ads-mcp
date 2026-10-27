@@ -2,6 +2,7 @@ import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import type https from "node:https";
 import type { LookupFunction } from "node:net";
 import {
+  parseSafePublicUrl,
   resolveSafePublicUrl,
   UnsafeUrlError,
   type AssertSafeUrlOptions,
@@ -85,16 +86,30 @@ export function redirectTarget(res: IncomingMessage, base: URL): URL {
 export type RedirectOrResult<T> = T | { redirectUrl: URL };
 
 /**
- * Host allowlist by suffix (".fbcdn.net" also matches "fbcdn.net" itself).
- * Applied to the first hop and to every redirect so a permitted host cannot
- * bounce the request elsewhere.
+ * Host allowlist. An entry with a leading dot (".fbcdn.net") matches that
+ * domain and any subdomain of it, and nothing that merely ends in the same
+ * letters ("evilfbcdn.net"). An entry without one ("cdn.example.com") is an
+ * exact host and never a suffix. Applied to the first hop and to every
+ * redirect so a permitted host cannot bounce the request elsewhere.
  */
 export function assertAllowedHost(url: URL, suffixes: string[], what = "media"): void {
   const host = url.hostname.toLowerCase();
-  const allowed = suffixes.some((suffix) => host.endsWith(suffix) || host === suffix.slice(1));
+  const allowed = suffixes.some((entry) => {
+    const allowedHost = entry.toLowerCase();
+    if (allowedHost === "" || allowedHost === ".") return false;
+    return allowedHost.startsWith(".")
+      ? host.endsWith(allowedHost) || host === allowedHost.slice(1)
+      : host === allowedHost;
+  });
   if (!allowed) {
     throw new UnsafeUrlError("Host " + JSON.stringify(host) + " is not an allowed " + what + " host");
   }
+}
+
+/** Why a signal fired: the deadline's own error when it was one, otherwise a plain abort. */
+export function abortError(signal: AbortSignal | undefined, what: string): UnsafeUrlError {
+  const reason: unknown = signal?.reason;
+  return reason instanceof UnsafeUrlError ? reason : new UnsafeUrlError(`${what} download aborted`);
 }
 
 /**
@@ -105,9 +120,9 @@ export function assertAllowedHost(url: URL, suffixes: string[], what = "media"):
  */
 function abortable<T>(start: () => Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
   if (!signal) return start();
-  if (signal.aborted) return Promise.reject(new UnsafeUrlError(`${what} download aborted`));
+  if (signal.aborted) return Promise.reject(abortError(signal, what));
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new UnsafeUrlError(`${what} download aborted`));
+    const onAbort = () => reject(abortError(signal, what));
     signal.addEventListener("abort", onAbort, { once: true });
     start().then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
@@ -122,34 +137,72 @@ export function isRedirectResult<T extends object>(
 export interface FollowSafeRedirectsOptions extends AssertSafeUrlOptions {
   maxRedirects: number;
   signal?: AbortSignal;
-  /** Extra per-hop policy (e.g. a host allowlist); throw to reject the hop. */
+  /**
+   * Wall-clock budget for the whole operation: every DNS lookup, connection,
+   * redirect and body byte. The per-request idle timeout cannot provide this,
+   * because a peer that sends one byte at a time restarts it forever.
+   */
+  deadlineMs?: number;
+  /** Extra per-hop policy (e.g. a host allowlist); throw to reject the hop. Runs before any DNS lookup for the hop. */
   validateHop?: (url: URL) => void;
   what?: string;
 }
 
+function capitalized(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /**
  * Runs `perform` against a URL that passed the SSRF check, re-validating every
- * redirect hop through the same guard before following it.
+ * redirect hop through the same guard before following it. For every hop the
+ * order is: URL shape and address-literal checks, then the host policy, and
+ * only then a DNS lookup, so a host the policy refuses is never resolved.
  */
 export async function followSafeRedirects<T extends object>(
   rawUrl: string,
   options: FollowSafeRedirectsOptions,
-  perform: (resolved: ResolvedSafePublicUrl) => Promise<RedirectOrResult<T>>,
+  perform: (resolved: ResolvedSafePublicUrl, signal: AbortSignal | undefined) => Promise<RedirectOrResult<T>>,
 ): Promise<T> {
   const what = options.what ?? "resource";
-  const resolveHop = (url: string) => abortable(() => resolveSafePublicUrl(url, { resolve: options.resolve }), options.signal, what);
-  let resolved = await resolveHop(rawUrl);
-  options.validateHop?.(resolved.url);
-  for (let redirects = 0; redirects <= options.maxRedirects; redirects++) {
-    const result = await perform(resolved);
-    if (!isRedirectResult(result)) {
-      return result;
-    }
-    if (redirects === options.maxRedirects) {
-      throw new UnsafeUrlError(`Too many redirects while downloading ${what} (max ${options.maxRedirects})`);
-    }
-    resolved = await resolveHop(result.redirectUrl.toString());
-    options.validateHop?.(resolved.url);
+  const controller = new AbortController();
+  const onCallerAbort = () => controller.abort(options.signal?.reason);
+  let timer: NodeJS.Timeout | undefined;
+  if (options.signal?.aborted) controller.abort(options.signal.reason);
+  else options.signal?.addEventListener("abort", onCallerAbort, { once: true });
+  if (options.deadlineMs !== undefined) {
+    const ms = options.deadlineMs;
+    timer = setTimeout(() => {
+      controller.abort(new UnsafeUrlError(`${capitalized(what)} download timed out after ${ms}ms`));
+    }, ms);
+    timer.unref?.();
   }
-  throw new UnsafeUrlError(`Too many redirects while downloading ${what} (max ${options.maxRedirects})`);
+  const signal = controller.signal;
+
+  const resolveHop = async (candidate: string | URL): Promise<ResolvedSafePublicUrl> => {
+    const url = parseSafePublicUrl(candidate, { allowedPorts: options.allowedPorts });
+    options.validateHop?.(url);
+    return abortable(
+      () => resolveSafePublicUrl(url, { resolve: options.resolve, allowedPorts: options.allowedPorts }),
+      signal,
+      capitalized(what),
+    );
+  };
+
+  try {
+    let resolved = await resolveHop(rawUrl);
+    for (let redirects = 0; redirects <= options.maxRedirects; redirects++) {
+      const result = await perform(resolved, signal);
+      if (!isRedirectResult(result)) {
+        return result;
+      }
+      if (redirects === options.maxRedirects) {
+        throw new UnsafeUrlError(`Too many redirects while downloading ${what} (max ${options.maxRedirects})`);
+      }
+      resolved = await resolveHop(result.redirectUrl);
+    }
+    throw new UnsafeUrlError(`Too many redirects while downloading ${what} (max ${options.maxRedirects})`);
+  } finally {
+    if (timer) clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onCallerAbort);
+  }
 }
