@@ -13,6 +13,7 @@ import type {
   OAuthTokenRevocationRequest,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
+  AccessDeniedError,
   InvalidGrantError,
   InvalidTokenError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
@@ -66,17 +67,23 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   private authCodesImpl: AuthCodesStore = new InMemoryAuthCodesStore();
   private refreshJtiStoreImpl: JtiStore = new InMemoryJtiStore();
   private pendingAuthResolver: () => PendingAuthSession | null = () => null;
+  // Set for multi-tenant and agency deployments, where every grant must belong
+  // to a signed-in operator. Single-tenant deployments keep issuing grants
+  // without one.
+  private requireIdentity = false;
 
   configure(opts: {
     clientsStore?: OAuthRegisteredClientsStore;
     authCodesStore?: AuthCodesStore;
     refreshJtiStore?: JtiStore;
     resolvePendingAuth?: () => PendingAuthSession | null;
+    requireIdentity?: boolean;
   }): void {
     if (opts.clientsStore) this.clientsStoreImpl = opts.clientsStore;
     if (opts.authCodesStore) this.authCodesImpl = opts.authCodesStore;
     if (opts.refreshJtiStore) this.refreshJtiStoreImpl = opts.refreshJtiStore;
     if (opts.resolvePendingAuth) this.pendingAuthResolver = opts.resolvePendingAuth;
+    if (opts.requireIdentity !== undefined) this.requireIdentity = opts.requireIdentity;
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
@@ -88,8 +95,13 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
-    const code = crypto.randomBytes(32).toString("hex");
+    // The SDK router reaches this method for every request it accepts, so the
+    // identity is checked here and not only by the routes in front of it.
     const pending = this.pendingAuthResolver();
+    if (this.requireIdentity && !pending?.fbUserId) {
+      throw new AccessDeniedError("Sign in with an authorized Meta account before approving an application");
+    }
+    const code = crypto.randomBytes(32).toString("hex");
 
     await this.authCodesImpl.set(code, {
       clientId: client.client_id,
@@ -250,6 +262,9 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if (payload.type !== "access") {
       throw new InvalidTokenError("Token is not an access token");
     }
+    if (this.requireIdentity && (typeof payload.fb_user_id !== "string" || !payload.fb_user_id)) {
+      throw new InvalidTokenError("Access token is not bound to an operator");
+    }
 
     const extra: Record<string, unknown> = {};
     if (typeof payload.fb_user_id === "string") {
@@ -365,5 +380,6 @@ export function resetOAuthProviderForTests(): void {
     authCodesStore: new InMemoryAuthCodesStore(),
     refreshJtiStore: new InMemoryJtiStore(),
     resolvePendingAuth: () => null,
+    requireIdentity: false,
   });
 }

@@ -720,6 +720,23 @@ export async function startHttpTransport(
   app.use("/register", createRateLimiter(20, 15 * 60 * 1000));
   app.use("/token", createRateLimiter(60, 15 * 60 * 1000));
 
+  oauthProvider.configure({
+    requireIdentity: config.multiTenantEnabled || process.env.DEPLOYMENT_MODE === "agency",
+  });
+
+  // The SDK router is mounted by prefix and its inner route also answers
+  // "/authorize//". The login, consent and session checks above match the exact
+  // path only, so any other shape of the path (double slash, dot segments, case,
+  // encoded slash, trailing slash) is refused here instead of reaching the
+  // handler that issues codes.
+  app.use("/authorize", (req, res, next) => {
+    if (req.originalUrl.split(/[?#]/, 1)[0] === "/authorize") {
+      next();
+      return;
+    }
+    res.sendStatus(404);
+  });
+
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
