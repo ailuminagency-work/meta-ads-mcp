@@ -186,3 +186,107 @@ describe("activation, provider-observed values", () => {
     denied(() => assertObservedActivationWithinBudgetCeiling("client", { ...observed, adsetDailyBudget: value as never }), "BUDGET_AMOUNT_INVALID");
   });
 });
+
+describe("spend-like keys cannot ride along unchecked (G2-06)", () => {
+  const found = (body: Record<string, unknown>) => planBudgets(plan(body));
+
+  it.each([
+    ["trailing space", "daily_budget "],
+    ["leading space", " daily_budget"],
+    ["tabs and newlines", "\tdaily_budget\n"],
+    ["upper case", "DAILY_BUDGET"],
+    ["mixed case with spaces", "  Daily_Budget  "],
+    ["a bracketed path", "adset_budgets[0][daily_budget]"],
+    ["a bracketed path with spaces and case", " Adset_Budgets[ 0 ][ DAILY_BUDGET ] "],
+    ["a dotted path", "adset.daily_budget"],
+    ["a zero-width character inside", "daily​_budget"],
+    ["full-width characters", "ｄａｉｌｙ＿ｂｕｄｇｅｔ"],
+  ])("still sees a daily budget spelled with %s", (_name, key) => {
+    expect(found({ [key]: "999999999" })).toEqual([{ field: "daily_budget", amountMinor: 999999999 }]);
+  });
+
+  it.each([
+    ["lifetime_budget ", "lifetime_budget"],
+    ["campaign[lifetime_budget]", "lifetime_budget"],
+    ["  LIFETIME_BUDGET", "lifetime_budget"],
+  ])("sees a lifetime budget spelled %j", (key, field) => {
+    expect(found({ [key]: "500000" })).toEqual([{ field, amountMinor: 500000 }]);
+  });
+
+  it("holds a hidden budget to the ceiling, not just to the key matcher", () => {
+    configure({ client: { currency: "USD", daily: "10.00" } });
+    denied(() => assertPlanWithinBudgetCeiling({ clientId: "client" }, plan({ "adset_budgets[0][daily_budget]": "1001" })), "BUDGET_CEILING_EXCEEDED");
+    denied(() => assertPlanWithinBudgetCeiling({ clientId: "client" }, plan({ "daily_budget ": "1001" })), "BUDGET_CEILING_EXCEEDED");
+    assertPlanWithinBudgetCeiling({ clientId: "client" }, plan({ "adset_budgets[0][daily_budget]": "1000" }));
+  });
+
+  it("still validates the amount of a hidden budget", () => {
+    denied(() => found({ "daily_budget ": "-1" }), "BUDGET_AMOUNT_INVALID");
+    denied(() => found({ "adset_budgets[0][daily_budget]": { amount: 5 } }), "BUDGET_AMOUNT_INVALID");
+  });
+
+  it.each([
+    "daily_spend_cap",
+    "lifetime_spend_cap",
+    "spend_cap",
+    "spend_cap_action",
+    "daily_min_spend_target",
+    "lifetime_min_spend_target",
+    "bid_cap",
+    "bid_constraints",
+    "budget_remaining",
+    "min_daily_budget",
+    "adset_budgets",
+    "budget_schedules",
+    "campaign_budget_optimization",
+    "Daily_Spend_Cap ",
+    " SPEND_CAP",
+    "adset_budgets[0][foo]",
+    "daily_budget[0]",
+    "daily budget",
+    "daily_budget_override",
+    "ｓｐｅｎｄ＿ｃａｐ",
+    "spend​_cap",
+  ])("denies the unrecognised spend-like key %j", (key) => {
+    denied(() => found({ [key]: "999999999" }), "BUDGET_KEY_UNRECOGNISED");
+    denied(() => found({ [key]: { a: 1 } }), "BUDGET_KEY_UNRECOGNISED");
+    denied(() => found({ [key]: null }), "BUDGET_KEY_UNRECOGNISED");
+  });
+
+  it("denies an unrecognised spend-like key before any ceiling lookup, configured or not", () => {
+    denied(() => assertPlanWithinBudgetCeiling({ clientId: "client" }, plan({ daily_spend_cap: "999999999" })), "BUDGET_KEY_UNRECOGNISED");
+    configure({ client: { currency: "USD", daily: "10.00" } });
+    denied(() => assertPlanWithinBudgetCeiling({ clientId: "client" }, plan({ name: "x", "lifetime_spend_cap ": 1 })), "BUDGET_KEY_UNRECOGNISED");
+  });
+
+  it("finds an unrecognised key at any nesting level, in arrays and inside JSON-encoded strings", () => {
+    denied(() => found({ nested: { deeper: { daily_spend_cap: 1 } } }), "BUDGET_KEY_UNRECOGNISED");
+    denied(() => found({ list: [{ ok: 1 }, { spend_cap: 0 }] }), "BUDGET_KEY_UNRECOGNISED");
+    denied(() => found({ targeting: JSON.stringify({ x: { daily_min_spend_target: 1 } }) }), "BUDGET_KEY_UNRECOGNISED");
+    denied(() => found({ blob: JSON.stringify([{ inner: JSON.stringify({ " Spend_Cap ": 0 }) }]) }), "BUDGET_KEY_UNRECOGNISED");
+    denied(() => plannedParameter({ bid_constraints: { roas_average_floor: 1 } }), "BUDGET_KEY_UNRECOGNISED");
+  });
+
+  it("finds a hidden budget at any nesting level and inside JSON-encoded strings", () => {
+    expect(found({ blob: JSON.stringify({ "adset_budgets[1][daily_budget]": "4000" }) })).toEqual([{ field: "daily_budget", amountMinor: 4000 }]);
+    expect(found({ list: [{ "daily_budget ": 3000 }] })).toEqual([{ field: "daily_budget", amountMinor: 3000 }]);
+  });
+
+  it.each(["bid_strategy", "bid_amount", "is_adset_budget_sharing_enabled"])("keeps the known strict body key %s working", (key) => {
+    expect(found({ [key]: key === "is_adset_budget_sharing_enabled" ? false : "LOWEST_COST_WITHOUT_CAP", name: "x" })).toEqual([]);
+  });
+
+  it("keeps the strict campaign-budget marker working", () => {
+    expect(planBudgets({ ...plan({ name: "x" }), parameters: { marketing_budget_mode: "CAMPAIGN", legacy_write_step: { path: "/1", body: { daily_budget: "2000" } } } })).toEqual([
+      { field: "daily_budget", amountMinor: 2000 },
+    ]);
+  });
+
+  it("does not touch keys that merely look related", () => {
+    expect(found({ name: "Budget review", status: "PAUSED", billing_event: "IMPRESSIONS", optimization_goal: "LINK_CLICKS", targeting: { geo_locations: { countries: ["US"] } } })).toEqual([]);
+  });
+
+  function plannedParameter(parameters: Record<string, unknown>) {
+    return planBudgets({ ...plan({}), parameters });
+  }
+});

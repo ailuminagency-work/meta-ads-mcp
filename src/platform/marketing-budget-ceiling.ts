@@ -44,6 +44,27 @@ const document = z
 
 const BUDGET_FIELDS = ["daily_budget", "lifetime_budget"] as const;
 
+const SPEND_LIKE_KEY = /budget|spend_cap|spend_target|bid_/;
+
+/** Keys the strict builders emit that look spend-related but carry no amount this ceiling compares (enums, flags, and bid_amount, which has its own absolute bound). */
+const KNOWN_SPEND_LIKE_KEYS: ReadonlySet<string> = new Set([
+  "bid_strategy",
+  "bid_amount",
+  "is_adset_budget_sharing_enabled",
+  "marketing_budget_mode",
+]);
+
+/**
+ * Keys are compared the way a form encoder or Graph could read them, not as typed: Unicode-compatibility folded,
+ * with whitespace, control and format characters removed, lower-cased. A bracketed or dotted path
+ * (adset_budgets[0][daily_budget]) is judged by its last segment.
+ */
+function normalizeKey(key: string): { full: string; leaf: string } {
+  const full = key.normalize("NFKC").replace(/[\p{Cc}\p{Cf}\p{Z}\s]/gu, "").toLowerCase();
+  const leaf = full.split(/[[\].]+/).filter(Boolean).pop() ?? full;
+  return { full, leaf };
+}
+
 let cache: { raw: string; value: ReadonlyMap<string, BudgetCeiling> } | undefined;
 
 export function loadBudgetCeilings(env: Record<string, string | undefined> = process.env): ReadonlyMap<string, BudgetCeiling> {
@@ -108,8 +129,10 @@ export function planBudgets(plan: OperationPlan): PlanBudget[] {
     }
     if (!value || typeof value !== "object") return;
     for (const [key, item] of Object.entries(value)) {
-      const field = BUDGET_FIELDS.find((name) => name === key.toLowerCase());
+      const { full, leaf } = normalizeKey(key);
+      const field = BUDGET_FIELDS.find((name) => name === leaf);
       if (field) found.push({ field, amountMinor: amountMinor(item) });
+      else if (SPEND_LIKE_KEY.test(full) && !KNOWN_SPEND_LIKE_KEYS.has(full)) throw new PlatformDenied("BUDGET_KEY_UNRECOGNISED");
       else visit(item, depth + 1);
     }
   }
