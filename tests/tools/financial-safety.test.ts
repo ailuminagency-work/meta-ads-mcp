@@ -224,6 +224,15 @@ describe("billing reads use the account currency, never an assumed USD", () => {
     expect(text).not.toContain("USD");
   });
 
+  it("reads Meta's spend_cap \"0\" as no cap, not as a zero cap with a negative remainder", async () => {
+    const info = await read("ads_get_billing_info", { currency: "USD", spend_cap: "0", amount_spent: "5000" });
+    expect(info).toContain("Spend Cap: No limit");
+    const limit = await read("ads_get_spend_limit", { currency: "USD", spend_cap: "0", amount_spent: "5000" });
+    expect(limit).toContain("Spend Cap: No limit set");
+    expect(limit).not.toContain("Remaining");
+    expect(limit).not.toContain("-50.00");
+  });
+
   it("does not guess an offset for a currency missing from the table", async () => {
     const text = await read("ads_get_billing_info", { currency: "XTS", spend_cap: "100000" });
     expect(text).toContain("Spend Cap: 100000 (minor units; offset for XTS unknown)");
