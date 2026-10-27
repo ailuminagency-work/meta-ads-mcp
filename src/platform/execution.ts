@@ -23,7 +23,9 @@ import { PlatformDenied } from "./models.js";
 import type { Collection, CreatedCompletion, PlatformRepository } from "./repository.js";
 import { assetKey, resolveAuthorizedAssets } from "./assets.js";
 import { decryptCredential, selectConnection, assertWhatsAppPhoneUnlocked } from "./connections.js";
-import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, normalizeSafeDiff, planLockHash, revisionHash } from "./policy.js";
+import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, hasPolicyGuard, normalizeSafeDiff, planLockHash, revisionHash } from "./policy.js";
+// Importing the value loads the module, which registers the per-client budget ceiling guard: every permit is issued here, so the guard must exist however this module is reached.
+import { BUDGET_CEILING_GUARD } from "./budget-ceiling-guard.js";
 
 export interface ExecutionPermit { readonly operationId: string; readonly context: Readonly<OperationContext>; readonly assetKeys: readonly string[]; readonly connectionId: string; readonly planHash: string }
 interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; providerReadProof?:{accountId:string;checkedAt:number;expiresAt:number;providerBusinessId?:string}; terminalHash?: string; finishing?: Promise<void>; createdHash?:string;createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
@@ -51,6 +53,7 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
       (g.expiresAt > now || allowExpiredBootstrap);
   });
   const snapshot: AuthorizationSnapshot = {tenant,member,client,assets,connection,grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client),financialEvidence:await loadOwnershipEvidence(repo,ctx,assets),manualEligibilityEvidence:await loadManualEligibilityEvidence(repo,ctx,connection,[...(connection.appPromotionProfile&&plan.assets.some(a=>a.type==="APP")?[appPurchaseRequirement(connection.appPromotionProfile.bindingHash)]:[]),...Object.keys(PRODUCT_CONTRACTS.find(c=>c.tool===ctx.tool&&c.provider===ctx.provider)?.eligibilityPolicies??{}),...(ctx.provider==="META_MARKETING"?[legacyMarketingReadRequirement(),...(ctx.tool.startsWith("ads_")&&plan.classes.some(c=>c!=="READ")?[legacyMarketingWriteRequirement()]:[])]:[])])};
+  if(!hasPolicyGuard(BUDGET_CEILING_GUARD)) throw new PlatformDenied("POLICY_GUARD_MISSING");
   const decision = evaluatePolicy(ctx, plan, snapshot, options);
   if(decision.decision === "DENY") throw new PlatformDenied(decision.reason);
   if(decision.decision === "REQUIRE_CONFIRMATION" && !options.approvalId) throw new PlatformDenied(decision.reason);

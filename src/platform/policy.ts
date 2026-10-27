@@ -116,6 +116,7 @@ const policyGuards = new Map<string, PolicyGuard>();
 /** A guard can only add a denial: it throws to refuse and returns to leave the decision unchanged. It runs for every mutating plan before an approval is requested, issued or consumed, so a refusal never costs a human a review or an approval its single use. A name can be taken once, so one module cannot silently replace another's guard. */
 export function registerPolicyGuard(name: string, guard: PolicyGuard): void { if(policyGuards.has(name) && policyGuards.get(name) !== guard) throw new PlatformDenied("POLICY_GUARD_ALREADY_REGISTERED"); policyGuards.set(name, guard); }
 export function unregisterPolicyGuard(name: string): void { policyGuards.delete(name); }
+export function hasPolicyGuard(name: string): boolean { return policyGuards.has(name); }
 export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot, options: { writesEnabled: boolean }): PolicyDecision {
   const classes = classifyPlan(plan);
   const deny = (reason: string): PolicyDecision => ({decision: "DENY", reason, classes});
