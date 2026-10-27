@@ -20,6 +20,7 @@ const CREDENTIAL_NAMES = [
   "client_token",
   "signed_request",
   "oauth_token",
+  "appsecret_proof",
   "refresh_token",
   "id_token",
   "api_key",
@@ -135,6 +136,24 @@ export function carriesCredentialPair(text: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Credentials that identify themselves by shape rather than by the name they
+ * sit behind: Meta access tokens, Apify and Google keys, bearer values.
+ */
+const TOKEN_SHAPES = [
+  /EAA[A-Za-z0-9]{20,}/g,
+  /apify_api_[A-Za-z0-9]{20,}/g,
+  /AIza[A-Za-z0-9_-]{35}/g,
+  /ya29\.[A-Za-z0-9_-]+/g,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/gi,
+];
+
+export function redactTokenShapes(text: string): string {
+  let out = text;
+  for (const shape of TOKEN_SHAPES) out = out.replace(shape, REDACTED);
+  return out;
 }
 
 /** True when the text carries a credential-shaped parameter with a value. */

@@ -136,21 +136,29 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
     }
   };
 
-  const checkTenantRate = (tenantId: string): void => {
+  const assertTenantRate = (tenantId: string): number[] => {
     const current = now();
     purgeExpiredWindows(current);
     const recent = tenantWindows.get(tenantId) ?? [];
     if (recent.length >= perTenantPerHour) {
       throw new VideoJobRateLimitError(perTenantPerHour);
     }
-    recent.push(current);
+    return recent;
+  };
+
+  // The allowance is spent when a job starts, not when it asks for a slot: a
+  // call turned away as busy, abandoned in the queue or aborted before it ran
+  // has done no work and must not cost the tenant one.
+  const spendTenantRate = (tenantId: string): void => {
+    const recent = assertTenantRate(tenantId);
+    recent.push(now());
     tenantWindows.set(tenantId, recent);
   };
 
   return {
     async run(request, job) {
       if (request.signal?.aborted) throw new VideoJobAbortedError();
-      checkTenantRate(request.tenantId);
+      assertTenantRate(request.tenantId);
       await acquire(request.signal);
 
       const controller = new AbortController();
@@ -164,6 +172,9 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
       try {
         if (request.signal?.aborted) throw new VideoJobAbortedError();
         dir = await fs.mkdtemp(path.join(tmpRoot, VIDEO_TMP_PREFIX));
+        if (request.signal?.aborted) throw new VideoJobAbortedError();
+        // Callers that passed the first check together are told apart here.
+        spendTenantRate(request.tenantId);
         const ctx: VideoJobContext = {
           dir,
           signal: controller.signal,

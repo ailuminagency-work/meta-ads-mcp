@@ -5,6 +5,7 @@ import type { RequestOptions } from "node:https";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "../utils/url-guard.js";
+import { META_MEDIA_HOST_SUFFIXES, resolveAllowedMediaHostSuffixes } from "./media-hosts.js";
 import {
   abortError as abortReason,
   assertAllowedHost,
@@ -28,7 +29,7 @@ const DEFAULT_MAX_REDIRECTS = 3;
  * without this list a tenant could turn the server into a transcoding proxy
  * for any public URL. Override via VIDEO_ALLOWED_HOST_SUFFIXES (comma-separated).
  */
-export const DEFAULT_VIDEO_HOST_SUFFIXES = [".fbcdn.net", ".facebook.com", ".cdninstagram.com"];
+export const DEFAULT_VIDEO_HOST_SUFFIXES = [...META_MEDIA_HOST_SUFFIXES];
 
 // fbcdn occasionally serves mp4 as octet-stream; the bytes are validated by
 // ffprobe (or the ftyp signature) after download, so this only screens the obvious.
@@ -61,15 +62,7 @@ export interface SafeVideoDownload {
   finalUrl: URL;
 }
 
-export function resolveAllowedVideoHostSuffixes(env: NodeJS.ProcessEnv = process.env): string[] {
-  const raw = env.VIDEO_ALLOWED_HOST_SUFFIXES?.trim();
-  if (!raw) return DEFAULT_VIDEO_HOST_SUFFIXES;
-  const suffixes = raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.length > 1 && s.startsWith("."));
-  return suffixes.length > 0 ? suffixes : DEFAULT_VIDEO_HOST_SUFFIXES;
-}
+export const resolveAllowedVideoHostSuffixes = resolveAllowedMediaHostSuffixes;
 
 export function assertAllowedVideoHost(url: URL, suffixes: string[]): void {
   assertAllowedHost(url, suffixes, "video");

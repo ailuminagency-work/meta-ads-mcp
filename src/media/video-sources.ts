@@ -3,6 +3,8 @@ import { CREATIVE_DEFAULT_FIELDS } from "../meta/types/creative.js";
 import type { AdCreative, AdVideo } from "../meta/types/index.js";
 import { VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
 import { validateMetaId } from "../utils/format.js";
+import { singleLine } from "../utils/single-line.js";
+import { errorLine } from "./content-blocks.js";
 import { collectCreativeMedia, pickVideoThumbnailUrl } from "../tools/creative-media.js";
 
 export type VideoOrigin = "meta" | "ad_library";
@@ -22,6 +24,8 @@ export interface VideoSource {
   duration_seconds?: number;
   permalink_url?: string;
   title?: string;
+  /** Advertiser page name (Ad Library); advertiser-controlled, so only ever shown inside the untrusted fence. */
+  advertiser_page?: string;
   error?: string;
 }
 
@@ -73,14 +77,15 @@ const DEFAULT_MAX_VIDEOS = 3;
 function sourceFromVideo(video: AdVideo, fallbackThumbnail?: string): VideoSource {
   return {
     key: `meta:video:${video.id}`,
-    label: `Video ${video.id}${video.title ? ` "${video.title}"` : ""}`,
+    // Printed in summaries outside the untrusted fence, so it carries no advertiser text.
+    label: `Video ${video.id}`,
     origin: "meta",
     video_id: video.id,
     source_url: video.source,
     thumbnail_url: pickVideoThumbnailUrl(video, "full") ?? fallbackThumbnail,
     duration_seconds: video.length,
     permalink_url: video.permalink_url,
-    title: video.title,
+    title: singleLine(video.title, 200) || undefined,
     error: video.source ? undefined : "Video source URL not available (still processing, or owned by another page).",
   };
 }
@@ -97,7 +102,7 @@ async function fetchVideo(videoId: string, fallbackThumbnail?: string): Promise<
       origin: "meta",
       video_id: id,
       thumbnail_url: fallbackThumbnail,
-      error: err instanceof Error ? err.message : String(err),
+      error: errorLine(err),
     };
   }
 }
