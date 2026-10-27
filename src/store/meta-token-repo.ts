@@ -110,6 +110,26 @@ export interface MetaTokenRepo {
   ): Promise<string>;
 }
 
+/**
+ * Sets written by main and by staging 1f08563 can hold a token whose flag was
+ * cleared by a re-login. When nothing is flagged and exactly one token exists
+ * that token is the default; with none or several there is no default. Read
+ * time only: nothing is written to repair the stored flag.
+ */
+function readTimeDefaultName(entries: ReadonlyArray<readonly [string, Pick<MetaTokenDoc, "isDefault">]>): string | null {
+  const flagged = entries.find(([, doc]) => doc.isDefault === true);
+  if (flagged) return flagged[0];
+  return entries.length === 1 ? entries[0][0] : null;
+}
+
+function summaries(entries: ReadonlyArray<readonly [string, MetaTokenDoc]>, now: number): MetaTokenSummary[] {
+  const resolved = readTimeDefaultName(entries);
+  return entries.map(([name, doc]) => {
+    const summary = summarize(name, doc, now);
+    return name === resolved ? { ...summary, isDefault: true } : summary;
+  });
+}
+
 function summarize(name: string, doc: MetaTokenDoc, now: number): MetaTokenSummary {
   return {
     name,
@@ -269,7 +289,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     if (input.setAsDefault) {
       await this.clearDefaults(input.fbUserId);
     } else {
-      const existingDefault = await this.getDefaultTokenName(input.fbUserId);
+      const existingDefault = await this.flaggedDefaultName(input.fbUserId);
       // set() replaces the doc, so re-saving the current default under its own
       // name must keep the flag or the user is left with no default token.
       if (!existingDefault || existingDefault === input.name) {
@@ -319,10 +339,10 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
   async listTokens(fbUserId: string): Promise<MetaTokenSummary[]> {
     const snap = await this.userDocRef(fbUserId).collection("meta_tokens").get();
     const now = Math.floor(Date.now() / 1000);
-    return snap.docs.map((d) => summarize(d.id, d.data() as MetaTokenDoc, now));
+    return summaries(snap.docs.map((d) => [d.id, d.data() as MetaTokenDoc] as const), now);
   }
 
-  async getDefaultTokenName(fbUserId: string): Promise<string | null> {
+  private async flaggedDefaultName(fbUserId: string): Promise<string | null> {
     const snap = await this.userDocRef(fbUserId)
       .collection("meta_tokens")
       .where("isDefault", "==", true)
@@ -330,6 +350,13 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
       .get();
     if (snap.empty) return null;
     return snap.docs[0].id;
+  }
+
+  async getDefaultTokenName(fbUserId: string): Promise<string | null> {
+    const flagged = await this.flaggedDefaultName(fbUserId);
+    if (flagged) return flagged;
+    const tokens = await this.userDocRef(fbUserId).collection("meta_tokens").limit(2).get();
+    return tokens.docs.length === 1 ? tokens.docs[0].id : null;
   }
 
   async getDecryptedToken(
@@ -404,7 +431,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
         bucket.set(k, { ...v, isDefault: false });
       }
     } else {
-      const existingDefault = await this.getDefaultTokenName(input.fbUserId);
+      const existingDefault = [...bucket.entries()].find(([, v]) => v.isDefault)?.[0];
       if (!existingDefault || existingDefault === input.name) {
         isDefault = true;
       }
@@ -460,16 +487,13 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
     const bucket = this.tokens.get(fbUserId);
     if (!bucket) return [];
     const now = Math.floor(Date.now() / 1000);
-    return [...bucket.entries()].map(([name, doc]) => summarize(name, doc, now));
+    return summaries([...bucket.entries()], now);
   }
 
   async getDefaultTokenName(fbUserId: string): Promise<string | null> {
     const bucket = this.tokens.get(fbUserId);
     if (!bucket) return null;
-    for (const [name, doc] of bucket) {
-      if (doc.isDefault) return name;
-    }
-    return null;
+    return readTimeDefaultName([...bucket.entries()]);
   }
 
   async getDecryptedToken(

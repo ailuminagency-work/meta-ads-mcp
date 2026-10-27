@@ -188,14 +188,16 @@ describe("apify and gemini collections written by main are read by the release l
 });
 
 describe("staging@1f08563 default-token defect and what the release line can still read", () => {
-  it("a document re-saved by 1f08563 loses its default flag but stays readable by name, losing no ciphertext", async () => {
+  it("a document re-saved by 1f08563 loses its default flag, stays readable by name and, as the only token, still resolves as the default on the release line", async () => {
     useKeyEnv(ENVS.k1Only);
     const staging = new StagingRepo();
     const input = { fbUserId: FB, name: "personal", accessToken: "synthetic-token", kind: "user" as const, expiresAt: FAR_FUTURE(), metaUserId: FB, metaUserName: "Synthetic" };
     await staging.saveToken(input);
     await staging.saveToken({ ...input, setAsDefault: false });
     expect(db.read(docPath("personal"))!.isDefault).toBe(false);
-    expect(await new LineRepo().getDefaultTokenName(FB)).toBeNull();
+    expect(await new LineRepo().getDefaultTokenName(FB)).toBe("personal");
+    expect(await new LineRepo().getDecryptedToken(FB)).toBe("synthetic-token");
     expect(await new LineRepo().getDecryptedToken(FB, "personal")).toBe("synthetic-token");
+    expect(db.read(docPath("personal"))!.isDefault).toBe(false);
   });
 });
