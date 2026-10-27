@@ -61,6 +61,6 @@ Only the code is returned. The underlying error is never put in the response; st
 - Credential-waiting deployment: `/health` 200 with `state: awaiting_credentials`; `/ready` and every other route 503. Unchanged.
 - Local `upstream` development without Firestore: `/ready` is 200 once the keyring loads.
 
-### Stale sentence elsewhere
+### Related documentation
 
-`docs/lumin-railway.md` still says that active mode "retains the upstream health contract" and that `/ready` is only for waiting mode. That is no longer true after this change; it is outside the files this work owns and should be updated to point here.
+`docs/lumin-railway.md` describes the same two routes and links here.
