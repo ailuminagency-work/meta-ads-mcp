@@ -15,7 +15,7 @@ import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
 import { READ, CREATE, UPDATE, UPLOAD, WRITE_WARNING } from "./_register.js";
-import { fenceBlock, untrustedText } from "../media/content-blocks.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 export const ctaEnum = z.enum([
   // Core actions
@@ -179,7 +179,7 @@ export function registerCreativeTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: `Found ${creatives.length} creative(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(creatives, null, 2) },
+          { type: "text", text: fencedJsonBlock(creatives) },
         ],
       };
     },
@@ -219,7 +219,7 @@ export function registerCreativeTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: fenceBlock(lines) },
-          { type: "text", text: JSON.stringify(responseCreative, null, 2) },
+          { type: "text", text: fencedJsonBlock(responseCreative) },
         ],
       };
     },
@@ -510,7 +510,7 @@ export function registerCreativeTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: `Found ${images.length} image(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(images, null, 2) },
+          { type: "text", text: fencedJsonBlock(images) },
         ],
       };
     },
@@ -554,7 +554,7 @@ export function registerCreativeTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: `Found ${videos.length} video(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(videos, null, 2) },
+          { type: "text", text: fencedJsonBlock(videos) },
         ],
       };
     },
@@ -599,7 +599,7 @@ export function registerCreativeTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: fenceBlock(lines) },
-          { type: "text", text: JSON.stringify(video, null, 2) },
+          { type: "text", text: fencedJsonBlock(video) },
         ],
       };
     },

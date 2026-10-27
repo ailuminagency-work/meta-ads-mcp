@@ -6,6 +6,7 @@ import { buildFieldsParam } from "../utils/validation.js";
 import { AUDIENCE_DEFAULT_FIELDS } from "../meta/types/audience.js";
 import type { CustomAudience, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 export function registerAudienceTools(server: McpServer): void {
   // ─── Get Custom Audiences ─────────────────────────────────────
@@ -34,17 +35,17 @@ export function registerAudienceTools(server: McpServer): void {
       const text =
         audiences.length === 0
           ? "No custom audiences found."
-          : audiences
-              .map(
+          : fenceBlock(
+              audiences.map(
                 (a) =>
-                  `• ${a.name} (${a.id}) — Type: ${a.subtype} — Size: ${a.approximate_count_lower_bound ?? "?"}-${a.approximate_count_upper_bound ?? "?"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(a.name) || "Unnamed"} (${untrustedText(a.id, 40)}) — Type: ${untrustedText(a.subtype, 60)} — Size: ${untrustedText(a.approximate_count_lower_bound, 20) || "?"}-${untrustedText(a.approximate_count_upper_bound, 20) || "?"}`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${audiences.length} audience(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(audiences, null, 2) },
+          { type: "text", text: fencedJsonBlock(audiences) },
         ],
       };
     },
@@ -75,9 +76,13 @@ export function registerAudienceTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Audience: ${audience.name} (${audience.id})\nType: ${audience.subtype}\nSize: ${audience.approximate_count_lower_bound ?? "?"}-${audience.approximate_count_upper_bound ?? "?"}`,
+            text: fenceBlock([
+              `Audience: ${untrustedText(audience.name) || "Unnamed"} (${untrustedText(audience.id, 40)})`,
+              `Type: ${untrustedText(audience.subtype, 60)}`,
+              `Size: ${untrustedText(audience.approximate_count_lower_bound, 20) || "?"}-${untrustedText(audience.approximate_count_upper_bound, 20) || "?"}`,
+            ]),
           },
-          { type: "text", text: JSON.stringify(audience, null, 2) },
+          { type: "text", text: fencedJsonBlock(audience) },
         ],
       };
     },
@@ -327,12 +332,12 @@ export function registerAudienceTools(server: McpServer): void {
       const text =
         accounts.length === 0
           ? "No shared accounts."
-          : accounts
-              .map(
+          : fenceBlock(
+              accounts.map(
                 (a) =>
-                  `• ${a.name ?? "(unnamed)"} (act_${a.account_id})`,
-              )
-              .join("\n");
+                  `• ${untrustedText(a.name) || "(unnamed)"} (act_${untrustedText(a.account_id, 40)})`,
+              ),
+            );
 
       return {
         content: [
@@ -340,7 +345,7 @@ export function registerAudienceTools(server: McpServer): void {
             type: "text",
             text: `Audience ${id} is shared with ${accounts.length} account(s):\n\n${text}`,
           },
-          { type: "text", text: JSON.stringify(accounts, null, 2) },
+          { type: "text", text: fencedJsonBlock(accounts) },
         ],
       };
     },

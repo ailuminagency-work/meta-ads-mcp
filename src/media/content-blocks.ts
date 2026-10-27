@@ -42,6 +42,11 @@ export function untrustedJson(value: unknown): string {
   return (JSON.stringify(value, null, 2) ?? "").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
+/** The structured copy of a result, which carries the same remote text as JSON strings, between the same fences. */
+export function fencedJsonBlock(value: unknown): string {
+  return fenceBlock([untrustedJson(value)]);
+}
+
 /**
  * An error as one bounded line without credentials. Provider and network error
  * text is data from outside this process: it can quote a URL with a token in

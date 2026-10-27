@@ -13,6 +13,7 @@ import type {
   MetaApiResponse,
 } from "../meta/types/index.js";
 import { READ, UPDATE, TOGGLE, WRITE_WARNING } from "./_register.js";
+import { fencedJsonBlock } from "../media/content-blocks.js";
 import { MAX_MINOR_UNIT_AMOUNT, normalizeMinorUnitAmount } from "../meta/currency.js";
 
 const entityTypeEnum = z.enum(["campaign", "ad_set", "ad"]);
@@ -95,7 +96,7 @@ export function registerEntityTools(server: McpServer): void {
             type: "text",
             text: `Found ${items.length} ${entity_type}(s).`,
           },
-          { type: "text", text: JSON.stringify(items, null, 2) },
+          { type: "text", text: fencedJsonBlock(items) },
         ],
       };
     },

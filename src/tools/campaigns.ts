@@ -8,7 +8,7 @@ import { MINOR_UNIT_NOTE, minorUnitAmount } from "../meta/currency.js";
 import { platformEnabled } from "../platform/runtime.js";
 import type { Campaign, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
-import { fenceBlock, untrustedText } from "../media/content-blocks.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 const objectiveEnum = z.enum([
   "OUTCOME_AWARENESS",
@@ -135,7 +135,7 @@ export function registerCampaignTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: `Found ${campaigns.length} campaign(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(campaigns, null, 2) },
+          { type: "text", text: fencedJsonBlock(campaigns) },
         ],
       };
     },
@@ -175,7 +175,7 @@ export function registerCampaignTools(server: McpServer): void {
               `Created: ${untrustedText(campaign.created_time, 40)}`,
             ]),
           },
-          { type: "text", text: JSON.stringify(campaign, null, 2) },
+          { type: "text", text: fencedJsonBlock(campaign) },
         ],
       };
     },

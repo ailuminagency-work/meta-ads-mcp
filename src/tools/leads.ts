@@ -6,7 +6,7 @@ import { truncateResponse, validateMetaId } from "../utils/format.js";
 import { LEAD_FORM_DEFAULT_FIELDS, LEAD_DEFAULT_FIELDS } from "../meta/types/lead.js";
 import type { LeadForm, Lead, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, WRITE_WARNING } from "./_register.js";
-import { fenceBlock, untrustedText } from "../media/content-blocks.js";
+import { fenceBlock, fencedJsonBlock, untrustedJson, untrustedText } from "../media/content-blocks.js";
 import { readPageLeadForms } from "../meta/page-lead-forms.js";
 import { platformEnabled } from "../platform/runtime.js";
 
@@ -47,7 +47,7 @@ export function registerLeadTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: `Found ${forms.length} lead form(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(forms, null, 2) },
+          { type: "text", text: fencedJsonBlock(forms) },
         ],
       };
     },
@@ -110,7 +110,7 @@ export function registerLeadTools(server: McpServer): void {
         }),
       );
 
-      const jsonStr = truncateResponse(JSON.stringify(leads, null, 2));
+      const jsonStr = fenceBlock([truncateResponse(untrustedJson(leads))]);
 
       return {
         content: [
@@ -153,7 +153,7 @@ export function registerLeadTools(server: McpServer): void {
         };
       }
 
-      const jsonStr = truncateResponse(JSON.stringify(leads, null, 2));
+      const jsonStr = fenceBlock([truncateResponse(untrustedJson(leads))]);
 
       return {
         content: [

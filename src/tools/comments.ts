@@ -4,7 +4,7 @@ import { metaApiClient } from "../meta/client.js";
 import { truncateResponse, validateMetaId } from "../utils/format.js";
 import type { MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, TOGGLE, DELETE, WRITE_WARNING } from "./_register.js";
-import { fenceBlock, untrustedText } from "../media/content-blocks.js";
+import { fenceBlock, untrustedJson, untrustedText } from "../media/content-blocks.js";
 
 interface AdComment {
   id: string;
@@ -80,7 +80,7 @@ export function registerCommentTools(server: McpServer): void {
         ),
       );
 
-      const jsonStr = truncateResponse(JSON.stringify(comments, null, 2));
+      const jsonStr = fenceBlock([truncateResponse(untrustedJson(comments))]);
 
       return {
         content: [

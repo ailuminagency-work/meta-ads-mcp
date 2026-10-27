@@ -6,6 +6,7 @@ import { buildFieldsParam } from "../utils/validation.js";
 import { STUDY_DEFAULT_FIELDS } from "../meta/types/study.js";
 import type { AdStudy, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 export function registerABTestingTools(server: McpServer): void {
   // ─── Get Ad Studies ───────────────────────────────────────────
@@ -33,17 +34,17 @@ export function registerABTestingTools(server: McpServer): void {
       const text =
         studies.length === 0
           ? "No A/B test studies found."
-          : studies
-              .map(
+          : fenceBlock(
+              studies.map(
                 (s) =>
-                  `• ${s.name} (${s.id}) — Type: ${s.type ?? "N/A"} — Confidence: ${s.confidence_level ?? "N/A"}%`,
-              )
-              .join("\n");
+                  `• ${untrustedText(s.name) || "Unnamed"} (${untrustedText(s.id, 40)}) — Type: ${untrustedText(s.type, 60) || "N/A"} — Confidence: ${untrustedText(s.confidence_level, 20) || "N/A"}%`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${studies.length} study/studies:\n\n${text}` },
-          { type: "text", text: JSON.stringify(studies, null, 2) },
+          { type: "text", text: fencedJsonBlock(studies) },
         ],
       };
     },
@@ -156,25 +157,25 @@ export function registerABTestingTools(server: McpServer): void {
       );
 
       const lines: string[] = [
-        `Study: ${study.name} (${study.id})`,
-        `Type: ${study.type ?? "N/A"}`,
-        `Period: ${study.start_time ?? "?"} → ${study.end_time ?? "?"}`,
-        `Confidence Level: ${study.confidence_level ?? "N/A"}%`,
+        `Study: ${untrustedText(study.name) || "Unnamed"} (${untrustedText(study.id, 40)})`,
+        `Type: ${untrustedText(study.type, 60) || "N/A"}`,
+        `Period: ${untrustedText(study.start_time, 40) || "?"} → ${untrustedText(study.end_time, 40) || "?"}`,
+        `Confidence Level: ${untrustedText(study.confidence_level, 20) || "N/A"}%`,
       ];
 
       if (study.cells && study.cells.length > 0) {
-        lines.push(`\nCells (${study.cells.length}):`);
+        lines.push("", `Cells (${study.cells.length}):`);
         for (const cell of study.cells) {
           lines.push(
-            `  • ${cell.name} (${cell.id}) — Traffic: ${cell.treatment_percentage ?? "?"}%`,
+            `  • ${untrustedText(cell.name) || "Unnamed"} (${untrustedText(cell.id, 40)}) — Traffic: ${untrustedText(cell.treatment_percentage, 20) || "?"}%`,
           );
         }
       }
 
       return {
         content: [
-          { type: "text", text: lines.join("\n") },
-          { type: "text", text: JSON.stringify(study, null, 2) },
+          { type: "text", text: fenceBlock(lines) },
+          { type: "text", text: fencedJsonBlock(study) },
         ],
       };
     },

@@ -23,6 +23,14 @@ const entity = {
   width: 10, height: 20, length: 12, source: "https://example.test/v.mp4", picture: "https://example.test/p.png", status_video: "ready",
   targeting: { geo_locations: { countries: ["CL"] }, custom_audiences: [{ id: "1", name: HOSTILE }] },
   object_story_spec: { link_data: { message: HOSTILE, link: "https://example.test/" } },
+  account_id: "101", currency: "USD", timezone_name: "UTC", account_status: 1, amount_spent: "5", balance: "1", spend_cap: "9",
+  subtype: "CUSTOM", approximate_count_lower_bound: 10, approximate_count_upper_bound: 20, last_fired_time: "2026-01-01T00:00:00+0000",
+  creation_time: "2026-01-01T00:00:00+0000", custom_event_type: "PURCHASE", default_conversion_value: 3, category: HOSTILE,
+  event: HOSTILE, count: 3, caption: HOSTILE, media_type: "IMAGE", timestamp: "2026-01-01T00:00:00+0000", username: HOSTILE,
+  execution_spec: { execution_type: "PAUSE" }, type: "SPLIT_TEST", confidence_level: 90, start_time: "2026-01-01", end_time: "2026-02-01",
+  cells: [{ id: "9", name: HOSTILE, treatment_percentage: 50 }],
+  followers_count: 5, media_count: 6, code: "<script>" + HOSTILE + "</script>",
+  instagram_business_account: { id: "17841", username: HOSTILE, name: HOSTILE, followers_count: 5, media_count: 6 },
 };
 
 function graph(input: unknown): Response {
@@ -34,7 +42,7 @@ function graph(input: unknown): Response {
   }
   if (path.endsWith("/leadgen_forms")) return reply({ data: [{ id: "31", name: HOSTILE, status: "ACTIVE", leads_count: 4 }] });
   if (path.endsWith("/leads")) return reply({ data: [{ id: "41", created_time: "2026-01-01T00:00:00+0000", field_data: [{ name: HOSTILE, values: [HOSTILE, "second"] }] }] });
-  if (/\/(campaigns|adsets|ads|adcreatives|adimages|advideos)$/.test(path)) return reply({ data: [entity] });
+  if (/\/(campaigns|adsets|ads|adcreatives|adimages|advideos|adaccounts|promote_pages|customaudiences|adspixels|customconversions|media|stats|adrules_library|ad_studies)$/.test(path)) return reply({ data: [entity] });
   if (path === "/me") return reply({ id: "4567" });
   if (url.searchParams.get("fields") === "id,access_token") return reply({ id: path.slice(1), access_token: "synthetic-page-token" });
   return reply(entity);
@@ -55,7 +63,27 @@ const CASES: Array<[string, Record<string, unknown>]> = [
   ["ads_get_video_details", { video_id: "88" }],
   ["ads_get_lead_forms", { page_id: "4567" }],
   ["ads_get_leads", { form_id: "31" }],
+  ["ads_get_ad_accounts", {}],
+  ["ads_get_account_info", { account_id: "act_1" }],
+  ["ads_get_pages_for_business", { account_id: "act_1" }],
+  ["ads_get_custom_audiences", { account_id: "act_1" }],
+  ["ads_get_audience_details", { audience_id: "61" }],
+  ["ads_get_audience_shared_accounts", { audience_id: "61" }],
+  ["ads_get_pixels", { account_id: "act_1" }],
+  ["ads_get_pixel_details", { pixel_id: "71" }],
+  ["ads_get_pixel_events", { pixel_id: "71" }],
+  ["ads_get_custom_conversions", { account_id: "act_1" }],
+  ["ads_get_instagram_account", { page_id: "4567" }],
+  ["ads_get_instagram_media", { instagram_account_id: "17841" }],
+  ["ads_get_ad_entities", { entity_type: "campaign", parent_id: "act_1" }],
+  ["ads_get_ad_rules", { account_id: "act_1" }],
+  ["ads_get_rule_details", { rule_id: "81" }],
+  ["ads_get_ad_studies", { account_id: "act_1" }],
+  ["ads_get_study_details", { study_id: "91" }],
 ];
+
+/** Tools whose first item is a one-line statement of the server's own ("Found 3 campaign(s).") with no remote text in it. */
+const BARE_HEADER = new Set(["ads_get_ad_entities"]);
 
 let client: Client;
 let server: ReturnType<typeof createServer>;
@@ -88,8 +116,33 @@ async function call(name: string, args: Record<string, unknown>): Promise<string
   return result.content.map((block) => block.text);
 }
 
+function expectFenced(label: string, block: string): string[] {
+  const lines = block.split(LINE_BREAKS);
+  expect(lines.filter((l) => l === UNTRUSTED_FENCE_OPEN), `${label}: one opening fence`).toHaveLength(1);
+  expect(lines.filter((l) => l === UNTRUSTED_FENCE_CLOSE), `${label}: one closing fence, the server's own`).toHaveLength(1);
+  const open = lines.indexOf(UNTRUSTED_FENCE_OPEN);
+  const close = lines.indexOf(UNTRUSTED_FENCE_CLOSE);
+  expect(open, `${label}: open before close`).toBeLessThan(close);
+  expect(close, `${label}: nothing after the closing fence`).toBe(lines.length - 1);
+  expect(lines.filter((l) => l.startsWith("SYSTEM NOTICE")), `${label}: injected text never starts a line`).toEqual([]);
+  expect(lines.slice(0, open).join(" "), `${label}: text before the fence is the server's own`).not.toContain("SYSTEM NOTICE");
+  return lines.slice(open + 1, close);
+}
+
 describe("production read surface keeps third-party text inside the untrusted fence", () => {
-  it.each(CASES)("%s", async (name, args) => {
+  it.each(CASES)("%s: every text item is fenced", async (name, args) => {
+    const blocks = await call(name, args);
+    expect(blocks.length, name).toBeGreaterThan(0);
+    for (const [index, block] of blocks.entries()) {
+      if (index === 0 && BARE_HEADER.has(name)) {
+        expect(block, name).not.toContain("SYSTEM NOTICE");
+        continue;
+      }
+      expectFenced(`${name} item ${index}`, block);
+    }
+  });
+
+  it.each(CASES.filter(([name]) => !BARE_HEADER.has(name)))("%s", async (name, args) => {
     const blocks = await call(name, args);
     const summary = blocks[0];
     const lines = summary.split(LINE_BREAKS);
@@ -106,12 +159,17 @@ describe("production read surface keeps third-party text inside the untrusted fe
     expect(lines.slice(0, open).join(" "), "text before the fence is the server's own").not.toContain("SYSTEM NOTICE");
   });
 
-  it("keeps the JSON that follows the summary parseable", async () => {
+  it("keeps the fenced JSON that follows the summary parseable, with the payload as data", async () => {
     for (const [name, args] of CASES) {
       const blocks = await call(name, args);
-      const json = blocks.find((text, index) => index > 0 && /^[[{]/.test(text.trim()));
-      expect(json, name).toBeDefined();
-      expect(() => JSON.parse(json as string), name).not.toThrow();
+      const jsonBlocks = blocks.slice(BARE_HEADER.has(name) ? 0 : 1).filter((text) => text.includes(UNTRUSTED_FENCE_OPEN) && /^[[{]/.test(expectFenced(name, text).join("\n").trim()));
+      expect(jsonBlocks.length, name).toBeGreaterThan(0);
+      for (const block of jsonBlocks) {
+        const inner = expectFenced(name, block).join("\n");
+        let parsed: unknown;
+        expect(() => { parsed = JSON.parse(inner); }, name).not.toThrow();
+        expect(JSON.stringify(parsed), name).toContain("SYSTEM NOTICE");
+      }
     }
   });
 });

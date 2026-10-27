@@ -6,7 +6,7 @@ import { buildFieldsParam, normalizeUrlTags, requireOneOf } from "../utils/valid
 import { AD_DEFAULT_FIELDS } from "../meta/types/ad.js";
 import type { Ad, AdCreative, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
-import { fenceBlock, untrustedText } from "../media/content-blocks.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
@@ -208,7 +208,7 @@ export function registerAdTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: `Found ${ads.length} ad(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(ads, null, 2) },
+          { type: "text", text: fencedJsonBlock(ads) },
         ],
       };
     },
@@ -244,7 +244,7 @@ export function registerAdTools(server: McpServer): void {
               `Created: ${untrustedText(ad.created_time, 40)}`,
             ]),
           },
-          { type: "text", text: JSON.stringify(ad, null, 2) },
+          { type: "text", text: fencedJsonBlock(ad) },
         ],
       };
     },

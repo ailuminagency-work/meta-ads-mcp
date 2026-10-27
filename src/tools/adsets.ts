@@ -13,7 +13,7 @@ import { resolveTenantId } from "../auth/tenant.js";
 import { adaptCopiedTargetingForCreate } from "../meta/targeting-compat.js";
 import { MAX_MINOR_UNIT_AMOUNT, MINOR_UNIT_NOTE, minorUnitAmount } from "../meta/currency.js";
 import { ctaEnum } from "./creatives.js";
-import { fenceBlock, untrustedJson, untrustedText } from "../media/content-blocks.js";
+import { fenceBlock, fencedJsonBlock, untrustedJson, untrustedText } from "../media/content-blocks.js";
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
@@ -367,7 +367,7 @@ export function registerAdSetTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: `Found ${adSets.length} ad set(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(adSets, null, 2) },
+          { type: "text", text: fencedJsonBlock(adSets) },
         ],
       };
     },
@@ -408,7 +408,7 @@ export function registerAdSetTools(server: McpServer): void {
               `Targeting: ${targetingSummary}`,
             ]),
           },
-          { type: "text", text: JSON.stringify(adSet, null, 2) },
+          { type: "text", text: fencedJsonBlock(adSet) },
         ],
       };
     },
