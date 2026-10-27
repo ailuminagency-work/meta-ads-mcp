@@ -1,7 +1,7 @@
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 export type AuthorizeValidationResult =
-  | { ok: true; redirectUri: string; redirectOrigin: string }
+  | { ok: true; redirectUri: string; redirectOrigin: string; clientName: string | null }
   | { ok: false; kind: "no-params"; status: 400; message: string }
   | {
       ok: false;
@@ -97,5 +97,5 @@ export async function validateAuthorizeQuery(
     };
   }
 
-  return { ok: true, redirectUri, redirectOrigin };
+  return { ok: true, redirectUri, redirectOrigin, clientName: client.client_name ?? null };
 }

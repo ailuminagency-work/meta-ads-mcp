@@ -229,7 +229,11 @@ let defaultRunner: VideoJobRunner | undefined;
 export function getVideoJobRunner(): VideoJobRunner {
   if (!defaultRunner) {
     defaultRunner = createVideoJobRunner({
-      maxConcurrent: envInt("VIDEO_MAX_CONCURRENT_JOBS", DEFAULT_MAX_CONCURRENT),
+      // The agency deployment runs on one vCPU / 1 GB, where two heavy jobs can exhaust memory.
+      maxConcurrent: envInt(
+        "VIDEO_MAX_CONCURRENT_JOBS",
+        process.env.DEPLOYMENT_MODE === "agency" ? 1 : DEFAULT_MAX_CONCURRENT,
+      ),
       budgetMs: envInt("VIDEO_CALL_BUDGET_MS", DEFAULT_BUDGET_MS),
       perTenantPerHour: envInt("VIDEO_JOBS_PER_TENANT_PER_HOUR", DEFAULT_PER_TENANT_PER_HOUR),
     });
