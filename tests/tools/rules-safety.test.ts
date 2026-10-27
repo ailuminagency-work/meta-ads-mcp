@@ -35,10 +35,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const SPEND_TYPES = ["UNPAUSE", "CHANGE_BUDGET", "CHANGE_BID"];
+const SPEND_TYPES = ["UNPAUSE", "CHANGE_BUDGET", "CHANGE_BID", "ROTATE"];
 const NOT_PERMITTED = /Autonomous spend-changing rules are not permitted in this release/;
 
 const SPELLING_VARIANTS = [
+  "rotate",
+  " ROTATE",
+  "Rotate\t",
   "unpause",
   "Change_Budget",
   "change_budget",
@@ -63,6 +66,11 @@ describe.each([
     await expect(
       run({ execution_type, execution_options: [{ field: "daily_budget", value: 5000, operator: "INCREASE_BY" }] }),
     ).rejects.toThrow(NOT_PERMITTED);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("says ROTATE is held until its semantics are confirmed, and posts nothing", async () => {
+    await expect(run({ execution_type: "ROTATE" })).rejects.toThrow(/ROTATE rules are held until their effect on delivery is confirmed from Meta's documentation/);
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -115,8 +123,8 @@ describe("the input schemas do not accept spelling variants of the refused types
   });
 });
 
-describe("ads_create_ad_rule keeps PAUSE, ROTATE and NOTIFICATION working", () => {
-  it.each(["PAUSE", "ROTATE", "NOTIFICATION"])("creates a %s rule", async (execution_type) => {
+describe("ads_create_ad_rule keeps PAUSE and NOTIFICATION working", () => {
+  it.each(["PAUSE", "NOTIFICATION"])("creates a %s rule", async (execution_type) => {
     await create({ execution_type });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain("/act_123/adrules_library");
@@ -139,8 +147,8 @@ describe("ads_create_ad_rule keeps PAUSE, ROTATE and NOTIFICATION working", () =
   });
 });
 
-describe("ads_update_ad_rule keeps PAUSE, ROTATE and NOTIFICATION working", () => {
-  it.each(["PAUSE", "ROTATE", "NOTIFICATION"])("switches a rule to %s", async (execution_type) => {
+describe("ads_update_ad_rule keeps PAUSE and NOTIFICATION working", () => {
+  it.each(["PAUSE", "NOTIFICATION"])("switches a rule to %s", async (execution_type) => {
     await update({ execution_spec: { execution_type } });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain("/901");
@@ -206,7 +214,7 @@ describe("ads_update_ad_rule enables a rule only after reading that it is not sp
     expect(requests()).toEqual(["GET:/901"]);
   });
 
-  it.each(["PAUSE", "ROTATE", "NOTIFICATION"])("enables a %s rule with exactly one read then one write", async (execution_type) => {
+  it.each(["PAUSE", "NOTIFICATION"])("enables a %s rule with exactly one read then one write", async (execution_type) => {
     ruleWith(execution_type);
     await update({ status: "ENABLED" });
     expect(requests()).toEqual(["GET:/901", "POST:/901"]);
@@ -263,6 +271,7 @@ describe("the rule tool descriptions no longer advertise spend-changing automati
   it.each(["ads_create_ad_rule", "ads_update_ad_rule"])("%s", (name) => {
     const description = tool(name).description as string;
     expect(description).not.toMatch(/increase budget/i);
-    expect(description).toMatch(/UNPAUSE, CHANGE_BUDGET and CHANGE_BID are (refused|not permitted)/);
+    expect(description).toMatch(/UNPAUSE, CHANGE_BUDGET, CHANGE_BID and ROTATE are refused/);
+    expect(description).toMatch(/ROTATE is held until its semantics are confirmed/);
   });
 });

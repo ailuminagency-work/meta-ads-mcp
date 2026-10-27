@@ -12,13 +12,13 @@ const executionTypeEnum = z.enum([
   "ROTATE", "NOTIFICATION",
 ]);
 
-const ALLOWED_EXECUTION_TYPES: ReadonlySet<string> = new Set(["PAUSE", "ROTATE", "NOTIFICATION"]);
-const SPEND_EXECUTION_TYPES: ReadonlySet<string> = new Set(["UNPAUSE", "CHANGE_BUDGET", "CHANGE_BID"]);
+const ALLOWED_EXECUTION_TYPES: ReadonlySet<string> = new Set(["PAUSE", "NOTIFICATION"]);
+const SPEND_EXECUTION_TYPES: ReadonlySet<string> = new Set(["UNPAUSE", "CHANGE_BUDGET", "CHANGE_BID", "ROTATE"]);
 const SPEND_OPTION_FIELD = /budget|bid|spend/i;
 const SPEND_OPTION_OPERATORS: ReadonlySet<string> = new Set(["INCREASE_BY", "DECREASE_BY"]);
 
 const AUTONOMOUS_SPEND_REFUSAL =
-  "Autonomous spend-changing rules are not permitted in this release: UNPAUSE, CHANGE_BUDGET and CHANGE_BID rules, and execution_options that change a budget, bid or spend, can start delivery or raise spend repeatedly on Meta's schedule with no human approval and no ceiling. Build objects through the approved paused-build path instead. PAUSE, ROTATE and NOTIFICATION rules are still allowed.";
+  "Autonomous spend-changing rules are not permitted in this release: UNPAUSE, CHANGE_BUDGET and CHANGE_BID rules, and execution_options that change a budget, bid or spend, can start delivery or raise spend repeatedly on Meta's schedule with no human approval and no ceiling. ROTATE rules are held until their effect on delivery is confirmed from Meta's documentation. Build objects through the approved paused-build path instead. PAUSE and NOTIFICATION rules are still allowed.";
 
 interface ExecutionSpecInput {
   execution_type: unknown;
@@ -37,7 +37,7 @@ function checkedExecutionSpec(spec: ExecutionSpecInput): Record<string, unknown>
       throw new Error(AUTONOMOUS_SPEND_REFUSAL);
     }
     throw new Error(
-      `Unsupported execution_type ${JSON.stringify(typeof type === "string" ? type.slice(0, 40) : typeof type)}. Allowed: PAUSE, ROTATE, NOTIFICATION.`,
+      `Unsupported execution_type ${JSON.stringify(typeof type === "string" ? type.slice(0, 40) : typeof type)}. Allowed: PAUSE, NOTIFICATION.`,
     );
   }
   const options = spec.execution_options;
@@ -54,7 +54,7 @@ function checkedExecutionSpec(spec: ExecutionSpecInput): Record<string, unknown>
  */
 async function assertRuleSafeToEnable(ruleId: string): Promise<void> {
   const refused = (why: string) =>
-    new Error(`Autonomous spend-changing rules are not permitted in this release, and rule ${ruleId} ${why}, so it will not be enabled. Only PAUSE, ROTATE and NOTIFICATION rules can be enabled.`);
+    new Error(`Autonomous spend-changing rules are not permitted in this release, and rule ${ruleId} ${why}, so it will not be enabled. Only PAUSE and NOTIFICATION rules can be enabled (ROTATE is held until its effect on delivery is confirmed).`);
   let current: { execution_spec?: { execution_type?: unknown } | null };
   try {
     current = await metaApiClient.get<typeof current>(`/${ruleId}`, { fields: "execution_spec,status" });
@@ -63,7 +63,7 @@ async function assertRuleSafeToEnable(ruleId: string): Promise<void> {
   }
   const type = current?.execution_spec?.execution_type;
   if (typeof type !== "string" || !ALLOWED_EXECUTION_TYPES.has(type)) {
-    throw refused(`is not confirmed to be a PAUSE, ROTATE or NOTIFICATION rule (current execution_type: ${typeof type === "string" ? JSON.stringify(type.slice(0, 40)) : "not reported"})`);
+    throw refused(`is not confirmed to be a PAUSE or NOTIFICATION rule (current execution_type: ${typeof type === "string" ? JSON.stringify(type.slice(0, 40)) : "not reported"})`);
   }
 }
 
@@ -118,7 +118,7 @@ export function registerRuleTools(server: McpServer): void {
   server.registerTool(
     "ads_create_ad_rule",
     {
-      description: `${WRITE_WARNING}Create an automated rule. Allowed actions: PAUSE, ROTATE and NOTIFICATION (examples: pause ad sets when CPL > $20, notify when CTR < 1%). UNPAUSE, CHANGE_BUDGET and CHANGE_BID are refused: autonomous spend-changing rules are not permitted in this release.`,
+      description: `${WRITE_WARNING}Create an automated rule. Allowed actions: PAUSE and NOTIFICATION (examples: pause ad sets when CPL > $20, notify when CTR < 1%). UNPAUSE, CHANGE_BUDGET, CHANGE_BID and ROTATE are refused: autonomous spend-changing rules are not permitted in this release, and ROTATE is held until its semantics are confirmed from Meta's documentation.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         name: z.string().min(1).describe("Rule name"),
@@ -149,7 +149,7 @@ export function registerRuleTools(server: McpServer): void {
                 }),
               )
               .optional()
-              .describe("Options for ROTATE/NOTIFICATION execution types. Options that change a budget, bid or spend are refused."),
+              .describe("Options for NOTIFICATION execution types. Options that change a budget, bid or spend are refused."),
           })
           .describe("What to do when triggered"),
         schedule_spec: z
@@ -244,7 +244,7 @@ export function registerRuleTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_rule",
     {
-      description: `${WRITE_WARNING}Update an existing automated rule's name, status, or specs. UNPAUSE, CHANGE_BUDGET and CHANGE_BID are refused as the new execution_type, and a rule can be enabled only after it is read and confirmed to be a PAUSE, ROTATE or NOTIFICATION rule: autonomous spend-changing rules are not permitted in this release. Disabling is always allowed.`,
+      description: `${WRITE_WARNING}Update an existing automated rule's name, status, or specs. UNPAUSE, CHANGE_BUDGET, CHANGE_BID and ROTATE are refused as the new execution_type, and a rule can be enabled only after it is read and confirmed to be a PAUSE or NOTIFICATION rule: autonomous spend-changing rules are not permitted in this release, and ROTATE is held until its semantics are confirmed from Meta's documentation. Disabling is always allowed.`,
       inputSchema: {
         rule_id: z.string().describe("Rule ID to update"),
         name: z.string().optional().describe("New name"),
