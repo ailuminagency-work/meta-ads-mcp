@@ -22,7 +22,7 @@ This section covers the OAuth server that MCP clients (Claude, ChatGPT, Claude C
 
 | Variable | Default | Effect |
 |---|---|---|
-| OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS | empty | Comma-separated exact DNS host names added to the https redirect allowlist. Entries with a scheme, port, path, wildcard or IP address are ignored with a warning. |
+| OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS | empty | Comma-separated exact DNS host names added to the https redirect allowlist (any path). Needed for chatgpt.com, platform.openai.com and vscode.dev. Entries with a scheme, port, path, wildcard or IP address are ignored with a warning. |
 | AUTH_DENIED_FB_USER_IDS | empty | Comma-separated Facebook user ids refused everywhere, even when AUTH_ALLOWED_* would admit them. |
 | CORS_ALLOWED_ORIGINS | https://claude.ai, https://claude.com | Browser origins accepted on /mcp. Setting it replaces the defaults. |
 
@@ -32,13 +32,18 @@ The rate limits below are constants in code. There is no variable to change them
 
 POST /register accepts a redirect URI only when it is one of:
 
-- https on claude.ai, claude.com, chatgpt.com or a host named in OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS. The host must match exactly: no port, no user information, no trailing dot, no percent-encoded spelling, no subdomain.
+- https://claude.ai/api/mcp/auth_callback or https://claude.com/api/mcp/auth_callback, exactly: any other path, a query, a trailing slash, a different case or an encoded or dot-segment spelling is refused.
+- https on a host named in OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS, with any path. The host must match exactly: no port, no user information, no trailing dot, no percent-encoded spelling, no subdomain. Listing claude.ai or claude.com there does not widen the pinned path.
 - http on a loopback address (127.0.0.1, localhost, [::1]) with any port and path, for CLI clients that listen on an ephemeral port.
 - A cursor://, vscode:// or vscode-insiders:// URI that names an application host.
 
 Fragments, wildcards, backslashes, whitespace, control characters, other schemes, plain http to a non-loopback host, more than 10 URIs and URIs over 2048 characters are refused. One refused URI refuses the whole registration with HTTP 400 and the error invalid_redirect_uri. The same check runs when a stored client is read, so a client registered before this policy existed with a URI that is no longer allowed is treated as unknown (invalid_client) until its host is added or it registers again.
 
-Anthropic documents https://claude.ai/api/mcp/auth_callback as Claude's callback and says it may move to https://claude.com/api/mcp/auth_callback, so both hosts are on by default. Some clients register more than the hosts above; add them before they need to register, for example OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS=vscode.dev,insiders.vscode.dev for VS Code builds that also register https://vscode.dev/redirect, and platform.openai.com for ChatGPT's app review flow. Which client builds register which URIs has not been verified against the real clients.
+Anthropic documents https://claude.ai/api/mcp/auth_callback as Claude's callback and says it may move to https://claude.com/api/mcp/auth_callback, so both are on by default.
+
+chatgpt.com is not a default host. Anyone with a ChatGPT account can publish a Custom GPT whose Action OAuth callback is a path on chatgpt.com, so trusting the host would let an anonymous attacker register a client whose callback hands an approved authorization code to their GPT. To use ChatGPT as a client, set OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS=chatgpt.com (and platform.openai.com for its app review flow); every path on a listed host is then accepted, so the residual risk is the one just described, limited to operators who approve a consent page that names that host. VS Code builds that also register https://vscode.dev/redirect need vscode.dev and insiders.vscode.dev listed the same way. Which client builds register which URIs has not been verified against the real clients.
+
+Two kinds of redirect stay open by design. Loopback http (127.0.0.1, localhost, [::1]) accepts any port and path because CLI clients listen on an ephemeral port (RFC 8252); a process on the operator's machine can bind a port and receive a code the operator approved for a client of the same name. The cursor://, vscode:// and vscode-insiders:// schemes accept any application host, so an application registered for the scheme on the operator's machine, or a deep link such as vscode://attacker.publisher/callback, can receive a code; the consent page shows the full redirect host and scheme so an operator can tell. Neither is a network-attacker risk, and both need the operator to approve a consent page for a client they did not start.
 
 ### Authorization codes and tokens
 
@@ -77,7 +82,7 @@ The OAuth routes, the OAuth provider and the /mcp token middleware write Faceboo
 
 ### Operator checklist before a deploy
 
-1. Decide on OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS for the clients in use (vscode.dev, platform.openai.com).
+1. Decide on OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS for the clients in use (chatgpt.com, platform.openai.com, vscode.dev).
 2. Confirm CORS_ALLOWED_ORIGINS covers every browser client that calls /mcp.
 3. Confirm the TTL policy on mcp_refresh_jti.expiresAt.
 4. Record the deny list procedure: edit AUTH_DENIED_FB_USER_IDS and redeploy. There is no admin endpoint for per-user revocation.

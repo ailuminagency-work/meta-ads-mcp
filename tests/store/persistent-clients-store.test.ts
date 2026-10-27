@@ -99,12 +99,17 @@ describe("clients registered before the policy existed", () => {
       registered_at: 1,
     });
     double.data.set("mcp_clients/legacy-good", {
-      ...client("legacy-good", ["https://chatgpt.com/connector_platform_oauth_redirect"]),
+      ...client("legacy-good", ["https://claude.ai/api/mcp/auth_callback"]),
+      registered_at: 1,
+    });
+    double.data.set("mcp_clients/legacy-custom-gpt", {
+      ...client("legacy-custom-gpt", ["https://chatgpt.com/aip/g-SYNTHETIC-GPT/oauth/callback"]),
       registered_at: 1,
     });
     const store = new FirestoreClientsStore();
 
     expect(await store.getClient("legacy-evil")).toBeUndefined();
+    expect(await store.getClient("legacy-custom-gpt")).toBeUndefined();
     expect(await store.getClient("legacy-good")).toMatchObject({ client_id: "legacy-good" });
   });
 

@@ -91,6 +91,9 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
     ["fragment", "https://claude.ai/cb#x"],
     ["wildcard host", "https://*.claude.ai/cb"],
     ["userinfo", "https://claude.ai@evil.example/cb"],
+    ["another path on claude.ai", "https://claude.ai/anything/the/attacker/likes"],
+    ["a Custom GPT callback on chatgpt.com", "https://chatgpt.com/aip/g-SYNTHETIC-GPT/oauth/callback"],
+    ["the ChatGPT connector callback before the operator opts in", "https://chatgpt.com/connector_platform_oauth_redirect"],
     ["lookalike of claude.com", "https://claude.com.evil.example/x"],
     ["plain http on claude.com", "http://claude.com/x"],
     ["unlisted custom scheme", "myapp://callback"],
@@ -112,13 +115,14 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
     expect(((await response.json()) as { error: string }).error).toBe("invalid_redirect_uri");
   });
 
-  const LEGITIMATE: Array<[string, string[], string]> = [
+  const LEGITIMATE: Array<[string, string[], string, string?]> = [
     ["Claude", ["https://claude.ai/api/mcp/auth_callback"], "https://claude.ai/api/mcp/auth_callback"],
     ["Claude on claude.com", ["https://claude.com/api/mcp/auth_callback"], "https://claude.com/api/mcp/auth_callback"],
     [
-      "ChatGPT",
+      "ChatGPT (opted in with OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS)",
       ["https://chatgpt.com/connector_platform_oauth_redirect"],
       "https://chatgpt.com/connector_platform_oauth_redirect",
+      "chatgpt.com",
     ],
     [
       "Claude Code loopback",
@@ -139,7 +143,8 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
 
   it.each(LEGITIMATE)(
     "still completes registration, authorization and token exchange for %s",
-    async (_client, redirectUris, chosenRedirect) => {
+    async (_client, redirectUris, chosenRedirect, extraHosts) => {
+      if (extraHosts) vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", extraHosts);
       const registration = await register(harness.origin, redirectUris);
       expect(registration.status).toBe(201);
       const registered = (await registration.json()) as OAuthClientInformationFull;

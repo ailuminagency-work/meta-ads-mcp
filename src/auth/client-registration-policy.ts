@@ -13,7 +13,14 @@ export class InvalidRedirectUriError extends OAuthError {
   static errorCode = "invalid_redirect_uri";
 }
 
-const DEFAULT_REDIRECT_HOSTS: readonly string[] = ["claude.ai", "claude.com", "chatgpt.com"];
+// A host that lets third parties publish their own callback path (a Custom GPT
+// action on chatgpt.com, for one) cannot be trusted as a whole, so the default
+// hosts are pinned to the one callback path their MCP connector uses. Other
+// hosts are the operator's decision through OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS.
+const PINNED_REDIRECT_PATHS: Readonly<Record<string, string>> = {
+  "claude.ai": "/api/mcp/auth_callback",
+  "claude.com": "/api/mcp/auth_callback",
+};
 const ALLOWED_CUSTOM_SCHEMES: readonly string[] = ["cursor", "vscode", "vscode-insiders"];
 const LOOPBACK_HOSTNAMES: readonly string[] = ["127.0.0.1", "localhost", "[::1]"];
 const MAX_REDIRECT_URIS = 10;
@@ -48,7 +55,7 @@ function extraRedirectHosts(env: NodeJS.ProcessEnv): string[] {
 }
 
 export function allowedRedirectHosts(env: NodeJS.ProcessEnv = process.env): string[] {
-  return [...DEFAULT_REDIRECT_HOSTS, ...extraRedirectHosts(env)];
+  return [...Object.keys(PINNED_REDIRECT_PATHS), ...extraRedirectHosts(env)];
 }
 
 function rawAuthority(uri: string): string | null {
@@ -98,7 +105,14 @@ export function checkRedirectUri(
     if (rawHost(authority).toLowerCase() !== url.hostname) {
       return { ok: false, reason: "host is not written in canonical form" };
     }
-    if (!allowedRedirectHosts(env).includes(url.hostname)) {
+    const pinnedPath = PINNED_REDIRECT_PATHS[url.hostname];
+    if (pinnedPath !== undefined) {
+      if (uri.slice(uri.indexOf("://") + 3 + authority.length) !== pinnedPath) {
+        return { ok: false, reason: `must be exactly the ${pinnedPath} callback on this host` };
+      }
+      return { ok: true };
+    }
+    if (!extraRedirectHosts(env).includes(url.hostname)) {
       return { ok: false, reason: "host is not an allowed redirect host" };
     }
     return { ok: true };

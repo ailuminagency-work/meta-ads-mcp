@@ -44,7 +44,12 @@ beforeAll(async () => {
 afterEach(() => {
   expect(h.upstream.blocked, "nothing may leave the process except to the fake Graph host").toEqual([]);
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
+
+function optIntoChatGpt(): void {
+  vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "chatgpt.com");
+}
 
 afterAll(async () => {
   await h.close();
@@ -111,6 +116,7 @@ describe("dynamic client registration (RFC 7591)", () => {
     ["Claude-shaped", CLAUDE_CLIENT_METADATA, CLAUDE_REDIRECT],
     ["ChatGPT-shaped", CHATGPT_CLIENT_METADATA, CHATGPT_REDIRECT],
   ])("registers a %s public client", async (_label, metadata, redirect) => {
+    if (redirect === CHATGPT_REDIRECT) optIntoChatGpt();
     const registration = await registerClient(h.origin, metadata);
     expect(registration.status).toBe(201);
     expect(registration.headers.get("cache-control")).toBe("no-store");
@@ -118,6 +124,12 @@ describe("dynamic client registration (RFC 7591)", () => {
     expect(registration.body.redirect_uris).toEqual([redirect]);
     expect(registration.body.token_endpoint_auth_method).toBe("none");
     expect(registration.body).not.toHaveProperty("client_secret");
+  });
+
+  it("refuses the ChatGPT-shaped client until the operator opts chatgpt.com in", async () => {
+    const registration = await registerClient(h.origin, CHATGPT_CLIENT_METADATA);
+    expect(registration.status).toBe(400);
+    expect(registration.body.error).toBe("invalid_redirect_uri");
   });
 
   it("issues a secret only to clients that ask for client_secret_post", async () => {
@@ -278,6 +290,7 @@ describe("authorization code + PKCE, end to end through the Meta login hops", ()
   });
 
   it("completes the same flow for a ChatGPT-shaped client and returns the code to the ChatGPT redirect", async () => {
+    optIntoChatGpt();
     const flow = await completeOAuthFlow(h.origin, { clientMetadata: CHATGPT_CLIENT_METADATA });
     expect(flow.redirectUri).toBe(CHATGPT_REDIRECT);
     const initialize = await mcpPost(h.origin, flow.tokens.access_token, INITIALIZE_BODY);
@@ -467,6 +480,7 @@ describe("authorization code and PKCE enforcement at /token", () => {
 
   it("rejects a code presented by a different client or with a different redirect_uri", async () => {
     const issued = await obtainAuthorizationCode(h.origin);
+    optIntoChatGpt();
     const other = (await registerClient(h.origin, CHATGPT_CLIENT_METADATA)).body as unknown as RegisteredClient;
     const crossClient = await exchange(issued, { client_id: other.client_id });
     expect(crossClient.status).toBe(400);
