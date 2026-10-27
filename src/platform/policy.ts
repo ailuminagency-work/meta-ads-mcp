@@ -39,22 +39,23 @@ export function classifyPlan(plan: OperationPlan): OperationClass[] {
   if(pausedCreation && plan.parameters.status !== "PAUSED") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
   const expectationOnly = plan.capability === "marketing.activate.ad" && plan.classes.length===1 && plan.classes[0]==="ACTIVATE_SPEND" && (plan.parameters.endpointContract as {tool?:unknown}|undefined)?.tool==="marketing_activate_ad";
   let nodes = 0;
+  const mentionsActive = (value: unknown, depth = 0): boolean => typeof value === "string" ? value.trim().toUpperCase() === "ACTIVE" : depth < 6 && !!value && typeof value === "object" && Object.values(value).some(v => mentionsActive(v, depth + 1));
   function inspect(value: unknown, depth: number): void {
     if(++nodes > 10000 || depth > 30) throw new PlatformDenied("PLAN_TOO_COMPLEX");
-    if(pausedCreation && typeof value === "string" && value.toUpperCase() === "INHERITED_FROM_SOURCE") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
+    if(pausedCreation && typeof value === "string" && value.trim().toUpperCase() === "INHERITED_FROM_SOURCE") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
     if(typeof value === "string" && /^[\s]*[\[{]/.test(value)) { let decoded: unknown; try { decoded = JSON.parse(value); } catch { throw new PlatformDenied("OPAQUE_JSON_INVALID"); } inspect(decoded, depth + 1); return; }
     if(Array.isArray(value)) { value.forEach(v => inspect(v, depth + 1)); return; }
     if(!value || typeof value !== "object") return;
     for(const [key, v] of Object.entries(value)) {
-      const k = key.toLowerCase();
-      if(pausedCreation && ["status", "status_option", "target_status"].includes(k) && v !== "PAUSED") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
-      if((k === "status" || k === "execution_options" || k === "status_option" || k === "target_status") && typeof v === "string" && v.toUpperCase() === "ACTIVE") {
+      const k = key.trim().toLowerCase();
+      if(pausedCreation && (/(^|_)status(_option)?$/.test(k) || k === "target_status") && v !== "PAUSED") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
+      if((["status", "configured_status", "execution_options", "status_option", "target_status"].includes(k) && mentionsActive(v)) || (k === "execution_type" && typeof v === "string" && v.trim().toUpperCase() === "UNPAUSE")) {
         if(plan.createOrCopy) throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
         classes.add("ACTIVATE_SPEND");
       }
       if((k.includes("budget") || k === "bid_amount" || k === "spend_cap" || k === "account_spend_limit") && !(expectationOnly && depth===1 && value===plan.parameters.input && ["expected_campaign_daily_budget","expected_adset_daily_budget"].includes(k))) classes.add("WRITE_BUDGET");
       if(k.includes("credit_line") || k.includes("payment_method") || k === "funding_id") classes.add("BILLING");
-      if(k === "status" && (v === "DELETED" || v === "ARCHIVED")) classes.add("DELETE");
+      if(k === "status" && typeof v === "string" && ["DELETED", "ARCHIVED"].includes(v.trim().toUpperCase())) classes.add("DELETE");
       inspect(v, depth + 1);
     }
   }
