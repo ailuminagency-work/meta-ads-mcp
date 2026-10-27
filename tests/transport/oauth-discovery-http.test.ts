@@ -26,6 +26,7 @@ it("advertises the canonical resource metadata on missing and invalid MCP creden
     LUMIN_PLATFORM_ENABLED: "false",
     LUMIN_META_PRIVACY_ENABLED: "false",
     OAUTH_SECRET: randomBytes(32).toString("hex"),
+    OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS: "client.example.com",
   })) vi.stubEnv(key, value);
   resetOAuthProviderForTests();
 

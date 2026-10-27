@@ -49,9 +49,13 @@ import { oauthProvider } from "../auth/oauth-provider.js";
 import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { hashPii, requestContext } from "../auth/token-store.js";
 import { tokenManager } from "../auth/token-manager.js";
-import { configureSessionJtiStore, getSession } from "../auth/session.js";
+import { clearSession, configureSessionJtiStore, getSession } from "../auth/session.js";
+import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
-import { mountAuthRoutes, safeReturnTo } from "./auth-routes.js";
+import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
+import { clientIpKey } from "../utils/client-ip-key.js";
+import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
+import { DEFAULT_CORS_ALLOWED_ORIGINS, mcpBodyErrorHandler, mcpOriginGuard } from "./mcp-guards.js";
 import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
@@ -321,7 +325,22 @@ ${PAGE_STYLES}
 </html>`;
 }
 
-function createRateLimiter(maxRequests: number, windowMs: number) {
+async function sessionStillAllowed(
+  req: express.Request,
+  res: express.Response,
+  session: { fbUserId: string; email: string | null },
+): Promise<boolean> {
+  if (isAllowed({ email: session.email, fbUserId: session.fbUserId })) return true;
+  await clearSession(req, res);
+  logger.warn({ fbUserId: hashPii(session.fbUserId) }, "Rejected /authorize: account is no longer allowed");
+  res.setHeader("Cache-Control", "no-store");
+  res.status(403).type("html").send(
+    "<h1>Access denied</h1><p>This Meta account is not allowed to use this server. Contact the administrator.</p>",
+  );
+  return false;
+}
+
+export function createRateLimiter(maxRequests: number, windowMs: number) {
   const requests = new Map<string, { count: number; resetAt: number }>();
 
   setInterval(() => {
@@ -332,7 +351,7 @@ function createRateLimiter(maxRequests: number, windowMs: number) {
   }, windowMs).unref();
 
   return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
-    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    const ip = clientIpKey(req.ip ?? req.socket.remoteAddress);
     const now = Date.now();
     const entry = requests.get(ip);
 
@@ -453,10 +472,11 @@ export function buildMetaTokenMiddleware(
         );
         return;
       } catch (err) {
+        const hashedId = hashPii(fbUserId) ?? "";
         logger.warn(
           {
-            fbUserId,
-            error: err instanceof Error ? err.message : String(err),
+            fbUserId: hashedId,
+            error: (err instanceof Error ? err.message : String(err)).split(fbUserId).join(hashedId),
           },
           "Failed to resolve user Meta token",
         );
@@ -525,7 +545,7 @@ export async function startHttpTransport(
   // invoke /mcp with a stolen Bearer token. We only need cross-origin reads
   // for Claude.ai (and any operator-configured peers); /authorize and /auth/*
   // are top-level navigations that don't depend on CORS.
-  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || "https://claude.ai")
+  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || DEFAULT_CORS_ALLOWED_ORIGINS.join(","))
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -729,6 +749,11 @@ export async function startHttpTransport(
       "/auth/register-gemini-key",
       createRateLimiter(10, 15 * 60 * 1000),
     );
+    // Each of these reads Firestore and the callback also calls Meta, and none
+    // needs a session, so an anonymous caller could drive that cost.
+    app.get("/auth/meta", createRateLimiter(60, 15 * 60 * 1000));
+    app.get("/auth/meta/callback", createRateLimiter(60, 15 * 60 * 1000));
+    app.use("/authorize", createRateLimiter(120, 15 * 60 * 1000));
 
     mountAuthRoutes(app, {
       serverUrl,
@@ -777,6 +802,7 @@ export async function startHttpTransport(
         res.redirect(302, `/auth/meta?return=${encodeURIComponent(returnTo)}`);
         return;
       }
+      if (!(await sessionStillAllowed(req, res, session))) return;
 
       const [tokens, activeName, apify, gemini] = await Promise.all([
         listTokens(session.fbUserId),
@@ -839,6 +865,7 @@ export async function startHttpTransport(
 
     app.post(
       "/authorize",
+      requireSameOriginPost("/authorize"),
       express.urlencoded({ extended: false }),
       async (req, res, next) => {
         const session = await getSession(req);
@@ -851,6 +878,7 @@ export async function startHttpTransport(
           res.status(401).type("html").send(`<p>Sesión expirada. ${link}</p>`);
           return;
         }
+        if (!(await sessionStillAllowed(req, res, session))) return;
 
         let activeName: string | null = null;
         const requestedToken =
@@ -886,6 +914,7 @@ export async function startHttpTransport(
 
   oauthProvider.configure({ defaultResource: new URL("/mcp", serverUrl), requireRedirectUri: true });
 
+  app.use("/authorize", echoStateOnAuthorizeErrors());
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
@@ -902,6 +931,7 @@ export async function startHttpTransport(
   const auth = createCombinedAuthMiddleware(oauthBearerAuth);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
+  app.use("/mcp", mcpOriginGuard(corsAllowedOrigins));
   app.post("/mcp", auth, metaTokenMw, mcpJsonParser(), async (req, res) => {
     try {
       const transport = new StreamableHTTPServerTransport({
@@ -952,6 +982,7 @@ export async function startHttpTransport(
       id: null,
     });
   });
+  app.use("/mcp", mcpBodyErrorHandler);
 
   const authModes: string[] = [];
   if (isApiKeyConfigured()) authModes.push("API Key");

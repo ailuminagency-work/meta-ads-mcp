@@ -11,7 +11,14 @@ export interface AllowlistInput {
   fbUserId?: string | null;
 }
 
+export function isDenied(fbUserId: string | null | undefined): boolean {
+  if (!fbUserId) return false;
+  return parseList(process.env.AUTH_DENIED_FB_USER_IDS).includes(fbUserId.toLowerCase());
+}
+
 export function isAllowed(input: AllowlistInput): boolean {
+  if (isDenied(input.fbUserId)) return false;
+
   const emails = parseList(process.env.AUTH_ALLOWED_EMAILS);
   const domains = parseList(process.env.AUTH_ALLOWED_DOMAINS);
   const fbIds = parseList(process.env.AUTH_ALLOWED_FB_USER_IDS);
@@ -39,6 +46,13 @@ export function isAllowed(input: AllowlistInput): boolean {
   if (fbUserId && fbIds.includes(fbUserId)) return true;
 
   return false;
+}
+
+export function allowlistHasEmailRules(): boolean {
+  return (
+    parseList(process.env.AUTH_ALLOWED_EMAILS).length > 0 ||
+    parseList(process.env.AUTH_ALLOWED_DOMAINS).length > 0
+  );
 }
 
 export function isAllowlistConfigured(): boolean {

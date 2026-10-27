@@ -17,17 +17,28 @@ export interface JtiEntry {
   meta?: Record<string, string | number | boolean | null>;
 }
 
+export interface ConsumeOptions {
+  /**
+   * Written in the same atomic step as the removal, and only when the removal
+   * succeeds. Lets a caller tell "rotated a moment ago" from "never valid"
+   * without a window between the two writes.
+   */
+  tombstone?: { id: string; entry: JtiEntry };
+}
+
 export interface JtiStore {
   put(jti: string, entry: JtiEntry): Promise<void>;
   /** Returns true if the jti exists and is not expired. */
   has(jti: string): Promise<boolean>;
+  /** The stored entry, or undefined when it is missing or expired. */
+  get(jti: string): Promise<JtiEntry | undefined>;
   /**
    * Atomically: returns true and removes the jti if it existed (and is
    * not expired); returns false otherwise. Used by refresh-token rotation
    * to avoid races where two concurrent exchanges both pass a non-atomic
    * has() check before either delete() lands.
    */
-  consume(jti: string): Promise<boolean>;
+  consume(jti: string, options?: ConsumeOptions): Promise<boolean>;
   delete(jti: string): Promise<void>;
 }
 
@@ -54,7 +65,14 @@ export class FirestoreJtiStore implements JtiStore {
     return true;
   }
 
-  async consume(jti: string): Promise<boolean> {
+  async get(jti: string): Promise<JtiEntry | undefined> {
+    const snap = await this.collection.doc(jti).get();
+    if (!snap.exists) return undefined;
+    const data = snap.data() as JtiEntry;
+    return data.expiresAt < Math.floor(Date.now() / 1000) ? undefined : data;
+  }
+
+  async consume(jti: string, options?: ConsumeOptions): Promise<boolean> {
     const ref = this.collection.doc(jti);
     return getFirestore().runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -65,6 +83,7 @@ export class FirestoreJtiStore implements JtiStore {
         return false;
       }
       tx.delete(ref);
+      if (options?.tombstone) tx.set(this.collection.doc(options.tombstone.id), options.tombstone.entry);
       return true;
     });
   }
@@ -91,12 +110,23 @@ export class InMemoryJtiStore implements JtiStore {
     return true;
   }
 
-  async consume(jti: string): Promise<boolean> {
+  async get(jti: string): Promise<JtiEntry | undefined> {
+    const entry = this.map.get(jti);
+    if (!entry) return undefined;
+    if (entry.expiresAt < Math.floor(Date.now() / 1000)) {
+      this.map.delete(jti);
+      return undefined;
+    }
+    return entry;
+  }
+
+  async consume(jti: string, options?: ConsumeOptions): Promise<boolean> {
     // JS event loop is single-threaded so this is atomic by construction.
     const entry = this.map.get(jti);
     if (!entry) return false;
     this.map.delete(jti);
     if (entry.expiresAt < Math.floor(Date.now() / 1000)) return false;
+    if (options?.tombstone) this.map.set(options.tombstone.id, options.tombstone.entry);
     return true;
   }
 
