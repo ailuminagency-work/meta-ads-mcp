@@ -5,10 +5,14 @@ import { logger } from "../utils/logger.js";
 export const DEFAULT_MCP_MAX_IN_FLIGHT = 16;
 export const DEFAULT_MCP_RATE_LIMIT_PER_MINUTE = 120;
 export const DEFAULT_MCP_MAX_IN_FLIGHT_PER_SUBJECT = 4;
-// The longest tool call a client can ask for is ads_run_report_and_wait (max_wait_seconds up to 3600); video
-// and Gemini calls run 180 to 240 s by default. The default sits just above that, so no tool is cut short; an
-// operator who does not use long report waits can lower it.
+// Outside agency mode the longest tool call a client can ask for is ads_run_report_and_wait (max_wait_seconds up
+// to 3600); video and Gemini calls run 180 to 240 s by default. The default sits just above that, so no tool is
+// cut short there.
 export const DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS = 3_700;
+// Agency mode has no tool that legitimately runs longer than about 260 s (a video job: 20 s queue plus a 240 s
+// budget; Meta calls give up after about 130 s; the strict report observer after 30 s). A tighter default bounds
+// what a hung or hostile call can hold: 4 slots x 600 s instead of 4 x 3700 s per credential.
+export const DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS_AGENCY = 600;
 const MAX_IN_FLIGHT_CEILING = 1_000;
 const RATE_LIMIT_CEILING = 100_000;
 const REQUEST_TIMEOUT_FLOOR_SECONDS = 30;
@@ -62,7 +66,13 @@ export function readMcpAdmissionConfig(env: NodeJS.ProcessEnv = process.env): Mc
     perSubjectInFlight: boundedInteger(env, "MCP_MAX_IN_FLIGHT_PER_SUBJECT", DEFAULT_MCP_MAX_IN_FLIGHT_PER_SUBJECT, 1, MAX_IN_FLIGHT_CEILING),
     perSubjectPerWindow: boundedInteger(env, "MCP_RATE_LIMIT_PER_MINUTE", DEFAULT_MCP_RATE_LIMIT_PER_MINUTE, 1, RATE_LIMIT_CEILING),
     requestTimeoutMs:
-      boundedInteger(env, "MCP_REQUEST_TIMEOUT_SECONDS", DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS, REQUEST_TIMEOUT_FLOOR_SECONDS, REQUEST_TIMEOUT_CEILING_SECONDS) * 1_000,
+      boundedInteger(
+        env,
+        "MCP_REQUEST_TIMEOUT_SECONDS",
+        env.DEPLOYMENT_MODE === "agency" ? DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS_AGENCY : DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS,
+        REQUEST_TIMEOUT_FLOOR_SECONDS,
+        REQUEST_TIMEOUT_CEILING_SECONDS,
+      ) * 1_000,
     responseStallMs: RESPONSE_STALL_MS,
     stallCheckMs: STALL_CHECK_MS,
     windowMs: RATE_WINDOW_MS,
@@ -159,29 +169,49 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
     });
   }
 
-  function watch(res: express.Response, release: () => void): void {
+  function watch(req: express.Request, res: express.Response, release: () => void): void {
+    const socket = req.socket;
+    let done = false;
+    // Every path that can end a request ends up here, and only the first one counts. A pipelined request's
+    // response gets its socket only when its turn comes, so if the connection dies first it never emits
+    // `close`: the socket's own close and error are a release path too.
     const ended = (): void => {
+      if (done) return;
+      done = true;
       clearTimeout(requestTimer);
       clearInterval(stallTimer);
+      socket?.off("close", ended);
+      socket?.off("error", ended);
       release();
     };
+
     const requestTimer = setTimeout(() => {
       counters.timedOut += 1;
       logger.warn({ event: "mcp_request_timed_out", timeoutMs: requestTimeoutMs, inFlight: counters.inFlight }, "Ended a /mcp request that stayed unanswered");
       if (!res.headersSent) {
         res.setHeader("Connection", "close");
-        res.status(504).json({ jsonrpc: "2.0", error: { code: -32000, message: "Request timed out" }, id: null });
+        res.status(504).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: `Request timed out after ${Math.round(requestTimeoutMs / 1000)} seconds. Work this call started may still be running: check its status with the tool's status call (for a report, ads_get_report_status) and call again; do not repeat a create blindly.`,
+          },
+          id: null,
+        });
         res.once("finish", () => res.destroy());
         setTimeout(() => res.destroy(), 1_000).unref();
       } else {
         res.destroy();
       }
+      ended();
     }, requestTimeoutMs);
     requestTimer.unref();
 
     let lastLength = 0;
     let stalledSince: number | null = null;
     const stallTimer = setInterval(() => {
+      // A pipelined response without a socket yet only buffers; the request timeout bounds how long it can wait.
+      if (!res.socket) return;
       const length = res.writableLength;
       if (length === 0) stalledSince = null;
       else if (length < lastLength) stalledSince = Date.now();
@@ -190,6 +220,8 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
         counters.stalled += 1;
         logger.warn({ event: "mcp_response_stalled", bufferedBytes: length, stallMs: responseStallMs }, "Closed a /mcp response the client stopped reading");
         res.destroy();
+        ended();
+        return;
       }
       lastLength = length;
     }, stallCheckMs);
@@ -197,6 +229,8 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
 
     res.once("finish", ended);
     res.once("close", ended);
+    socket?.once("close", ended);
+    socket?.once("error", ended);
   }
 
   const middleware: express.RequestHandler = (req, res, next) => {
@@ -245,7 +279,7 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
       if (remaining <= 0) subjectCounts.delete(key);
       else subjectCounts.set(key, remaining);
     };
-    watch(res, release);
+    watch(req, res, release);
     next();
   };
 

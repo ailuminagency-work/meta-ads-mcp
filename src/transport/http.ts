@@ -45,6 +45,7 @@ import {
   mcpAuthRouter,
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import { oauthProvider } from "../auth/oauth-provider.js";
 import { assertApiKeyStrength, isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { hashPii, requestContext } from "../auth/token-store.js";
@@ -56,6 +57,7 @@ import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-rou
 import { clientIpKey } from "../utils/client-ip-key.js";
 import { resolveTrustProxyHops } from "./trust-proxy.js";
 import { WindowCounter } from "../utils/window-counter.js";
+import { ApiKeyLockout, API_KEY_FAILURE_WINDOW_MS } from "./api-key-lockout.js";
 import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
 import {
   authorizeExactPathOnly,
@@ -403,47 +405,72 @@ function sendMcpAuthRequired(
   });
 }
 
-const API_KEY_MAX_FAILURES = 20;
-const API_KEY_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+function bearerTokenOf(req: express.Request): string | undefined {
+  const [type, token] = (req.headers.authorization ?? "").split(" ");
+  return type?.toLowerCase() === "bearer" && token ? token : undefined;
+}
 
 function createCombinedAuthMiddleware(
   oauthMiddleware: express.RequestHandler,
+  oauthVerifier: OAuthTokenVerifier,
+  lockout: ApiKeyLockout = new ApiKeyLockout(),
 ): express.RequestHandler {
-  const failures = new WindowCounter({ limit: API_KEY_MAX_FAILURES, windowMs: API_KEY_FAILURE_WINDOW_MS });
-  return (req, res, next) => {
+  const isValidOAuthBearer = async (req: express.Request): Promise<boolean> => {
+    const token = bearerTokenOf(req);
+    if (!token) return false;
+    try {
+      await oauthVerifier.verifyAccessToken(token);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const refuseLocked = (req: express.Request, res: express.Response, client: string): void => {
+    logger.warn({ ip: client, path: req.path }, "Too many failed /mcp credentials");
+    res.setHeader("Retry-After", String(Math.ceil(API_KEY_FAILURE_WINDOW_MS / 1000)));
+    res.status(429).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Too many failed attempts, please try again later" },
+      id: null,
+    });
+  };
+
+  return async (req, res, next) => {
     if (!isApiKeyConfigured()) {
       oauthMiddleware(req, res, next);
       return;
     }
 
-    // The presented key is checked first: a valid key is never locked out, only failures are counted and blocked.
+    const client = clientIpKey(req.ip ?? req.socket.remoteAddress);
     const presented = extractApiKey(req);
-    if (presented && validateApiKey(presented)) {
+    const keyValid = presented !== undefined && validateApiKey(presented);
+
+    if (lockout.isLocked(client)) {
+      // The lock covers the API-key credential only. A request with no credential still gets the
+      // challenge and a valid OAuth bearer is served. The bearer is probed whatever the key check
+      // said, so a right key and a wrong one are refused after the same work and the same answer.
+      if (presented === undefined && !req.headers.authorization) {
+        oauthMiddleware(req, res, next);
+        return;
+      }
+      if (await isValidOAuthBearer(req)) {
+        oauthMiddleware(req, res, next);
+        return;
+      }
+      if (keyValid && lockout.isKnownGood(client)) {
+        lockout.recordSuccess(client);
+        next();
+        return;
+      }
+      refuseLocked(req, res, client);
+      return;
+    }
+
+    if (keyValid) {
+      lockout.recordSuccess(client);
       logger.debug("Authenticated via API key");
       next();
-      return;
-    }
-
-    const client = clientIpKey(req.ip ?? req.socket.remoteAddress);
-    if (failures.isBlocked(client)) {
-      logger.warn({ ip: client, path: req.path }, "Too many failed /mcp credentials");
-      res.setHeader("Retry-After", String(Math.ceil(API_KEY_FAILURE_WINDOW_MS / 1000)));
-      res.status(429).json({
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "Too many failed attempts, please try again later" },
-        id: null,
-      });
-      return;
-    }
-
-    const xApiKey = req.headers["x-api-key"];
-    if (typeof xApiKey === "string" && xApiKey) {
-      failures.record(client);
-      res.status(401).json({
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "Invalid API key" },
-        id: null,
-      });
       return;
     }
 
@@ -452,9 +479,23 @@ function createCombinedAuthMiddleware(
     // with no credential at all is just the client asking how to authenticate.
     if (req.headers.authorization) {
       res.once("finish", () => {
-        if (res.statusCode === 401) failures.record(client);
+        if (res.statusCode === 401) lockout.recordFailure(client);
       });
+      oauthMiddleware(req, res, next);
+      return;
     }
+
+    const xApiKey = req.headers["x-api-key"];
+    if (typeof xApiKey === "string" && xApiKey) {
+      lockout.recordFailure(client);
+      res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Invalid API key" },
+        id: null,
+      });
+      return;
+    }
+
     oauthMiddleware(req, res, next);
   };
 }
@@ -962,15 +1003,26 @@ export async function startHttpTransport(
     }),
   );
 
+  const oauthVerifier: OAuthTokenVerifier = config.multiTenantEnabled ? oauthProvider : rejectEveryToken;
   const oauthBearerAuth = requireBearerAuth({
-    verifier: config.multiTenantEnabled ? oauthProvider : rejectEveryToken,
+    verifier: oauthVerifier,
     resourceMetadataUrl: getMcpProtectedResourceMetadataUrl(serverUrl),
     expectedResource: new URL("/mcp", serverUrl),
   });
-  const auth = createCombinedAuthMiddleware(oauthBearerAuth);
+  const auth = createCombinedAuthMiddleware(oauthBearerAuth, oauthVerifier);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
-  const mcpAdmission = createMcpAdmission(readMcpAdmissionConfig());
+  const admissionConfig = readMcpAdmissionConfig();
+  logger.info(
+    {
+      maxInFlight: admissionConfig.maxInFlight,
+      perSubjectInFlight: admissionConfig.perSubjectInFlight,
+      perSubjectPerMinute: admissionConfig.perSubjectPerWindow,
+      requestTimeoutSeconds: (admissionConfig.requestTimeoutMs ?? 0) / 1000,
+    },
+    "MCP admission limits",
+  );
+  const mcpAdmission = createMcpAdmission(admissionConfig);
 
   app.use("/mcp", mcpOriginGuard(corsAllowedOrigins));
   app.post("/mcp", auth, mcpAdmission, metaTokenMw, mcpJsonParser(), async (req, res) => {

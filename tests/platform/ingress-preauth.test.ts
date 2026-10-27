@@ -383,6 +383,21 @@ describe.each(adapters.filter((adapter) => adapter.serialised))("$name ingress k
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(await signedPost(port, adapter, Buffer.from("{}"))).toBe(400);
   });
+
+  it("does not consume a delivery that was refused with 429 because the slot was busy: the sender can send that delivery again (G3D-03)", async () => {
+    const port = await listen(adapter.build(true, stage));
+    const hold = stalled(port, signedHead(adapter, 1_000), 10, 600);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const set = captured(adapter, Buffer.from("{}"), "synthetic-busy-delivery");
+    expect(await sendCaptured(port, adapter, set)).toBe(429);
+
+    expect((await hold).status).toBe(-1);
+    for (const socket of sockets.splice(0)) socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(await sendCaptured(port, adapter, set)).toBe(400);
+    expect(await sendCaptured(port, adapter, set)).toBe(409);
+  });
 });
 
 describe("media ingress no longer buffers for callers it has not authenticated (G3-02)", () => {
@@ -453,14 +468,27 @@ describe.each(adapters)("$name ingress refuses a replayed header set (G3R-02)", 
     expect((await original).status).toBe(-1);
   });
 
-  it("lets the sender retry the same delivery after an attempt that failed its body signature", async () => {
+  it("keeps the delivery consumed after an attempt that failed its body signature: the same headers get 409, a new delivery id passes (G3D-03)", async () => {
     const port = await listen(adapter.build(true, stage));
     const set = captured(adapter, Buffer.from("{}"));
     expect(await sendCaptured(port, adapter, { ...set, signature: "sha256=" + "0".repeat(64) })).toBe(401);
-    expect(await sendCaptured(port, adapter, set)).toBe(400);
+
+    expect(await sendCaptured(port, adapter, set)).toBe(409);
+    expect(await sendCaptured(port, adapter, set)).toBe(409);
+    expect(await signedPost(port, adapter, Buffer.from("{}"))).toBe(400);
   });
 
-  it("lets the sender retry the same delivery after an upload that was aborted", async () => {
+  it("keeps the delivery consumed when the replay carried a junk body of the declared length (G3D-03)", async () => {
+    const port = await listen(adapter.build(true, stage));
+    const set = captured(adapter, Buffer.from("{}"));
+    expect(await sendCaptured(port, adapter, set, Buffer.from("xx"))).toBe(401);
+
+    expect(await sendCaptured(port, adapter, set, Buffer.from("xx"))).toBe(409);
+    expect(await sendCaptured(port, adapter, set)).toBe(409);
+    expect(stage).not.toHaveBeenCalled();
+  });
+
+  it("keeps the delivery consumed after an upload that was cut off, so the replay neither buffers nor holds the slot (G3D-03)", async () => {
     const port = await listen(adapter.build(true, stage));
     const set = captured(adapter, Buffer.from("{}"));
     const head = { path: `/ingress/${adapter.profileId}`, contentLength: 1_000, timestamp: set.timestamp, delivery: set.delivery, signature: set.signature, preauth: adapter.preauth(set.timestamp, set.delivery, 1_000) };
@@ -468,7 +496,38 @@ describe.each(adapters)("$name ingress refuses a replayed header set (G3R-02)", 
     for (const socket of sockets.splice(0)) socket.destroy();
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    expect(await sendCaptured(port, adapter, set)).toBe(400);
+    expect(await sendCaptured(port, adapter, set)).toBe(409);
+    const again = await stalled(port, head, 10, 800);
+    expect(again.status).toBe(409);
+    expect(again.ms).toBeLessThan(500);
+  });
+
+  it("does not let one captured header set hold the slot in a loop of dripped bodies (G3D-03)", async () => {
+    const port = await listen(adapter.build(true, stage));
+    const set = captured(adapter, Buffer.from("{}"));
+    const head = { path: `/ingress/${adapter.profileId}`, contentLength: 1_000, timestamp: set.timestamp, delivery: set.delivery, signature: set.signature, preauth: adapter.preauth(set.timestamp, set.delivery, 1_000) };
+
+    const results: number[] = [];
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      results.push((await stalled(port, head, 10, 300)).status);
+      for (const socket of sockets.splice(0)) socket.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await signedPost(port, adapter, Buffer.from("{}"))).toBe(400);
+    }
+    expect(results).toEqual([-1, 409, 409]);
+  });
+});
+
+describe("DeliveryReplayCache after a settled outcome (G3D-03)", () => {
+  it("a settled delivery stays claimed for the whole window, not just while it is in flight", () => {
+    let now = 1_700_000_000_000;
+    const store = new DeliveryReplayCache({ ttlMs: 600_000, now: () => now });
+    expect(store.claim("p", "d1")).toBe(true);
+    store.settle("p", "d1");
+    now += 599_000;
+    expect(store.claim("p", "d1")).toBe(false);
+    now += 2_000;
+    expect(store.claim("p", "d1")).toBe(true);
   });
 });
 
