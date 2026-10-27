@@ -43,9 +43,15 @@ interface ThrottleEvent {
   at: number;
 }
 
+export const MAX_THROTTLE_EVENT_KEYS = 5_000;
+const SWEEP_INTERVAL_MS = 60_000;
+
 export class CircuitBreaker {
   private readonly circuits = new Map<string, CircuitState>();
   private readonly throttleEvents = new Map<string, ThrottleEvent[]>();
+  private lastSweepMs = 0;
+
+  constructor(private readonly maxThrottleEventKeys = MAX_THROTTLE_EVENT_KEYS) {}
 
   /**
    * Throw if the circuit for this context is currently open.
@@ -77,6 +83,7 @@ export class CircuitBreaker {
   ): void {
     const now = Date.now();
     const key = circuitKey(context);
+    this.sweep(now);
 
     if (classification.category === "abuse_signal") {
       this.openCircuit(key, {
@@ -121,6 +128,7 @@ export class CircuitBreaker {
       (e) => now - e.at < REPEATED_THROTTLE_WINDOW_MS,
     );
     recent.push({ at: now });
+    this.throttleEvents.delete(key);
     this.throttleEvents.set(key, recent);
 
     if (recent.length >= REPEATED_THROTTLE_THRESHOLD) {
@@ -147,6 +155,35 @@ export class CircuitBreaker {
   reset(): void {
     this.circuits.clear();
     this.throttleEvents.clear();
+    this.lastSweepMs = 0;
+  }
+
+  /** Tracked-state sizes, so memory growth is observable. */
+  size(): { circuits: number; throttleEventKeys: number } {
+    return { circuits: this.circuits.size, throttleEventKeys: this.throttleEvents.size };
+  }
+
+  /**
+   * Drops expired circuits and throttle counters that fell out of the counting
+   * window. An open circuit is never dropped: it is the hard stop.
+   */
+  private sweep(now: number): void {
+    if (now - this.lastSweepMs < SWEEP_INTERVAL_MS && this.throttleEvents.size <= this.maxThrottleEventKeys) return;
+    this.lastSweepMs = now;
+    for (const [key, circuit] of this.circuits) {
+      if (circuit.openUntil <= now) this.circuits.delete(key);
+    }
+    for (const [key, events] of this.throttleEvents) {
+      const recent = events.filter((event) => now - event.at < REPEATED_THROTTLE_WINDOW_MS);
+      if (recent.length === 0) this.throttleEvents.delete(key);
+      else if (recent.length !== events.length) this.throttleEvents.set(key, recent);
+    }
+    if (this.throttleEvents.size <= this.maxThrottleEventKeys) return;
+    const target = Math.floor(this.maxThrottleEventKeys * 0.9);
+    for (const key of this.throttleEvents.keys()) {
+      if (this.throttleEvents.size <= target) break;
+      this.throttleEvents.delete(key);
+    }
   }
 
   private openCircuit(key: string, state: CircuitState): void {

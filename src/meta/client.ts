@@ -329,6 +329,7 @@ export class MetaApiClient {
           throw lastError;
         }
 
+        this.writePacer.learnFromResponse(tokenHash, accountId, path, body);
         const projected=projectLegacyReadResponse(path,url,body) as T;
         const requestUrl=new URL(url);
         const scope=platformEnabled()?getExecutionScope():undefined;

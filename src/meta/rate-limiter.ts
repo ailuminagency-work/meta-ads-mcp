@@ -69,11 +69,22 @@ interface ReachThrottleHeader {
  *  - Otherwise fall back to a usage-based staircase (linear 75–95 %,
  *    exponential above 95 %) so we self-slow before Meta throttles us.
  */
+export const USAGE_BUCKET_TTL_MS = 60 * 60 * 1000;
+export const MAX_USAGE_BUCKETS = 5_000;
+const SWEEP_INTERVAL_MS = 60_000;
+
 export class RateLimiter {
   private readonly buckets = new Map<string, UsageBucket>();
+  private lastSweepMs = 0;
+
+  constructor(
+    private readonly bucketTtlMs = USAGE_BUCKET_TTL_MS,
+    private readonly maxBuckets = MAX_USAGE_BUCKETS,
+  ) {}
 
   updateFromHeaders(headers: Headers, context: RequestContext): void {
     const now = Date.now();
+    this.sweep(now);
 
     // ── X-App-Usage ──────────────────────────────────────
     const appUsage = headers.get("x-app-usage");
@@ -207,6 +218,7 @@ export class RateLimiter {
     const scope = context.accountId ?? "_";
     const key = bucketKey("local_retry", context.tokenHash, scope, type);
     const now = Date.now();
+    this.sweep(now);
     this.buckets.set(key, {
       kind: "local_retry",
       key,
@@ -227,6 +239,7 @@ export class RateLimiter {
     let maxDelay = 0;
 
     for (const bucket of this.buckets.values()) {
+      if (this.isExpired(bucket, now)) continue;
       if (!this.bucketAppliesTo(bucket, context)) continue;
 
       const explicitWait = Math.max(
@@ -265,12 +278,38 @@ export class RateLimiter {
    * Snapshot for observability / the `ads_rate_status` tool.
    */
   snapshot(): UsageBucket[] {
+    this.sweep(Date.now());
     return Array.from(this.buckets.values()).map((b) => ({ ...b }));
   }
 
   /** Clear state — used by tests. */
   reset(): void {
     this.buckets.clear();
+    this.lastSweepMs = 0;
+  }
+
+  /**
+   * A reading older than Meta's rolling one-hour window (or than its own
+   * regain-access hint, if that is longer) says nothing about current load, so
+   * it must neither keep delaying requests nor stay in memory.
+   */
+  private isExpired(bucket: UsageBucket, now: number): boolean {
+    return now - bucket.updatedAt > Math.max(this.bucketTtlMs, bucket.estimatedTimeToRegainAccessMs);
+  }
+
+  private sweep(now: number): void {
+    if (now - this.lastSweepMs < SWEEP_INTERVAL_MS && this.buckets.size <= this.maxBuckets) return;
+    this.lastSweepMs = now;
+    for (const [key, bucket] of this.buckets) {
+      if (this.isExpired(bucket, now)) this.buckets.delete(key);
+    }
+    if (this.buckets.size <= this.maxBuckets) return;
+    const target = Math.floor(this.maxBuckets * 0.9);
+    const oldestFirst = [...this.buckets.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+    for (const [key] of oldestFirst) {
+      if (this.buckets.size <= target) break;
+      this.buckets.delete(key);
+    }
   }
 
   private writeBucket(bucket: UsageBucket): void {
