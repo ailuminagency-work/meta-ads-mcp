@@ -34,12 +34,21 @@ export function untrustedText(value: unknown, max = 200): string {
 
 /** Rendered lines built from untrustedText values, between the fences that mark them as data and not instructions. */
 export function fenceBlock(lines: readonly string[]): string {
-  return [UNTRUSTED_FENCE_OPEN, ...lines, UNTRUSTED_FENCE_CLOSE].join("\n");
+  return [UNTRUSTED_FENCE_OPEN, ...lines.map(withoutExoticLineBreaks), UNTRUSTED_FENCE_CLOSE].join("\n");
 }
 
-/** Pretty JSON for use inside a fence: JSON escapes line feeds in strings, and the two Unicode line separators are escaped here. */
+// NEL, line separator and paragraph separator: line breaks to a reader that splits on Unicode, which a fence line cannot be allowed to contain.
+const EXOTIC_LINE_BREAKS = /[\u0085\u2028\u2029]/g;
+const withoutExoticLineBreaks = (line: string): string => line.replace(EXOTIC_LINE_BREAKS, " ");
+
+/**
+ * Pretty JSON for use inside a fence. JSON.stringify escapes the C0 controls
+ * but leaves DEL, the C1 controls (U+0085 NEL among them) and the Unicode line
+ * and paragraph separators raw; they are written as \uXXXX escapes here, which
+ * keeps the document valid and the data intact.
+ */
 export function untrustedJson(value: unknown): string {
-  return (JSON.stringify(value, null, 2) ?? "").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  return (JSON.stringify(value, null, 2) ?? "").replace(/[\u007f-\u009f\u2028\u2029]/g, (char) => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
 /** The structured copy of a result, which carries the same remote text as JSON strings, between the same fences. */
