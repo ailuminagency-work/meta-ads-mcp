@@ -90,6 +90,20 @@ describe("a deployment without a Meta login does not hand out OAuth tokens", () 
     expect((await fetch(`${origin}/revoke`, { method: "POST" })).status).toBe(404);
   });
 
+  it("does not publish OAuth discovery documents that point at endpoints which are not there (G1R-05)", async () => {
+    const origin = await apiKeyServer();
+    for (const path of [
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-authorization-server/mcp",
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+    ]) {
+      const response = await fetch(origin + path);
+      expect(response.status, path).toBe(404);
+      expect(await response.json()).toMatchObject({ error: "oauth_unavailable" });
+    }
+  });
+
   it("keeps the API key as the way in, and refuses wrong keys and bearer tokens", async () => {
     const origin = await apiKeyServer();
 
@@ -99,8 +113,11 @@ describe("a deployment without a Meta login does not hand out OAuth tokens", () 
     expect((await mcp(origin, { authorization: "Bearer not-the-key" })).status).toBe(401);
   });
 
-  it("still serves the OAuth endpoints, with a login in front of them, when the Meta app is configured", async () => {
+  it("still serves the OAuth endpoints and their discovery documents, with a login in front of them, when the Meta app is configured", async () => {
     server = await startAuthServer();
+    for (const path of ["/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource/mcp"]) {
+      expect((await fetch(server.origin + path)).status, path).toBe(200);
+    }
     const params = authorizeParams({ clientId: "any-client", challenge: pkce().challenge });
     const anonymous = await rawRequest(server.origin, { target: `/authorize?${params}` });
     expect(anonymous.status).not.toBe(404);

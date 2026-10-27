@@ -14,7 +14,7 @@ afterEach(() => {
   resetOAuthProviderForTests();
 });
 
-it("advertises the canonical resource metadata on missing and invalid MCP credentials, and serves no OAuth endpoints without a Meta login", async () => {
+it("answers missing and invalid MCP credentials with the canonical 401 challenge, and serves no OAuth endpoints or discovery documents without a Meta login", async () => {
   for (const [key, value] of Object.entries({
     NODE_ENV: "production",
     DEPLOYMENT_MODE: "legacy",
@@ -41,12 +41,11 @@ it("advertises the canonical resource metadata on missing and invalid MCP creden
 
   try {
     const metadataPath = "/.well-known/oauth-protected-resource/mcp";
-    const metadata = await fetch(origin + metadataPath, { headers: { "x-forwarded-proto": "https" } });
-    expect(metadata.status).toBe(200);
-    expect(await metadata.json()).toMatchObject({
-      resource: "https://agency.example.com/mcp",
-      authorization_servers: ["https://agency.example.com/"],
-    });
+    for (const path of [metadataPath, "/.well-known/oauth-authorization-server"]) {
+      const metadata = await fetch(origin + path, { headers: { "x-forwarded-proto": "https" } });
+      expect(metadata.status, path).toBe(404);
+      expect(await metadata.json()).toMatchObject({ error: "oauth_unavailable" });
+    }
 
     for (const method of ["GET", "POST", "DELETE"]) {
       for (const credential of [undefined, "invalid-test-credential"]) {
