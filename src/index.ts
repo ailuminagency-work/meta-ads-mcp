@@ -53,7 +53,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  logger.fatal({ error }, "Failed to start server");
+main().catch((error: unknown) => {
+  // Pino serializes a bare Error inconsistently across transports (Railway
+  // previously showed this as `error:{}`). Keep startup diagnostics useful
+  // while limiting the payload to safe, non-secret fields. Validation errors
+  // in this path contain only configuration names and sanitized reasons.
+  const startupError = error instanceof Error
+    ? { name: error.name, message: error.message }
+    : { name: "UnknownError", message: String(error) };
+  logger.fatal({ startupError }, "Failed to start server");
   process.exit(1);
 });

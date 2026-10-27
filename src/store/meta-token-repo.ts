@@ -264,7 +264,9 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
       await this.clearDefaults(input.fbUserId);
     } else {
       const existingDefault = await this.getDefaultTokenName(input.fbUserId);
-      if (!existingDefault) {
+      // set() replaces the doc, so re-saving the current default under its own
+      // name must keep the flag or the user is left with no default token.
+      if (!existingDefault || existingDefault === input.name) {
         doc.isDefault = true;
       }
     }
@@ -397,7 +399,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
       }
     } else {
       const existingDefault = await this.getDefaultTokenName(input.fbUserId);
-      if (!existingDefault) {
+      if (!existingDefault || existingDefault === input.name) {
         isDefault = true;
       }
     }

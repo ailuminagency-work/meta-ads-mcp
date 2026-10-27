@@ -315,7 +315,7 @@ export class MetaApiClient {
       }
     }
 
-    logger.error({ error: lastError, path }, "All retries exhausted");
+    logger.error({ err: lastError, path }, "All retries exhausted");
     throw lastError ?? new Error("Request failed after retries");
   }
 
