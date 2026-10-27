@@ -52,6 +52,80 @@ describe("client registration redirect policy: legitimate clients", () => {
     for (const uri of chatgpt) expect(checkRedirectUri(uri), uri).toEqual({ ok: true });
   });
 
+  it("accepts only the two ChatGPT connector callback shapes when that preset is on, and not a Custom GPT action callback", () => {
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    for (const uri of [
+      "https://chatgpt.com/connector_platform_oauth_redirect",
+      "https://chatgpt.com/connector/oauth/synthetic-callback_ID-01",
+    ]) {
+      expect(checkRedirectUri(uri), uri).toEqual({ ok: true });
+    }
+    for (const uri of [
+      "https://chatgpt.com/aip/g-0123456789abcdef/oauth/callback",
+      "https://chat.openai.com/aip/g-0123456789abcdef/oauth/callback",
+      "https://chatgpt.com/connector_platform_oauth_redirect/",
+      "https://chatgpt.com/connector_platform_oauth_redirect?x=1",
+      "https://chatgpt.com/connector/oauth/",
+      "https://chatgpt.com/connector/oauth/a/b",
+      "https://chatgpt.com/connector/oauth/a?b=c",
+      "https://chatgpt.com/connector/oauth/%2e%2e",
+      "https://chatgpt.com/Connector/oauth/abc",
+      "https://www.chatgpt.com/connector/oauth/abc",
+      "https://chatgpt.com.evil.example/connector/oauth/abc",
+      `https://chatgpt.com/connector/oauth/${"a".repeat(129)}`,
+    ]) {
+      expect(checkRedirectUri(uri).ok, uri).toBe(false);
+    }
+  });
+
+  it("keeps the ChatGPT preset off unless the value is exactly true", () => {
+    for (const value of ["", "TRUE", "1", "yes", "false", "true "]) {
+      vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", value);
+      const verdict = checkRedirectUri("https://chatgpt.com/connector_platform_oauth_redirect");
+      expect(verdict.ok, JSON.stringify(value)).toBe(value.trim() === "true");
+    }
+  });
+
+  it("accepts an exact operator-listed https URI and nothing near it", () => {
+    vi.stubEnv(
+      "OAUTH_EXTRA_ALLOWED_REDIRECT_URIS",
+      "https://platform.openai.com/apps-manage/oauth, http://insecure.example/cb,https://other.example/*",
+    );
+    expect(checkRedirectUri("https://platform.openai.com/apps-manage/oauth")).toEqual({ ok: true });
+    for (const uri of [
+      "https://platform.openai.com/apps-manage/oauth/",
+      "https://platform.openai.com/apps-manage/oauth2",
+      "https://platform.openai.com/apps-manage",
+      "https://platform.openai.com/",
+      "https://other.example/cb",
+      "http://insecure.example/cb",
+    ]) {
+      expect(checkRedirectUri(uri).ok, uri).toBe(false);
+    }
+  });
+
+  it("does not let an exact URI entry widen the pinned Claude callback or the structural checks", () => {
+    vi.stubEnv(
+      "OAUTH_EXTRA_ALLOWED_REDIRECT_URIS",
+      "https://claude.ai/other,https://example.com:8443/cb,https://user@example.com/cb,https://example.com/a#frag",
+    );
+    for (const uri of [
+      "https://claude.ai/other",
+      "https://example.com:8443/cb",
+      "https://user@example.com/cb",
+      "https://example.com/a#frag",
+    ]) {
+      expect(checkRedirectUri(uri).ok, uri).toBe(false);
+    }
+  });
+
+  it("a stored ChatGPT client stays usable under the preset and is refused without it", () => {
+    const stored = ["https://chatgpt.com/connector_platform_oauth_redirect"];
+    expect(checkRedirectUris(stored).ok).toBe(false);
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    expect(checkRedirectUris(stored)).toEqual({ ok: true });
+  });
+
   it("accepts a mixed registration when every URI is acceptable", () => {
     expect(
       checkRedirectUris(["http://127.0.0.1:33418/", "vscode://vscode.github-authentication/did-authenticate"]),

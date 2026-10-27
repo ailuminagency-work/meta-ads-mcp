@@ -21,6 +21,12 @@ const PINNED_REDIRECT_PATHS: Readonly<Record<string, string>> = {
   "claude.ai": "/api/mcp/auth_callback",
   "claude.com": "/api/mcp/auth_callback",
 };
+// ChatGPT's MCP connector callbacks (OpenAI's Apps SDK authentication guide): a fixed path, or the per-app
+// /connector/oauth/<callback id>. A Custom GPT Action callback (/aip/g-<id>/oauth/callback) is neither, so
+// opting into these two shapes does not trust the whole host the way OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS does.
+const CHATGPT_HOST = "chatgpt.com";
+const CHATGPT_FIXED_PATH = "/connector_platform_oauth_redirect";
+const CHATGPT_APP_PATH = /^\/connector\/oauth\/[A-Za-z0-9_-]{1,128}$/;
 const ALLOWED_CUSTOM_SCHEMES: readonly string[] = ["cursor", "vscode", "vscode-insiders"];
 // The application a custom-scheme redirect is delivered to is its host
 // ("cursor://<host>/..."). Any application registered for the scheme on the
@@ -72,6 +78,34 @@ function extraRedirectHosts(env: NodeJS.ProcessEnv): string[] {
   cachedExtraHostsSource = source;
   cachedExtraHosts = hosts;
   return hosts;
+}
+
+let cachedExtraUrisSource: string | undefined;
+let cachedExtraUris: string[] = [];
+
+function extraRedirectUris(env: NodeJS.ProcessEnv): string[] {
+  const source = env.OAUTH_EXTRA_ALLOWED_REDIRECT_URIS ?? "";
+  if (source === cachedExtraUrisSource) return cachedExtraUris;
+  const uris: string[] = [];
+  for (const entry of source.split(",")) {
+    const uri = entry.trim();
+    if (!uri) continue;
+    if (!uri.startsWith("https://")) {
+      logger.warn(
+        { entryLength: uri.length },
+        "Ignoring OAUTH_EXTRA_ALLOWED_REDIRECT_URIS entry: only exact https URIs are accepted",
+      );
+      continue;
+    }
+    uris.push(uri);
+  }
+  cachedExtraUrisSource = source;
+  cachedExtraUris = uris;
+  return uris;
+}
+
+function chatGptConnectorRedirectsEnabled(env: NodeJS.ProcessEnv): boolean {
+  return env.OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS?.trim() === "true";
 }
 
 let cachedExtraAppHostsSource: string | undefined;
@@ -161,10 +195,18 @@ export function checkRedirectUri(
       }
       return { ok: true };
     }
-    if (!extraRedirectHosts(env).includes(url.hostname)) {
-      return { ok: false, reason: "host is not an allowed redirect host" };
+    if (extraRedirectUris(env).includes(uri) || extraRedirectHosts(env).includes(url.hostname)) {
+      return { ok: true };
     }
-    return { ok: true };
+    if (url.hostname === CHATGPT_HOST && chatGptConnectorRedirectsEnabled(env)) {
+      const path = uri.slice(uri.indexOf("://") + 3 + authority.length);
+      if (path === CHATGPT_FIXED_PATH || CHATGPT_APP_PATH.test(path)) return { ok: true };
+      return {
+        ok: false,
+        reason: "must be a ChatGPT connector callback (/connector_platform_oauth_redirect or /connector/oauth/<id>)",
+      };
+    }
+    return { ok: false, reason: "host is not an allowed redirect host" };
   }
 
   if (url.protocol === "http:") {
