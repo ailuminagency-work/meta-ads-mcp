@@ -85,6 +85,10 @@ export function normalizeSafeDiff(parameters: Record<string, unknown>): SafeChan
   }
   visit(parameters,0); return result;
 }
+/** Tools whose only effect is to persist a proposal for a later write. Their plans are READ class, so the class rule cannot stop them; a deployment with platform writes disabled has no way to approve or run the proposal, so none is stored. */
+const PREPARATION_ONLY_TOOLS: readonly string[] = Object.freeze(["meta_plan_tracking_change"]);
+/** Same definition as runtime.platformWritesEnabled, which this module cannot import without a load-order cycle; tests/platform/policy-preparation-tools.test.ts pins the two together. */
+const platformWritesEnabled = (): boolean => process.env.LUMIN_PLATFORM_WRITES_ENABLED === "true" && process.env.AGENCY_WRITES_ENABLED === "true";
 export interface PolicyDecision { decision: "ALLOW" | "DENY" | "REQUIRE_CONFIRMATION"; reason: string; classes: OperationClass[] }
 export type PolicyGuard = (ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot) => void;
 const policyGuards = new Map<string, PolicyGuard>();
@@ -94,6 +98,7 @@ export function unregisterPolicyGuard(name: string): void { policyGuards.delete(
 export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot, options: { writesEnabled: boolean }): PolicyDecision {
   const classes = classifyPlan(plan);
   const deny = (reason: string): PolicyDecision => ({decision: "DENY", reason, classes});
+  if(PREPARATION_ONLY_TOOLS.includes(ctx.tool) && !platformWritesEnabled()) return deny("DISABLED_BY_LUMIN_POLICY");
   try{assertBusinessOwnerScope(snapshot);}catch(error){if(error instanceof PlatformDenied)return deny(error.reason);throw error;}
   if(["messenger_send_audio","messenger_send_file","whatsapp_platform_send_audio","whatsapp_platform_send_document"].includes(ctx.tool)&&!attachmentEnabled())return deny("ATTACHMENT_DISABLED_BY_DEPLOYMENT");
   if(isPublishingVideoDraftTool(ctx.tool)&&!publishingVideoEnabled())return deny("PUBLISHING_VIDEO_DISABLED_BY_DEPLOYMENT");
