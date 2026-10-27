@@ -4,6 +4,15 @@ import { authCodeExpireTime, withoutExpireTime } from "./retention.js";
 
 const COLLECTION = "mcp_auth_codes";
 
+// The server issues 32 random bytes as hex. Anything else is not one of its
+// codes, and must never be used as a document id: "a/b/c" addresses a nested
+// document and ".." or "__x__" are not valid ids at all.
+const CODE_SHAPE = /^[0-9a-f]{64}$/;
+
+export function isAuthorizationCodeShape(code: unknown): code is string {
+  return typeof code === "string" && CODE_SHAPE.test(code);
+}
+
 export interface AuthCodeEntry {
   clientId: string;
   codeChallenge: string;
@@ -33,17 +42,20 @@ export class FirestoreAuthCodesStore implements AuthCodesStore {
   }
 
   async set(code: string, entry: AuthCodeEntry): Promise<void> {
+    if (!isAuthorizationCodeShape(code)) throw new Error("Refusing to store an authorization code of an unexpected shape");
     const stored = { ...entry, expireTime: authCodeExpireTime(entry) };
     if(entry.fbUserId)await commitLegacyPersonalWrite(getFirestore(),entry.fbUserId,this.collection.doc(code),stored);else await this.collection.doc(code).set(stored);
   }
 
   async get(code: string): Promise<AuthCodeEntry | undefined> {
+    if (!isAuthorizationCodeShape(code)) return undefined;
     const snap = await this.collection.doc(code).get();
     if (!snap.exists) return undefined;
     return withoutExpireTime(snap.data() as AuthCodeEntry);
   }
 
   async consume(code: string): Promise<AuthCodeEntry | undefined> {
+    if (!isAuthorizationCodeShape(code)) return undefined;
     const ref = this.collection.doc(code);
     return getFirestore().runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -54,6 +66,7 @@ export class FirestoreAuthCodesStore implements AuthCodesStore {
   }
 
   async delete(code: string): Promise<void> {
+    if (!isAuthorizationCodeShape(code)) return;
     await this.collection.doc(code).delete();
   }
 }

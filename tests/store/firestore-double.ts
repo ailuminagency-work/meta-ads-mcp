@@ -10,6 +10,8 @@ export interface FirestoreDouble {
   db: Firestore;
   /** Every stored document keyed by its full path, for assertions and for seeding legacy data. */
   data: Map<string, Data>;
+  /** Every path handed to `collection.doc(...)`, in order, so a test can prove a hostile id never reached the backend. */
+  touched: string[];
 }
 
 /**
@@ -19,6 +21,7 @@ export interface FirestoreDouble {
  */
 export function createFirestoreDouble(options: { writeLatencyMs?: number } = {}): FirestoreDouble {
   const data = new Map<string, Data>();
+  const touched: string[] = [];
   const delay = () =>
     options.writeLatencyMs ? new Promise<void>((resolve) => setTimeout(resolve, options.writeLatencyMs)) : undefined;
   let transactionTail: Promise<unknown> = Promise.resolve();
@@ -93,7 +96,10 @@ export function createFirestoreDouble(options: { writeLatencyMs?: number } = {})
       ...query(path),
       id: lastSegment(path),
       path,
-      doc: (id: string) => docRef(`${path}/${id}`),
+      doc: (id: string) => {
+        touched.push(`${path}/${id}`);
+        return docRef(`${path}/${id}`);
+      },
     };
   }
 
@@ -143,5 +149,5 @@ export function createFirestoreDouble(options: { writeLatencyMs?: number } = {})
     },
   };
 
-  return { db: db as unknown as Firestore, data };
+  return { db: db as unknown as Firestore, data, touched };
 }

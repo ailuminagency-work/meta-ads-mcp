@@ -11,6 +11,14 @@ import {
 
 const COLLECTION = "mcp_clients";
 
+// Registration issues crypto.randomUUID(). Any other client_id, such as "a/b/c"
+// or "..", is not one of ours and must not become a document path.
+const CLIENT_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function isClientIdShape(clientId: unknown): clientId is string {
+  return typeof clientId === "string" && CLIENT_ID_SHAPE.test(clientId);
+}
+
 // A client stored before the registration policy existed may still carry a
 // redirect URI the policy now rejects. Treating it as unknown keeps such a
 // client from receiving authorization codes.
@@ -51,6 +59,7 @@ export class FirestoreClientsStore implements OAuthRegisteredClientsStore {
   async getClient(
     clientId: string,
   ): Promise<OAuthClientInformationFull | undefined> {
+    if (!isClientIdShape(clientId)) return undefined;
     const ref = this.collection.doc(clientId);
     const snap = await ref.get();
     if (!snap.exists) return undefined;
@@ -73,6 +82,7 @@ export class FirestoreClientsStore implements OAuthRegisteredClientsStore {
     submitted: OAuthClientInformationFull,
   ): Promise<OAuthClientInformationFull> {
     assertRegistrableRedirectUris(submitted.redirect_uris);
+    if (!isClientIdShape(submitted.client_id)) throw new Error("Refusing to register a client_id of an unexpected shape");
     const client = withBoundedName(submitted);
     const stored: StoredClient = {
       ...client,

@@ -16,6 +16,11 @@ vi.mock("../../src/store/firestore.js", () => ({ getFirestore: () => holder.db, 
 
 const DAY_MS = 86_400_000;
 const nowSeconds = () => Math.floor(Date.now() / 1000);
+const codeFor = (name: string): string => createHash("sha256").update(name).digest("hex");
+const uuidFor = (name: string): string => {
+  const h = createHash("sha256").update(name).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+};
 let db: FakeFirestore;
 
 beforeEach(() => {
@@ -29,21 +34,21 @@ describe("authorization code store", () => {
   it("stamps expireTime one hour after the logical expiry and never returns it", async () => {
     const store = new FirestoreAuthCodesStore();
     const value = entry();
-    await store.set("code-1", value);
-    const stored = db.read("mcp_auth_codes/code-1")!;
+    await store.set(codeFor("code-1"), value);
+    const stored = db.read(`mcp_auth_codes/${codeFor("code-1")}`)!;
     expect((stored.expireTime as Date).getTime()).toBe((value.expiresAt + 3600) * 1000);
-    expect(await store.get("code-1")).toEqual(value);
-    expect(await store.consume("code-1")).toEqual(value);
-    expect(await store.consume("code-1")).toBeUndefined();
+    expect(await store.get(codeFor("code-1"))).toEqual(value);
+    expect(await store.consume(codeFor("code-1"))).toEqual(value);
+    expect(await store.consume(codeFor("code-1"))).toBeUndefined();
   });
 
   it("also stamps codes bound to a Facebook user", async () => {
-    await new FirestoreAuthCodesStore().set("code-2", entry({ fbUserId: "synthetic-user" }));
-    expect(db.read("mcp_auth_codes/code-2")!.expireTime).toBeInstanceOf(Date);
+    await new FirestoreAuthCodesStore().set(codeFor("code-2"), entry({ fbUserId: "synthetic-user" }));
+    expect(db.read(`mcp_auth_codes/${codeFor("code-2")}`)!.expireTime).toBeInstanceOf(Date);
   });
 
   it("refuses to persist a code with an invalid expiry instead of writing an undeletable record", async () => {
-    await expect(new FirestoreAuthCodesStore().set("code-3", entry({ expiresAt: Number.NaN }))).rejects.toThrow("RETENTION_EXPIRY_INVALID");
+    await expect(new FirestoreAuthCodesStore().set(codeFor("code-3"), entry({ expiresAt: Number.NaN }))).rejects.toThrow("RETENTION_EXPIRY_INVALID");
     expect(db.docs.size).toBe(0);
   });
 });
@@ -67,42 +72,42 @@ describe("JWT id stores", () => {
 });
 
 describe("registered client store", () => {
-  const client = (): OAuthClientInformationFull => ({ client_id: "client-1", redirect_uris: ["https://claude.ai/api/mcp/auth_callback"], client_name: "Synthetic" } as OAuthClientInformationFull);
+  const client = (): OAuthClientInformationFull => ({ client_id: uuidFor("client-1"), redirect_uris: ["https://claude.ai/api/mcp/auth_callback"], client_name: "Synthetic" } as OAuthClientInformationFull);
 
   it("registers with a 90 day deadline and never hands it back to the SDK", async () => {
     const store = new FirestoreClientsStore();
     const before = Date.now();
     await store.registerClient(client());
-    const deadline = (db.read("mcp_clients/client-1")!.expireTime as Date).getTime();
+    const deadline = (db.read(`mcp_clients/${uuidFor("client-1")}`)!.expireTime as Date).getTime();
     expect(deadline - before).toBeGreaterThanOrEqual(90 * DAY_MS - 1000);
     expect(deadline - before).toBeLessThanOrEqual(90 * DAY_MS + 5000);
-    expect(await store.getClient("client-1")).not.toHaveProperty("expireTime");
+    expect(await store.getClient(uuidFor("client-1"))).not.toHaveProperty("expireTime");
   });
 
   it("does not rewrite a client with a healthy deadline", async () => {
     const store = new FirestoreClientsStore();
     await store.registerClient(client());
     db.writeLog.length = 0;
-    await store.getClient("client-1");
+    await store.getClient(uuidFor("client-1"));
     expect(db.writeLog).toEqual([]);
   });
 
   it("extends a client that is under 45 days from reaping and backfills legacy clients", async () => {
     const store = new FirestoreClientsStore();
-    db.seed("mcp_clients/near", { ...client(), client_id: "near", expireTime: new Date(Date.now() + 10 * DAY_MS) });
-    db.seed("mcp_clients/legacy", { ...client(), client_id: "legacy", registered_at: 1 });
-    await store.getClient("near");
-    await store.getClient("legacy");
-    for (const id of ["near", "legacy"]) {
+    db.seed(`mcp_clients/${uuidFor("near")}`, { ...client(), client_id: uuidFor("near"), expireTime: new Date(Date.now() + 10 * DAY_MS) });
+    db.seed(`mcp_clients/${uuidFor("legacy")}`, { ...client(), client_id: uuidFor("legacy"), registered_at: 1 });
+    await store.getClient(uuidFor("near"));
+    await store.getClient(uuidFor("legacy"));
+    for (const id of [uuidFor("near"), uuidFor("legacy")]) {
       expect((db.read(`mcp_clients/${id}`)!.expireTime as Date).getTime() - Date.now()).toBeGreaterThan(89 * DAY_MS);
     }
   });
 
   it("still serves the client when the extension write fails", async () => {
     const store = new FirestoreClientsStore();
-    db.seed("mcp_clients/client-2", { ...client(), client_id: "client-2" });
+    db.seed(`mcp_clients/${uuidFor("client-2")}`, { ...client(), client_id: uuidFor("client-2") });
     db.failWritesTo = () => true;
-    expect(await store.getClient("client-2")).toMatchObject({ client_id: "client-2" });
+    expect(await store.getClient(uuidFor("client-2"))).toMatchObject({ client_id: uuidFor("client-2") });
   });
 
   it("reports an unknown client as absent", async () => {
@@ -138,66 +143,66 @@ describe("registered client store keeps the registration policy on register and 
   afterEach(() => vi.restoreAllMocks());
 
   it("refuses to register a client whose redirect URI fails the policy and writes nothing", async () => {
-    await expect(new FirestoreClientsStore().registerClient(client("bad", [UNSAFE]))).rejects.toThrow();
+    await expect(new FirestoreClientsStore().registerClient(client(uuidFor("bad"), [UNSAFE]))).rejects.toThrow();
     expect(db.docs.size).toBe(0);
     expect(db.writeLog).toEqual([]);
   });
 
   it("serves a stored client whose redirect URIs fail the policy as unknown and does not extend its deadline", async () => {
     const near = new Date(Date.now() + 10 * DAY_MS);
-    db.seed("mcp_clients/legacy-bad", { ...client("legacy-bad", [UNSAFE]), expireTime: near });
-    db.seed("mcp_clients/legacy-bad-nodeadline", { ...client("legacy-bad-nodeadline", [UNSAFE]) });
+    db.seed(`mcp_clients/${uuidFor("legacy-bad")}`, { ...client(uuidFor("legacy-bad"), [UNSAFE]), expireTime: near });
+    db.seed(`mcp_clients/${uuidFor("legacy-bad-nodeadline")}`, { ...client(uuidFor("legacy-bad-nodeadline"), [UNSAFE]) });
     db.writeLog.length = 0;
     const store = new FirestoreClientsStore();
-    expect(await store.getClient("legacy-bad")).toBeUndefined();
-    expect(await store.getClient("legacy-bad-nodeadline")).toBeUndefined();
+    expect(await store.getClient(uuidFor("legacy-bad"))).toBeUndefined();
+    expect(await store.getClient(uuidFor("legacy-bad-nodeadline"))).toBeUndefined();
     expect(db.writeLog).toEqual([]);
-    expect((db.read("mcp_clients/legacy-bad")!.expireTime as Date).getTime()).toBe(near.getTime());
-    expect(db.read("mcp_clients/legacy-bad-nodeadline")).not.toHaveProperty("expireTime");
+    expect((db.read(`mcp_clients/${uuidFor("legacy-bad")}`)!.expireTime as Date).getTime()).toBe(near.getTime());
+    expect(db.read(`mcp_clients/${uuidFor("legacy-bad-nodeadline")}`)).not.toHaveProperty("expireTime");
   });
 
   it("treats a client with one failing redirect URI among acceptable ones as unknown", async () => {
-    db.seed("mcp_clients/mixed", { ...client("mixed", [SAFE, UNSAFE]), expireTime: new Date(Date.now() + 80 * DAY_MS) });
-    expect(await new FirestoreClientsStore().getClient("mixed")).toBeUndefined();
+    db.seed(`mcp_clients/${uuidFor("mixed")}`, { ...client(uuidFor("mixed"), [SAFE, UNSAFE]), expireTime: new Date(Date.now() + 80 * DAY_MS) });
+    expect(await new FirestoreClientsStore().getClient(uuidFor("mixed"))).toBeUndefined();
   });
 
   it("serves and extends an acceptable client, still without handing expireTime to the SDK", async () => {
-    db.seed("mcp_clients/good", { ...client("good", [SAFE]), registered_at: 1, expireTime: new Date(Date.now() + 5 * DAY_MS) });
-    const served = await new FirestoreClientsStore().getClient("good");
-    expect(served).toMatchObject({ client_id: "good", redirect_uris: [SAFE] });
+    db.seed(`mcp_clients/${uuidFor("good")}`, { ...client(uuidFor("good"), [SAFE]), registered_at: 1, expireTime: new Date(Date.now() + 5 * DAY_MS) });
+    const served = await new FirestoreClientsStore().getClient(uuidFor("good"));
+    expect(served).toMatchObject({ client_id: uuidFor("good"), redirect_uris: [SAFE] });
     expect(Object.keys(served!)).not.toContain("expireTime");
     expect(JSON.stringify(served)).not.toContain("expireTime");
-    expect((db.read("mcp_clients/good")!.expireTime as Date).getTime() - Date.now()).toBeGreaterThan(89 * DAY_MS);
+    expect((db.read(`mcp_clients/${uuidFor("good")}`)!.expireTime as Date).getTime() - Date.now()).toBeGreaterThan(89 * DAY_MS);
   });
 
   it("a rejected extension write does not fail authentication", async () => {
-    db.seed("mcp_clients/good", { ...client("good", [SAFE]), expireTime: new Date(Date.now() + 5 * DAY_MS) });
+    db.seed(`mcp_clients/${uuidFor("good")}`, { ...client(uuidFor("good"), [SAFE]), expireTime: new Date(Date.now() + 5 * DAY_MS) });
     db.failWritesTo = () => true;
-    await expect(new FirestoreClientsStore().getClient("good")).resolves.toMatchObject({ client_id: "good" });
+    await expect(new FirestoreClientsStore().getClient(uuidFor("good"))).resolves.toMatchObject({ client_id: uuidFor("good") });
   });
 
   it("an extension write that throws synchronously does not fail authentication either", async () => {
-    db.seed("mcp_clients/good", { ...client("good", [SAFE]) });
+    db.seed(`mcp_clients/${uuidFor("good")}`, { ...client(uuidFor("good"), [SAFE]) });
     vi.spyOn(FakeDocRef.prototype, "update").mockImplementation(() => { throw new Error("synthetic synchronous failure"); });
-    await expect(new FirestoreClientsStore().getClient("good")).resolves.toMatchObject({ client_id: "good" });
+    await expect(new FirestoreClientsStore().getClient(uuidFor("good"))).resolves.toMatchObject({ client_id: uuidFor("good") });
   });
 
   it("a client deleted between the read and the extension is not resurrected as a stub", async () => {
-    db.seed("mcp_clients/gone", { ...client("gone", [SAFE]), expireTime: new Date(Date.now() + 5 * DAY_MS) });
+    db.seed(`mcp_clients/${uuidFor("gone")}`, { ...client(uuidFor("gone"), [SAFE]), expireTime: new Date(Date.now() + 5 * DAY_MS) });
     const original = db.commitWrite.bind(db);
     db.commitWrite = ((path: string, mode: "set" | "update", data: Record<string, unknown>, merge: boolean) => {
       db.docs.delete(path);
       return original(path, mode, data, merge);
     }) as never;
-    await expect(new FirestoreClientsStore().getClient("gone")).resolves.toMatchObject({ client_id: "gone" });
-    expect(db.docs.has("mcp_clients/gone")).toBe(false);
+    await expect(new FirestoreClientsStore().getClient(uuidFor("gone"))).resolves.toMatchObject({ client_id: uuidFor("gone") });
+    expect(db.docs.has(`mcp_clients/${uuidFor("gone")}`)).toBe(false);
   });
 
   it("registration through the store keeps the policy check ahead of the write and stamps the deadline", async () => {
     const store = new FirestoreClientsStore();
-    const registered = await store.registerClient(client("fresh", [SAFE]));
+    const registered = await store.registerClient(client(uuidFor("fresh"), [SAFE]));
     expect(registered).not.toHaveProperty("expireTime");
-    expect(db.read("mcp_clients/fresh")).toMatchObject({ client_id: "fresh", expireTime: expect.any(Date) });
+    expect(db.read(`mcp_clients/${uuidFor("fresh")}`)).toMatchObject({ client_id: uuidFor("fresh"), expireTime: expect.any(Date) });
   });
 });
 
@@ -205,12 +210,12 @@ describe("persistence metadata is never handed to the OAuth SDK or its callers",
   it("authorization codes lose expireTime on get and consume and keep every protocol field", async () => {
     const store = new FirestoreAuthCodesStore();
     const value = { clientId: "c", codeChallenge: "x", redirectUri: "https://claude.ai/api/mcp/auth_callback", redirectUriRequired: true, resource: "https://resource.example.com/mcp", fbUserId: "synthetic-user", expiresAt: nowSeconds() + 600 };
-    await store.set("code-9", value);
-    expect(db.read("mcp_auth_codes/code-9")).toHaveProperty("expireTime");
-    const read = await store.get("code-9");
+    await store.set(codeFor("code-9"), value);
+    expect(db.read(`mcp_auth_codes/${codeFor("code-9")}`)).toHaveProperty("expireTime");
+    const read = await store.get(codeFor("code-9"));
     expect(read).toEqual(value);
     expect(Object.keys(read!)).not.toContain("expireTime");
-    const consumed = await store.consume("code-9");
+    const consumed = await store.consume(codeFor("code-9"));
     expect(consumed).toEqual(value);
     expect(Object.keys(consumed!)).not.toContain("expireTime");
   });
