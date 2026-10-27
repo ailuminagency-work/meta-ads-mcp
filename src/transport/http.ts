@@ -69,6 +69,7 @@ import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
 import { createMcpAdmission, readMcpAdmissionConfig } from "./mcp-admission.js";
+import { applyServerTimeouts } from "./server-timeouts.js";
 import { installGracefulShutdown } from "./graceful-shutdown.js";
 import { createReadinessCheck, createReadinessHandler } from "./readiness.js";
 import {
@@ -1037,5 +1038,6 @@ export async function startHttpTransport(
       `Meta Ads MCP server listening (HTTP transport — auth: ${authModes.join(", ")})`,
     );
   });
+  applyServerTimeouts(httpServer);
   installGracefulShutdown(httpServer);
 }
