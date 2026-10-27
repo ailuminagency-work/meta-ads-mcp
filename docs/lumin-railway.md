@@ -12,6 +12,9 @@ The service uses one replica, 1 GB RAM, one CPU, port 3000, Dockerfile builds, a
 
 | Variable | Required configuration |
 | --- | --- |
+| DEPLOYMENT_MODE | Required when NODE_ENV=production; there is no default. `awaiting_credentials` or `agency` for this deployment. Startup fails if it is unset, so a dropped variable cannot start the unrestricted upstream mode. |
+| VIDEO_MAX_CONCURRENT_JOBS | Optional. Defaults to 1 in agency mode (2 elsewhere). Keep 1 on one CPU and 1 GB RAM. |
+| RAILWAY_DEPLOYMENT_DRAINING_SECONDS | Set to 30 or more. Railway's default is 0, which kills the old deployment at once on every redeploy. The server stops accepting connections on SIGTERM and waits up to 25 s for in-flight requests, but only if Railway allows that window. |
 | META_APP_ID | Lumin-owned Meta Developer App ID |
 | META_APP_SECRET | That app's secret |
 | TOKEN_ENCRYPTION_KEY | Independently generated random 32 bytes encoded as 64 hexadecimal characters |

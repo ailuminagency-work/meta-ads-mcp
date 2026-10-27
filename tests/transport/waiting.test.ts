@@ -29,6 +29,16 @@ describe("credential waiting deployment", () => {
   it("rejects misspelled modes rather than activating upstream behavior", () => {
     expect(() => resolveDeploymentMode({ DEPLOYMENT_MODE: "waiting" })).toThrow();
   });
+  it("refuses to default to upstream when the mode is unset in production", () => {
+    expect(() => resolveDeploymentMode({ NODE_ENV: "production" })).toThrow(/DEPLOYMENT_MODE must be set/);
+  });
+  it("still defaults to upstream outside production and accepts every explicit mode in production", () => {
+    expect(resolveDeploymentMode({})).toBe("upstream");
+    expect(resolveDeploymentMode({ NODE_ENV: "development" })).toBe("upstream");
+    for (const mode of ["upstream", "awaiting_credentials", "agency"] as const) {
+      expect(resolveDeploymentMode({ NODE_ENV: "production", DEPLOYMENT_MODE: mode })).toBe(mode);
+    }
+  });
   it("rejects an incomplete agency configuration", () => {
     expect(() => validateAgencyEnvironment({ NODE_ENV: "production" })).toThrow();
   });

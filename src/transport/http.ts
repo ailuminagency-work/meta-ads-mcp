@@ -53,6 +53,9 @@ import { configureSessionJtiStore, getSession } from "../auth/session.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, safeReturnTo } from "./auth-routes.js";
 import { escapeHtml } from "../utils/html.js";
+import { singleLine } from "../utils/single-line.js";
+import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
+import { installGracefulShutdown } from "./graceful-shutdown.js";
 import {
   CONNECTIONS_PATH,
   PAGE_STYLES,
@@ -163,6 +166,7 @@ export function healthPayload(extras: { ffmpeg?: boolean } = {}): { status: "ok"
 
 interface ConsentContext {
   query: Record<string, string>;
+  client?: { name: string | null };
   user: { fbUserId: string; email: string | null; name: string | null };
   tokens: Awaited<ReturnType<typeof listTokens>>;
   activeName: string | null;
@@ -170,9 +174,24 @@ interface ConsentContext {
   gemini: GeminiKeyStatus;
 }
 
+// Dynamic client registration is open, so both the name and the redirect are
+// chosen by whoever registered the client. Showing them is what lets the
+// operator notice a lookalike client before approving.
+function describeRedirectTarget(redirectUri: string | undefined): string {
+  if (!redirectUri) return "?";
+  try {
+    const url = new URL(redirectUri);
+    return url.host ? `${url.protocol}//${url.host}` : url.protocol;
+  } catch {
+    return "?";
+  }
+}
+
 export function renderConsentPage(ctx: ConsentContext): string {
   const readOnlyAgency = process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true";
   const clientId = escapeHtml(ctx.query.client_id || "Unknown");
+  const clientLabel = singleLine(ctx.client?.name, 80);
+  const redirectTarget = describeRedirectTarget(ctx.query.redirect_uri);
   const hiddenFields = Object.entries(ctx.query)
     .map(
       ([k, v]) =>
@@ -240,7 +259,12 @@ ${PAGE_STYLES}
 
     <h1>Autorizar Meta Ads MCP</h1>
     <p class="subtitle">
-      <span class="client">${clientId}</span> quiere acceder a tu servidor Meta Ads MCP.
+      <span class="client">${escapeHtml(clientLabel || clientId)}</span> quiere acceder a tu servidor Meta Ads MCP.
+    </p>
+    <p class="subtitle">
+      ID: ${clientId}<br />
+      Al aprobar, el código se enviará a: <b>${escapeHtml(redirectTarget)}</b><br />
+      Cualquiera puede registrar un cliente con cualquier nombre. Aprueba solo si tú iniciaste esta conexión desde esa aplicación.
     </p>
 
     <div class="section">
@@ -547,7 +571,7 @@ export async function startHttpTransport(
   if(utilityIngress)app.use("/platform/messenger-utility/source",utilityIngress);
   const sourceIngress=environmentSourceIngressRouter();
   if(sourceIngress)app.use("/platform/first-party",sourceIngress);
-  app.use(express.json({ limit: "10mb" }));
+  app.use(preAuthJsonParser());
 
   app.use((_req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -742,7 +766,7 @@ export async function startHttpTransport(
         );
         return;
       }
-      const { redirectOrigin } = validation;
+      const { redirectOrigin, clientName } = validation;
 
       const session = await getSession(req);
       if (!session) {
@@ -796,6 +820,7 @@ export async function startHttpTransport(
       res.type("html").send(
         renderConsentPage({
           query,
+          client: { name: clientName },
           user: {
             fbUserId: session.fbUserId,
             email: session.email,
@@ -874,7 +899,7 @@ export async function startHttpTransport(
   const auth = createCombinedAuthMiddleware(oauthBearerAuth);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
-  app.post("/mcp", auth, metaTokenMw, async (req, res) => {
+  app.post("/mcp", auth, metaTokenMw, mcpJsonParser(), async (req, res) => {
     try {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -898,7 +923,7 @@ export async function startHttpTransport(
 
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
-      logger.error({ error }, "Error handling MCP request");
+      logger.error({ err: error }, "Error handling MCP request");
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
@@ -929,7 +954,7 @@ export async function startHttpTransport(
   if (isApiKeyConfigured()) authModes.push("API Key");
   authModes.push(config.multiTenantEnabled ? "Meta OAuth" : "OAuth 2.1");
 
-  app.listen(port, () => {
+  const httpServer = app.listen(port, () => {
     logger.info(
       {
         port,
@@ -941,4 +966,5 @@ export async function startHttpTransport(
       `Meta Ads MCP server listening (HTTP transport — auth: ${authModes.join(", ")})`,
     );
   });
+  installGracefulShutdown(httpServer);
 }
