@@ -86,6 +86,11 @@ export function normalizeSafeDiff(parameters: Record<string, unknown>): SafeChan
   visit(parameters,0); return result;
 }
 export interface PolicyDecision { decision: "ALLOW" | "DENY" | "REQUIRE_CONFIRMATION"; reason: string; classes: OperationClass[] }
+export type PolicyGuard = (ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot) => void;
+const policyGuards = new Map<string, PolicyGuard>();
+/** A guard can only add a denial: it throws to refuse and returns to leave the decision unchanged. It runs for every mutating plan before an approval is requested, issued or consumed, so a refusal never costs a human a review or an approval its single use. A name can be taken once, so one module cannot silently replace another's guard. */
+export function registerPolicyGuard(name: string, guard: PolicyGuard): void { if(policyGuards.has(name) && policyGuards.get(name) !== guard) throw new PlatformDenied("POLICY_GUARD_ALREADY_REGISTERED"); policyGuards.set(name, guard); }
+export function unregisterPolicyGuard(name: string): void { policyGuards.delete(name); }
 export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot, options: { writesEnabled: boolean }): PolicyDecision {
   const classes = classifyPlan(plan);
   const deny = (reason: string): PolicyDecision => ({decision: "DENY", reason, classes});
@@ -138,6 +143,7 @@ export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snaps
     const matches=snapshot.assets.filter(a=>a.type===required.asset.type&&a.id.replace(/^act_/,"")===required.asset.id.replace(/^act_/,""));
     if(matches.length!==1||!required.tasks.length||!snapshot.grants.some(g=>g.assetKey===matches[0].key&&g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.connectionId===snapshot.connection.id&&g.revokedAt===null&&g.expiresAt>Date.now()&&required.tasks.every(task=>g.tasks.includes(task))))return deny("SCOPED_ASSET_TASK_REQUIRED");
   }
+  if(classes.some(c => c !== "READ")) for(const guard of policyGuards.values()) { try { guard(ctx, plan, snapshot); } catch(error) { return deny(error instanceof PlatformDenied ? error.reason : "POLICY_GUARD_FAILED"); } }
   const confirmation: OperationClass[] = ["WRITE_AD_CONFIGURATION", "WRITE_BUDGET", "ACTIVATE_SPEND", "DELETE", "BUSINESS_ADMIN", "IDENTITY_OR_ACCESS", "BILLING", "WRITE_CONTENT", "WRITE_MESSAGING"];
   return ctx.tool==="signals_send_crm_lead_event"||classes.some(c => confirmation.includes(c)) ? {decision: "REQUIRE_CONFIRMATION", reason: "HUMAN_APPROVAL_REQUIRED", classes} : {decision: "ALLOW", reason: "AUTHORIZED", classes};
 }
