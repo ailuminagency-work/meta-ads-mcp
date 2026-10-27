@@ -38,6 +38,7 @@ Record all of this before any production change. Record variable names and non-s
 4. That deployment `9ee29ef9` is still offered by Railway as a rollback target (UNVERIFIED: how long Railway retains rollbackable deployments).
 5. The count of documents in `platform_meta_privacy_subject_locks`, if the collection exists (a count, not contents). It is the input to 5.3.
 6. The owner's confirmation of the 5.1 replacement (the JSON keyring staged, the split `TOKEN_ENCRYPTION_KEY_NEXT*` variables removed in the same change, the pre-flight reporting PASS), written down before the deploy, not during an incident.
+7. The tool names returned by `tools/list` on deployment `9ee29ef9` for an authenticated operator (names only), so the post-rollback check in section 6 compares against a recorded list instead of a claim.
 
 ## 4. Procedure
 
@@ -156,7 +157,7 @@ Run from a machine that can reach the service (the build sandbox cannot reach `*
 | `GET /.well-known/oauth-protected-resource/mcp` | 200, JSON naming the `/mcp` resource |
 | An operator completes Meta login and a read-only tool call returns data | Works, with no re-login prompt for users whose tokens were written under `TOKEN_ENCRYPTION_KEY` |
 | Logs since the rollback | No `Unsupported state or unable to authenticate data` for users other than those whose credentials were already stored under a key other than `TOKEN_ENCRYPTION_KEY` before the release (5.1), and no `Failed to start server` |
-| Write tools | Absent from the tool list while `AGENCY_WRITES_ENABLED` is not `true` |
+| Write tools | The tool list equals the list recorded in section 3 item 7. Do not assume write tools are absent: the audit found read-only agency exposing tools without a read-only hint on the release line, and that was not checked on `251249e` here (UNVERIFIED) |
 
 `/ready` does not exist on `251249e`; a 404 there is expected.
 
