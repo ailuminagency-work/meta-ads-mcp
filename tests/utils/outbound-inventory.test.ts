@@ -43,6 +43,7 @@ const REFERENCE_HOSTS = new Set([
   "aistudio.google.com",
   "apify.com",
   "claude.ai",
+  "claude.com",
   "connect.facebook.net",
   "console.apify.com",
   "developers.facebook.com",
@@ -69,6 +70,8 @@ const APPROVED_NETWORK_IMPORTS: Record<string, string[]> = {
   "utils/safe-video-download.ts": ["https"],
   "media/safe-video-download.ts": ["https"],
   "transport/http.ts": ["net"],
+  "auth/client-registration-policy.ts": ["net"],
+  "utils/client-ip-key.ts": ["net"],
 };
 
 /**

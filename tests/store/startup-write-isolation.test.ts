@@ -140,7 +140,7 @@ describe("read-only agency boot writes and re-encrypts nothing", () => {
     const registration = await fetch(`${origin}/register`, {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["https://client.example.com/callback"], token_endpoint_auth_method: "none" }),
+      body: JSON.stringify({ redirect_uris: ["https://claude.ai/api/mcp/auth_callback"], token_endpoint_auth_method: "none" }),
     });
     expect(registration.status).toBe(201);
     expect(db.writeLog.map((entry) => entry.path.split("/")[0])).toContain("mcp_clients");

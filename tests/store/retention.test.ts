@@ -80,7 +80,7 @@ describe("OAuth store TTL policy table", () => {
   });
 
   it("is recomputed whenever a credential lifetime changes", () => {
-    expect(source("src/auth/oauth-provider.ts")).toContain("const refreshExpiresAt = now + 30 * 24 * 3600;");
+    expect(source("src/auth/oauth-provider.ts")).toContain("const REFRESH_TTL_SECONDS = 30 * 24 * 3600;");
     expect(source("src/auth/oauth-provider.ts")).toContain("expiresAt: Math.floor(Date.now() / 1000) + 600,");
     expect(source("src/auth/session.ts")).toContain("const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;");
     expect(CLIENT_IDLE_RETENTION_DAYS).toBeGreaterThan(30);

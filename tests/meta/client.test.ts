@@ -678,7 +678,7 @@ describe("MetaApiClient", () => {
           .mockResolvedValueOnce(mockFetchResponse({ error: { message: "x", type: "OAuthException", code: 2 } }, { status: 500 }))
           .mockResolvedValueOnce(mockFetchResponse({ data: [] })),
       );
-      vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void) => { fn(); return 0 as never; }) as never);
+      vi.spyOn(retrying as unknown as { backoff: () => Promise<void> }, "backoff").mockResolvedValue(undefined);
       await retrying.get("/me");
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
       for (const call of [0, 1]) expect(sentUrl(call).searchParams.get("appsecret_proof")).toBe(proofOf(TOKEN));
