@@ -498,6 +498,11 @@ export interface ClassificationInputs {
   baseline: readonly RegisteredToolFact[];
   /** operationClasses of every product contract. */
   contractClasses: Readonly<Record<string, readonly string[]>>;
+  /** Product contracts that are not verified and so cannot execute. */
+  unverifiedContracts?: readonly string[];
+  /** The policy's human-approval classes and forced tools, exactly as evaluatePolicy reads them. */
+  approvalClasses?: readonly string[];
+  approvalForcedTools?: readonly string[];
   migratedWrites: readonly string[];
   migratedWorkflows: readonly string[];
   migratedReads: readonly string[];
@@ -554,8 +559,21 @@ export function classificationProblems(input: ClassificationInputs): string[] {
   for (const name of contractNames) if (!productNames.has(name)) problems.push(`PRODUCT_CONTRACT_UNCLASSIFIED ${name}`);
   const spend = contractNames.filter(name => input.contractClasses[name].some(c => c === "ACTIVATE_SPEND" || c === "WRITE_BUDGET")).sort();
   if (!same(spend, SPEND_OR_BUDGET_PRODUCT_TOOLS)) problems.push(`SPEND_CAPABLE_PRODUCT_SET_CHANGED ${spend.join(",")}`);
+  if (input.approvalClasses && input.approvalForcedTools) {
+    const exempt = contractNames.filter(name => !(input.unverifiedContracts ?? []).includes(name) && !same(input.contractClasses[name], ["READ"]) && !input.approvalForcedTools!.includes(name) && !input.contractClasses[name].some(c => input.approvalClasses!.includes(c))).sort();
+    if (!same(exempt, PRODUCT_WRITES_WITHOUT_HUMAN_APPROVAL)) problems.push(`HUMAN_APPROVAL_EXEMPTION_CHANGED ${exempt.join(",")}`);
+  }
   return problems;
 }
+
+/**
+ * Verified product writes that policy ALLOWs with no human approval requested, reviewed or consumed. This is a recorded
+ * owner decision (G2-03), not an oversight: signals_send_pixel_events sends one stored, consented first-party event per
+ * call by references only (no caller-supplied payload) and is denied unless both write flags are on. A deployment that
+ * wants the strict "every write has a one-use human approval" invariant for this class must thread an approval_id
+ * through the tool before enabling platform writes; until then this entry is the single place the exemption lives.
+ */
+export const PRODUCT_WRITES_WITHOUT_HUMAN_APPROVAL: readonly string[] = Object.freeze(["signals_send_pixel_events"]);
 
 /** The only product contracts that can start delivery or change a budget. */
 export const SPEND_OR_BUDGET_PRODUCT_TOOLS: readonly string[] = Object.freeze(["marketing_activate_ad"]);

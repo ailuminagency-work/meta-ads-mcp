@@ -89,6 +89,9 @@ export function normalizeSafeDiff(parameters: Record<string, unknown>): SafeChan
 const PREPARATION_ONLY_TOOLS: readonly string[] = Object.freeze(["meta_plan_tracking_change"]);
 /** Same definition as runtime.platformWritesEnabled, which this module cannot import without a load-order cycle; tests/platform/policy-preparation-tools.test.ts pins the two together. */
 const platformWritesEnabled = (): boolean => process.env.LUMIN_PLATFORM_WRITES_ENABLED === "true" && process.env.AGENCY_WRITES_ENABLED === "true";
+/** Operation classes that need a one-use human approval. WRITE_NON_FINANCIAL is deliberately absent: see docs/policy-engine.md (G2-03) for the recorded exemption. */
+export const HUMAN_APPROVAL_CLASSES: readonly OperationClass[] = Object.freeze(["WRITE_AD_CONFIGURATION", "WRITE_BUDGET", "ACTIVATE_SPEND", "DELETE", "BUSINESS_ADMIN", "IDENTITY_OR_ACCESS", "BILLING", "WRITE_CONTENT", "WRITE_MESSAGING"] as OperationClass[]);
+export const HUMAN_APPROVAL_FORCED_TOOLS: readonly string[] = Object.freeze(["signals_send_crm_lead_event"]);
 export interface PolicyDecision { decision: "ALLOW" | "DENY" | "REQUIRE_CONFIRMATION"; reason: string; classes: OperationClass[] }
 export type PolicyGuard = (ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot) => void;
 const policyGuards = new Map<string, PolicyGuard>();
@@ -149,8 +152,7 @@ export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snaps
     if(matches.length!==1||!required.tasks.length||!snapshot.grants.some(g=>g.assetKey===matches[0].key&&g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.connectionId===snapshot.connection.id&&g.revokedAt===null&&g.expiresAt>Date.now()&&required.tasks.every(task=>g.tasks.includes(task))))return deny("SCOPED_ASSET_TASK_REQUIRED");
   }
   if(classes.some(c => c !== "READ")) for(const guard of policyGuards.values()) { try { guard(ctx, plan, snapshot); } catch(error) { return deny(error instanceof PlatformDenied ? error.reason : "POLICY_GUARD_FAILED"); } }
-  const confirmation: OperationClass[] = ["WRITE_AD_CONFIGURATION", "WRITE_BUDGET", "ACTIVATE_SPEND", "DELETE", "BUSINESS_ADMIN", "IDENTITY_OR_ACCESS", "BILLING", "WRITE_CONTENT", "WRITE_MESSAGING"];
-  return ctx.tool==="signals_send_crm_lead_event"||classes.some(c => confirmation.includes(c)) ? {decision: "REQUIRE_CONFIRMATION", reason: "HUMAN_APPROVAL_REQUIRED", classes} : {decision: "ALLOW", reason: "AUTHORIZED", classes};
+  return HUMAN_APPROVAL_FORCED_TOOLS.includes(ctx.tool)||classes.some(c => HUMAN_APPROVAL_CLASSES.includes(c)) ? {decision: "REQUIRE_CONFIRMATION", reason: "HUMAN_APPROVAL_REQUIRED", classes} : {decision: "ALLOW", reason: "AUTHORIZED", classes};
 }
 
 

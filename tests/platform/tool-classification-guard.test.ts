@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { createServer } from "../../src/server.js";
 import { PRODUCT_CONTRACTS } from "../../src/platform/products/contracts.js";
+import { HUMAN_APPROVAL_CLASSES, HUMAN_APPROVAL_FORCED_TOOLS } from "../../src/platform/policy.js";
 import { LEGACY_MIGRATED_READ_TOOLS, LEGACY_MIGRATED_WORKFLOW_TOOLS, LEGACY_MIGRATED_WRITE_TOOLS } from "../../src/platform/legacy-implementation.js";
 import {
   BASELINE_WRITE_TOOLS, PRODUCT_MUTATING_TOOLS, READ_ONLY_AGENCY_KEPT_PREPARATION_TOOLS, READ_ONLY_AGENCY_EXCLUDED_READ_TOOLS, READ_ONLY_AGENCY_TOOLS, STRICT_ANNOTATION_DRIFT,
@@ -25,6 +26,8 @@ function inputs(): ClassificationInputs {
   return {
     registered: registered(STRICT_ENV), baseline: registered(BASELINE_ENV),
     contractClasses: Object.fromEntries(PRODUCT_CONTRACTS.map(c => [c.tool, c.operationClasses])),
+    unverifiedContracts: PRODUCT_CONTRACTS.filter(c => !c.verified).map(c => c.tool),
+    approvalClasses: HUMAN_APPROVAL_CLASSES, approvalForcedTools: HUMAN_APPROVAL_FORCED_TOOLS,
     migratedWrites: LEGACY_MIGRATED_WRITE_TOOLS, migratedWorkflows: LEGACY_MIGRATED_WORKFLOW_TOOLS, migratedReads: LEGACY_MIGRATED_READ_TOOLS,
   };
 }
@@ -104,6 +107,15 @@ describe("the guard fails when a tool is added, reclassified or changed without 
     const input = clone(base());
     (input.contractClasses as Record<string, string[]>).whatsapp_platform_send_message = ["ACTIVATE_SPEND"];
     expect(classificationProblems(input)).toContain("SPEND_CAPABLE_PRODUCT_SET_CHANGED marketing_activate_ad,whatsapp_platform_send_message");
+  });
+
+  it("reports a verified product write that stopped needing a human approval, or one more that does not need it", () => {
+    const input = clone(base());
+    (input.contractClasses as Record<string, string[]>).pages_create_feed = ["WRITE_NON_FINANCIAL"];
+    expect(classificationProblems(input)).toContain("HUMAN_APPROVAL_EXEMPTION_CHANGED pages_create_feed,signals_send_pixel_events");
+    const fewer = clone(base());
+    fewer.approvalClasses = [...HUMAN_APPROVAL_CLASSES, "WRITE_NON_FINANCIAL"];
+    expect(classificationProblems(fewer)).toContain("HUMAN_APPROVAL_EXEMPTION_CHANGED ");
   });
 
   it("reports a held baseline write that became executable in the strict build", () => {
