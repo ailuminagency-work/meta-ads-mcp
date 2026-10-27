@@ -63,6 +63,7 @@ export async function requestLegacyApproval(repo:PlatformRepository,ctx:Operatio
 export async function inspectApprovalRequest(repo:PlatformRepository,approver:PlatformPrincipal,id:string):Promise<{request:ApprovalRequest;ctx:OperationContext;plan:OperationPlan;snapshot:AuthorizationSnapshot;approverRevision:number}>{
   const request=await repo.get("approvalRequests",approver.tenantId,id),member=await repo.get("members",approver.tenantId,approver.operatorId);
   if(request&&["marketing_activate_ad","marketing_delete_paused_ad"].includes(request.tool)&&!member?.roles.includes("admin"))throw new PlatformDenied("MARKETING_HUMAN_ADMIN_APPROVAL_REQUIRED");
+  if(request&&request.actorId===approver.operatorId&&process.env.LUMIN_APPROVAL_REQUIRE_DISTINCT_APPROVER==="true")throw new PlatformDenied("SELF_APPROVAL_FORBIDDEN");
   if(!request || request.tenantId!==approver.tenantId || !member || member.operatorId!==approver.operatorId || member.tenantId!==approver.tenantId || member.disabledAt!==null || !member.allowedClientIds.includes(request.clientId) || !member.roles.some(r=>r==="admin"||r==="approver"))throw new PlatformDenied("HUMAN_APPROVER_MEMBERSHIP_REQUIRED");
   if(request.approvedAt!==null || request.expiresAt<=Date.now())throw new PlatformDenied("APPROVAL_REQUEST_EXPIRED_OR_CONSUMED");
   const {ctx,plan,legacyInput}=JSON.parse(decryptToken(request.encryptedPlan,aad(request))) as {ctx:OperationContext;plan:OperationPlan;legacyInput?:Record<string,unknown>};

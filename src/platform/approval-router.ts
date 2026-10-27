@@ -4,16 +4,18 @@ import type { PlatformRepository } from "./repository.js";
 import type { PlatformPrincipal } from "./models.js";
 import { inspectApprovalRequest, issueHumanApproval } from "./approvals.js";
 
-export interface ApprovalRouterDependencies {repo:PlatformRepository;origin:string;csrfSecret:string;resolveSession(req:express.Request):Promise<PlatformPrincipal|null>}
+export interface ApprovalRouterDependencies {repo:PlatformRepository;origin:string;csrfSecret:string;resolveSession(req:express.Request):Promise<PlatformPrincipal|null>;writesEnabled?():boolean}
 const cookie="__Host-lumin_platform_approval";
 const escape=(s:string)=>s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
-function sign(payload:string,secret:string):string{return createHmac("sha256",secret).update(payload).digest("hex");}
+const csrfDomain="lumin-platform-approval-csrf\n";
+function sign(payload:string,secret:string):string{return createHmac("sha256",secret).update(csrfDomain+payload).digest("hex");}
 function equal(a:string,b:string):boolean{const left=Buffer.from(a),right=Buffer.from(b);return left.length===right.length && timingSafeEqual(left,right);}
 export function createApprovalRouter(deps:ApprovalRouterDependencies):express.Router{
   const origin=new URL(deps.origin);
   if(origin.protocol!=="https:" || origin.origin!==deps.origin || deps.csrfSecret.length<32)throw new Error("VERIFIED_APPROVAL_ORIGIN_AND_SECRET_REQUIRED");
   const router=express.Router();
   router.use((_req,res,next)=>{res.setHeader("Cache-Control","no-store");res.setHeader("Content-Security-Policy","default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");res.setHeader("X-Content-Type-Options","nosniff");res.setHeader("Referrer-Policy","no-referrer");next();});
+  router.use((_req,res,next)=>{if(deps.writesEnabled&&!deps.writesEnabled()){res.status(403).type("text").send("Approval unavailable: platform writes are disabled by deployment policy.");return;}next();});
   router.get("/:id",async(req,res)=>{
     try{
       const principal=await deps.resolveSession(req),id=String(req.params.id);
