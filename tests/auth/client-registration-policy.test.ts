@@ -79,11 +79,13 @@ describe("client registration redirect policy: legitimate clients", () => {
   });
 
   it("keeps the ChatGPT preset off unless the value is exactly true", () => {
-    for (const value of ["", "TRUE", "1", "yes", "false", "true "]) {
+    for (const value of ["", "TRUE", "1", "yes", "false", "true ", " true", "true\n"]) {
       vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", value);
       const verdict = checkRedirectUri("https://chatgpt.com/connector_platform_oauth_redirect");
-      expect(verdict.ok, JSON.stringify(value)).toBe(value.trim() === "true");
+      expect(verdict.ok, JSON.stringify(value)).toBe(false);
     }
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    expect(checkRedirectUri("https://chatgpt.com/connector_platform_oauth_redirect")).toEqual({ ok: true });
   });
 
   it("accepts an exact operator-listed https URI and nothing near it", () => {
@@ -124,6 +126,50 @@ describe("client registration redirect policy: legitimate clients", () => {
     expect(checkRedirectUris(stored).ok).toBe(false);
     vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
     expect(checkRedirectUris(stored)).toEqual({ ok: true });
+  });
+
+  it("reads the authority from the :// that follows the scheme, so a later :// in the query or path cannot move it (G1P-01, G1P-02)", () => {
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    for (const uri of [
+      "https:/chatgpt.com/aip/g-SYNTHETIC/oauth/callback?x=://chatgpt.com/connector_platform_oauth_redirect",
+      "https:chatgpt.com/aip/g-SYNTH/oauth/callback/://chatgpt.com/connector/oauth/zz",
+      "https:/chatgpt.com/anything?x=://chatgpt.com/connector/oauth/abc",
+      "https:/@chatgpt.com/aip/g-S/oauth/callback?x=://chatgpt.com/connector/oauth/abc",
+      "https:/claude.ai/x?y=://claude.ai/api/mcp/auth_callback",
+      "https:claude.com/x?y=://claude.com/api/mcp/auth_callback",
+      "https:/claude.ai/api/mcp/auth_callback?y=://claude.ai/api/mcp/auth_callback",
+    ]) {
+      expect(checkRedirectUri(uri).ok, uri).toBe(false);
+    }
+  });
+
+  it("refuses default-port, empty-port and upper-case spellings of an https redirect (G1P-03)", () => {
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_URIS", "https://a.example:443/cb,https://a.example/cb");
+    for (const uri of [
+      "https://chatgpt.com:443/connector_platform_oauth_redirect",
+      "https://chatgpt.com:/connector_platform_oauth_redirect",
+      "https://CHATGPT.COM/connector/oauth/abc",
+      "HTTPS://chatgpt.com/connector_platform_oauth_redirect",
+      "https://Claude.ai/api/mcp/auth_callback",
+      "https://a.example:443/cb",
+    ]) {
+      expect(checkRedirectUri(uri).ok, uri).toBe(false);
+    }
+    expect(checkRedirectUri("https://a.example/cb")).toEqual({ ok: true });
+  });
+
+  it("accepts a 128-character callback id and the exact lower-case claude.ai callback", () => {
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    expect(checkRedirectUri(`https://chatgpt.com/connector/oauth/${"a".repeat(128)}`)).toEqual({ ok: true });
+    expect(checkRedirectUri("https://claude.ai/api/mcp/auth_callback")).toEqual({ ok: true });
+  });
+
+  it("lets a listed chatgpt.com host override the narrow preset, which is why the operator is warned (G1P-06)", () => {
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    expect(checkRedirectUri("https://chatgpt.com/aip/g-S/oauth/callback").ok).toBe(false);
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "chatgpt.com");
+    expect(checkRedirectUri("https://chatgpt.com/aip/g-S/oauth/callback")).toEqual({ ok: true });
   });
 
   it("accepts a mixed registration when every URI is acceptable", () => {

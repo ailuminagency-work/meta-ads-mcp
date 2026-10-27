@@ -3,6 +3,7 @@ import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/share
 import { getFirestore } from "./firestore.js";
 import { clientExpireTime, clientNeedsExtension, withoutExpireTime } from "./retention.js";
 import { logger } from "../utils/logger.js";
+import { singleLine } from "../utils/single-line.js";
 import {
   assertRegistrableRedirectUris,
   boundedClientName,
@@ -29,7 +30,14 @@ function usableClient(
   const verdict = checkRedirectUris(client.redirect_uris);
   if (verdict.ok) return client;
   logger.warn(
-    { clientId: client.client_id, reason: verdict.reason },
+    {
+      clientId: client.client_id,
+      reason: verdict.reason,
+      redirectUris: (Array.isArray(client.redirect_uris) ? client.redirect_uris : [])
+        .slice(0, 5)
+        .map((uri) => singleLine(String(uri), 200)),
+      hint: "To keep this client working list its exact redirect URI in OAUTH_EXTRA_ALLOWED_REDIRECT_URIS, or set OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS=true for ChatGPT connector callbacks",
+    },
     "Ignoring OAuth client whose redirect URIs violate the registration policy",
   );
   return undefined;

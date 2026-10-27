@@ -215,4 +215,36 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
     vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "tools.agency.example");
     expect((await register(harness.origin, hosted)).status).toBe(201);
   });
+
+  it("registers ChatGPT's connector callbacks under the preset and refuses a Custom GPT callback however it is spelled", async () => {
+    const connector = [
+      "https://chatgpt.com/connector_platform_oauth_redirect",
+      "https://chatgpt.com/connector/oauth/synthetic-app-id",
+    ];
+    const hostile = [
+      "https://chatgpt.com/aip/g-SYNTHETIC/oauth/callback",
+      "https:/chatgpt.com/aip/g-SYNTHETIC/oauth/callback?x=://chatgpt.com/connector_platform_oauth_redirect",
+      "https:chatgpt.com/aip/g-SYNTHETIC/oauth/callback/://chatgpt.com/connector/oauth/zz",
+      "https:/claude.ai/x?y=://claude.ai/api/mcp/auth_callback",
+    ];
+    for (const uri of [...connector, ...hostile]) expect((await register(harness.origin, [uri])).status, uri).toBe(400);
+
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    for (const uri of connector) expect((await register(harness.origin, [uri])).status, uri).toBe(201);
+    for (const uri of hostile) expect((await register(harness.origin, [uri])).status, uri).toBe(400);
+  });
+
+  it("stops serving a stored ChatGPT client once the preset is turned off", async () => {
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "true");
+    const response = await register(harness.origin, ["https://chatgpt.com/connector/oauth/synthetic-app-id"]);
+    expect(response.status).toBe(201);
+    const { client_id: clientId } = (await response.json()) as OAuthClientInformationFull;
+    expect(await oauthProvider.clientsStore.getClient(clientId)).toBeDefined();
+
+    vi.stubEnv("OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS", "");
+    expect(await oauthProvider.clientsStore.getClient(clientId)).toBeUndefined();
+
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_URIS", "https://chatgpt.com/connector/oauth/synthetic-app-id");
+    expect(await oauthProvider.clientsStore.getClient(clientId)).toBeDefined();
+  });
 });

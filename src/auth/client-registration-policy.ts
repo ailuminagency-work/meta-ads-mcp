@@ -75,6 +75,11 @@ function extraRedirectHosts(env: NodeJS.ProcessEnv): string[] {
     }
     hosts.push(host);
   }
+  if (hosts.includes(CHATGPT_HOST)) {
+    logger.warn(
+      "OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS lists chatgpt.com: every path on that host is accepted, Custom GPT Action callbacks included. Remove it and set OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS=true to accept only ChatGPT's connector callbacks",
+    );
+  }
   cachedExtraHostsSource = source;
   cachedExtraHosts = hosts;
   return hosts;
@@ -105,7 +110,7 @@ function extraRedirectUris(env: NodeJS.ProcessEnv): string[] {
 }
 
 function chatGptConnectorRedirectsEnabled(env: NodeJS.ProcessEnv): boolean {
-  return env.OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS?.trim() === "true";
+  return env.OAUTH_ENABLE_CHATGPT_CONNECTOR_REDIRECTS === "true";
 }
 
 let cachedExtraAppHostsSource: string | undefined;
@@ -141,10 +146,17 @@ export function allowedRedirectHosts(env: NodeJS.ProcessEnv = process.env): stri
   return [...Object.keys(PINNED_REDIRECT_PATHS), ...extraRedirectHosts(env)];
 }
 
+// new URL() also accepts "https:/host/..." and "https:host/...", so the raw authority has to be read from
+// the "://" that directly follows the scheme, never from a later "://" inside the path or query.
+function authorityStart(uri: string): number {
+  const match = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(uri);
+  return match ? match[0].length : -1;
+}
+
 function rawAuthority(uri: string): string | null {
-  const start = uri.indexOf("://");
+  const start = authorityStart(uri);
   if (start < 0) return null;
-  const rest = uri.slice(start + 3);
+  const rest = uri.slice(start);
   const end = rest.search(/[/?#]/);
   return end < 0 ? rest : rest.slice(0, end);
 }
@@ -184,13 +196,14 @@ export function checkRedirectUri(
 
   if (url.protocol === "https:") {
     if (authority === null) return { ok: false, reason: "must have an authority" };
+    if (!uri.startsWith("https://")) return { ok: false, reason: "must start with a lower-case https://" };
     if (url.port !== "") return { ok: false, reason: "must not use an explicit port" };
-    if (rawHost(authority).toLowerCase() !== url.hostname) {
+    if (authority !== url.hostname) {
       return { ok: false, reason: "host is not written in canonical form" };
     }
     const pinnedPath = PINNED_REDIRECT_PATHS[url.hostname];
     if (pinnedPath !== undefined) {
-      if (uri.slice(uri.indexOf("://") + 3 + authority.length) !== pinnedPath) {
+      if (uri.slice(authorityStart(uri) + authority.length) !== pinnedPath) {
         return { ok: false, reason: `must be exactly the ${pinnedPath} callback on this host` };
       }
       return { ok: true };
@@ -199,7 +212,7 @@ export function checkRedirectUri(
       return { ok: true };
     }
     if (url.hostname === CHATGPT_HOST && chatGptConnectorRedirectsEnabled(env)) {
-      const path = uri.slice(uri.indexOf("://") + 3 + authority.length);
+      const path = uri.slice(authorityStart(uri) + authority.length);
       if (path === CHATGPT_FIXED_PATH || CHATGPT_APP_PATH.test(path)) return { ok: true };
       return {
         ok: false,
