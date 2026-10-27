@@ -338,6 +338,42 @@ describe("human approval routes in the real HTTP runtime (flags on)", () => {
     });
   });
 
+  describe("separation of duties is on by default for an agency deployment that can write", () => {
+    async function requesterWhoAlsoApproves() {
+      const { repo, request, humanSession } = await prepared();
+      const member = (await repo.get("members", tenantId, actor.operatorId))!;
+      await repo.put("members", tenantId, actor.operatorId, { ...member, roles: ["writer", "approver"], revision: member.revision + 1 });
+      const own = await requestProductApproval(repo, ctx, contract, "123", { message: "Own synthetic reviewed action" });
+      return { repo, request, humanSession, own, actorSession: await sessionCookieFor(actor.operatorId) };
+    }
+
+    it("refuses the requester's own review and approval in DEPLOYMENT_MODE=agency with writes enabled, and still lets a different approver in", async () => {
+      vi.stubEnv("DEPLOYMENT_MODE", "agency");
+      const { repo, own, actorSession, humanSession } = await requesterWhoAlsoApproves();
+      expect((await review(own.id, actorSession)).status).toBe(403);
+      expect(await repo.list("approvals", tenantId)).toHaveLength(0);
+      const other = await review(own.id, humanSession);
+      expect(other.status).toBe(200);
+      expect((await post(own.id, { cookie: other.cookie, origin: ORIGIN }, form(other.csrf))).status).toBe(200);
+    });
+
+    it("lets the requester approve in an agency deployment only after an explicit opt-out of false, in any case", async () => {
+      vi.stubEnv("DEPLOYMENT_MODE", "agency");
+      vi.stubEnv("LUMIN_APPROVAL_REQUIRE_DISTINCT_APPROVER", "False");
+      const { own, actorSession } = await requesterWhoAlsoApproves();
+      const flow = await review(own.id, actorSession);
+      expect(flow.status).toBe(200);
+      expect((await post(own.id, { cookie: flow.cookie, origin: ORIGIN }, form(flow.csrf))).status).toBe(200);
+    });
+
+    it.each(["TRUE", "yes", "1", "", "on", " false", "false ", "nope"])("treats %j as on and never as an opt-out, even where the default is off", async value => {
+      vi.stubEnv("LUMIN_APPROVAL_REQUIRE_DISTINCT_APPROVER", value);
+      const { repo, own, actorSession } = await requesterWhoAlsoApproves();
+      expect((await review(own.id, actorSession)).status).toBe(403);
+      expect(await repo.list("approvals", tenantId)).toHaveLength(0);
+    });
+  });
+
   describe("the model cannot approve its own request", () => {
     it("is not served to an MCP credential: API key, bearer and forged session all fail", async () => {
       const mcpCredential = "synthetic-mcp-" + "credential-fixture";
