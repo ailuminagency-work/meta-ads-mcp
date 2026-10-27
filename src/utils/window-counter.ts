@@ -1,5 +1,5 @@
-export interface FailureLimiterOptions {
-  maxFailures: number;
+export interface WindowCounterOptions {
+  limit: number;
   windowMs: number;
   maxKeys?: number;
   now?: () => number;
@@ -8,16 +8,16 @@ export interface FailureLimiterOptions {
 const DEFAULT_MAX_KEYS = 10_000;
 
 /**
- * Counts failed attempts per key and refuses everything from a key that has
- * failed too often until its window ends. The table is capped, so rotating
- * keys cannot grow it without limit: expired entries go first, then the oldest.
+ * Counts events per key inside a window; a key is blocked once it has reached
+ * the limit, until its window ends. The table is capped, so rotating keys
+ * cannot grow it without limit: expired entries go first, then the oldest.
  */
-export class FailureLimiter {
+export class WindowCounter {
   private readonly entries = new Map<string, { count: number; resetAt: number }>();
   private readonly maxKeys: number;
   private readonly now: () => number;
 
-  constructor(private readonly options: FailureLimiterOptions) {
+  constructor(private readonly options: WindowCounterOptions) {
     this.maxKeys = options.maxKeys ?? DEFAULT_MAX_KEYS;
     this.now = options.now ?? Date.now;
   }
@@ -29,10 +29,10 @@ export class FailureLimiter {
       this.entries.delete(key);
       return false;
     }
-    return entry.count >= this.options.maxFailures;
+    return entry.count >= this.options.limit;
   }
 
-  recordFailure(key: string): void {
+  record(key: string): void {
     const now = this.now();
     const entry = this.entries.get(key);
     if (entry && entry.resetAt > now) {

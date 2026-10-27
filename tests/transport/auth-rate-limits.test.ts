@@ -14,10 +14,14 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function withLimitedApp<T>(limit: number, run: (origin: string) => Promise<T>): Promise<T> {
+async function withLimitedApp<T>(
+  limit: number,
+  run: (origin: string) => Promise<T>,
+  maxKeys?: number,
+): Promise<T> {
   const app = express();
   app.set("trust proxy", 1);
-  app.use(createRateLimiter(limit, 60_000));
+  app.use(createRateLimiter(limit, 60_000, maxKeys));
   app.get("/", (_req, res) => {
     res.json({ ok: true });
   });
@@ -70,6 +74,32 @@ describe("rate limiter keys", () => {
       expect(await statuses(origin, "/", () => "203.0.113.9", 3)).toEqual([200, 200, 429]);
       expect(await statuses(origin, "/", () => "203.0.113.10", 1)).toEqual([200]);
     });
+  });
+});
+
+describe("the limiter's table is bounded (G1-15)", () => {
+  it("forgets the oldest address once more distinct addresses than the cap have been seen", async () => {
+    await withLimitedApp(
+      2,
+      async (origin) => {
+        expect(await statuses(origin, "/", () => "203.0.113.1", 3)).toEqual([200, 200, 429]);
+        expect(await statuses(origin, "/", (i) => `198.51.100.${i + 1}`, 3)).toEqual([200, 200, 200]);
+        expect(await statuses(origin, "/", () => "203.0.113.1", 1)).toEqual([200]);
+      },
+      3,
+    );
+  });
+
+  it("keeps limiting an address while the table has room", async () => {
+    await withLimitedApp(
+      2,
+      async (origin) => {
+        expect(await statuses(origin, "/", () => "203.0.113.1", 3)).toEqual([200, 200, 429]);
+        expect(await statuses(origin, "/", (i) => `198.51.100.${i + 1}`, 2)).toEqual([200, 200]);
+        expect(await statuses(origin, "/", () => "203.0.113.1", 1)).toEqual([429]);
+      },
+      3,
+    );
   });
 });
 

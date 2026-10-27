@@ -54,7 +54,8 @@ import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
 import { clientIpKey } from "../utils/client-ip-key.js";
-import { FailureLimiter } from "../utils/failure-limiter.js";
+import { resolveTrustProxyHops } from "./trust-proxy.js";
+import { WindowCounter } from "../utils/window-counter.js";
 import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
 import {
   authorizeExactPathOnly,
@@ -351,29 +352,13 @@ async function sessionStillAllowed(
   return false;
 }
 
-export function createRateLimiter(maxRequests: number, windowMs: number) {
-  const requests = new Map<string, { count: number; resetAt: number }>();
-
-  setInterval(() => {
-    const now = Date.now();
-    for (const [ip, entry] of requests) {
-      if (entry.resetAt < now) requests.delete(ip);
-    }
-  }, windowMs).unref();
+export function createRateLimiter(maxRequests: number, windowMs: number, maxKeys?: number) {
+  const requests = new WindowCounter({ limit: maxRequests + 1, windowMs, maxKeys });
 
   return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
     const ip = clientIpKey(req.ip ?? req.socket.remoteAddress);
-    const now = Date.now();
-    const entry = requests.get(ip);
-
-    if (!entry || entry.resetAt < now) {
-      requests.set(ip, { count: 1, resetAt: now + windowMs });
-      next();
-      return;
-    }
-
-    entry.count++;
-    if (entry.count > maxRequests) {
+    requests.record(ip);
+    if (requests.isBlocked(ip)) {
       logger.warn({ ip, path: req.path }, "Rate limit exceeded");
       res.status(429).json({ error: "Too many requests, please try again later" });
       return;
@@ -420,7 +405,7 @@ const API_KEY_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 function createCombinedAuthMiddleware(
   oauthMiddleware: express.RequestHandler,
 ): express.RequestHandler {
-  const failures = new FailureLimiter({ maxFailures: API_KEY_MAX_FAILURES, windowMs: API_KEY_FAILURE_WINDOW_MS });
+  const failures = new WindowCounter({ limit: API_KEY_MAX_FAILURES, windowMs: API_KEY_FAILURE_WINDOW_MS });
   return (req, res, next) => {
     if (!isApiKeyConfigured()) {
       oauthMiddleware(req, res, next);
@@ -446,7 +431,7 @@ function createCombinedAuthMiddleware(
         next();
         return;
       }
-      failures.recordFailure(client);
+      failures.record(client);
       res.status(401).json({
         jsonrpc: "2.0",
         error: { code: -32000, message: "Invalid API key" },
@@ -467,7 +452,7 @@ function createCombinedAuthMiddleware(
     // with no credential at all is just the client asking how to authenticate.
     if (req.headers.authorization) {
       res.once("finish", () => {
-        if (res.statusCode === 401) failures.recordFailure(client);
+        if (res.statusCode === 401) failures.record(client);
       });
     }
     oauthMiddleware(req, res, next);
@@ -576,7 +561,9 @@ export async function startHttpTransport(
   assertApiKeyStrength();
 
   app.disable("x-powered-by");
-  app.set("trust proxy", 1);
+  const trustProxyHops = resolveTrustProxyHops();
+  app.set("trust proxy", trustProxyHops);
+  logger.info({ trustProxyHops }, "Proxy trust configured");
   // CORS: explicit allowlist instead of wildcard. The previous app.use(cors())
   // set Access-Control-Allow-Origin: * on every response, which let any origin
   // invoke /mcp with a stolen Bearer token. We only need cross-origin reads
