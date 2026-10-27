@@ -185,6 +185,22 @@ describe.each(MODES)("strict agency deployment, platform writes %s", mode => {
   });
 });
 
+describe("outside an agency deployment", () => {
+  it("ads_update_ad_url_tags keeps its baseline listing and still refuses, with no Meta request and no store write, while writes are disabled", async () => {
+    stubDeployment("readonly");
+    vi.stubEnv("DEPLOYMENT_MODE", "legacy");
+    const world = await marketingWorld(), s = await session("100");
+    try {
+      expect((await s.client.listTools()).tools.map(t => t.name)).toContain("ads_update_ad_url_tags");
+      const result = await s.call("ads_update_ad_url_tags", { client_id: "client", ad_ids: ["401"], url_tags: "utm_source=meta", dry_run: true, connection_id: world.connectionId });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain("DISABLED_BY_LUMIN_POLICY");
+      expect(world.requests).toEqual([]);
+      expect(world.writes).toEqual([]);
+    } finally { await s.close(); }
+  });
+});
+
 describe("tools/list in a strict read-only agency deployment", () => {
   it("advertises exactly the ten preparation and observation tools without readOnlyHint, none of which can write to Meta", async () => {
     stubDeployment("readonly");
