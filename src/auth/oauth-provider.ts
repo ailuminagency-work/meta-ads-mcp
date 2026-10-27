@@ -72,6 +72,13 @@ function getJwtSecret(): Uint8Array {
   return cachedSecret;
 }
 
+function pkceVerifierMatches(verifier: string | undefined, challenge: string | undefined): boolean {
+  if (!verifier || !challenge) return false;
+  const computed = Buffer.from(crypto.createHash("sha256").update(verifier).digest("base64url"));
+  const expected = Buffer.from(challenge);
+  return computed.length === expected.length && crypto.timingSafeEqual(computed, expected);
+}
+
 export interface PendingAuthSession {
   fbUserId: string;
 }
@@ -82,7 +89,13 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   private refreshJtiStoreImpl: JtiStore = new InMemoryJtiStore();
   private pendingAuthResolver: () => PendingAuthSession | null = () => null;
   private defaultResource: URL | undefined;
-  private requireRedirectUri = false;
+  private requireRedirectUri = true;
+
+  // The SDK would otherwise verify the PKCE challenge before calling
+  // exchangeAuthorizationCode, which leaves the code redeemable after a wrong
+  // verifier. Verifying here, after the code has been consumed, makes every
+  // failed attempt burn it.
+  readonly skipLocalPkceValidation = true;
 
   configure(opts: {
     clientsStore?: OAuthRegisteredClientsStore;
@@ -191,21 +204,8 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       throw new InvalidGrantError("Authorization code resource mismatch");
     }
 
-    // Defense-in-depth PKCE check. mcp-sdk's primary verification happens
-    // upstream via challengeForAuthorizationCode; we re-verify here when
-    // the verifier is supplied so the guarantee survives any future
-    // change in how mcp-sdk wires the calls. We don't *require* the
-    // verifier in this method (the SDK's flow sometimes passes it,
-    // sometimes hands the challenge upward), but if it's present it must
-    // match.
-    if (entry.codeChallenge && codeVerifier) {
-      const computed = crypto
-        .createHash("sha256")
-        .update(codeVerifier)
-        .digest("base64url");
-      if (computed !== entry.codeChallenge) {
-        throw new InvalidGrantError("PKCE verification failed");
-      }
+    if (!pkceVerifierMatches(codeVerifier, entry.codeChallenge)) {
+      throw new InvalidGrantError("PKCE verification failed");
     }
 
     if (entry.fbUserId && !(await this.isSubjectAuthorized(entry.fbUserId))) {
@@ -481,6 +481,6 @@ export function resetOAuthProviderForTests(): void {
     refreshJtiStore: new InMemoryJtiStore(),
     resolvePendingAuth: () => null,
     defaultResource: null,
-    requireRedirectUri: false,
+    requireRedirectUri: true,
   });
 }
