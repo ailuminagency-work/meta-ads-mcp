@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { abortableSleep, raceAbort, RequestAbortedError, throwIfAborted } from "../../src/utils/abortable.js";
+import { abortableSleep, RequestAbortedError, throwIfAborted } from "../../src/utils/abortable.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -42,19 +42,5 @@ describe("abortable helpers", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(abortableSleep(10, controller.signal)).rejects.toBeInstanceOf(RequestAbortedError);
-  });
-
-  it("raceAbort returns the value, the rejection, or stops waiting on abort", async () => {
-    await expect(raceAbort(Promise.resolve(5), undefined)).resolves.toBe(5);
-    await expect(raceAbort(Promise.resolve(5), new AbortController().signal)).resolves.toBe(5);
-    await expect(raceAbort(Promise.reject(new Error("boom")), new AbortController().signal)).rejects.toThrow("boom");
-    const controller = new AbortController();
-    const never = new Promise<number>(() => undefined);
-    const raced = raceAbort(never, controller.signal);
-    controller.abort();
-    await expect(raced).rejects.toBeInstanceOf(RequestAbortedError);
-    const late = new AbortController();
-    late.abort();
-    await expect(raceAbort(Promise.reject(new Error("unhandled?")), late.signal)).rejects.toBeInstanceOf(RequestAbortedError);
   });
 });

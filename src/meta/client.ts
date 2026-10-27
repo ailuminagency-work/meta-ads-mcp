@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { getAccessToken, getRequestSignal, hashToken } from "../auth/token-store.js";
-import { abortableSleep, raceAbort, RequestAbortedError, throwIfAborted } from "../utils/abortable.js";
+import { abortableSleep, RequestAbortedError, throwIfAborted } from "../utils/abortable.js";
 import { logger } from "../utils/logger.js";
 import { RateLimiter, type RequestContext } from "./rate-limiter.js";
 import { CircuitBreaker, type CircuitContext } from "./circuit-breaker.js";
@@ -56,9 +56,11 @@ export function isTransportRetrySafe(method: string, path: string): boolean {
  */
 function readBounded(response: Response, signal: AbortSignal, maxBytes: number): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const onAbort = (): void => reject(new DOMException("The operation was aborted", "AbortError"));
-    if (signal.aborted) {
+    const onAbort = (): void => {
       void response.body?.cancel().catch(() => undefined);
+      reject(new DOMException("The operation was aborted", "AbortError"));
+    };
+    if (signal.aborted) {
       onAbort();
       return;
     }
@@ -265,11 +267,11 @@ export class MetaApiClient {
       (method === "POST" || method === "DELETE") &&
       accountId !== undefined;
     if (isWrite) {
-      await raceAbort(this.writePacer.acquire(tokenHash, accountId), requestSignal);
+      await this.writePacer.acquire(tokenHash, accountId, requestSignal);
     }
 
     // Reactive self-throttle based on last-known usage headers.
-    await raceAbort(this.rateLimiter.waitIfNeeded(context), requestSignal);
+    await this.rateLimiter.waitIfNeeded(context, requestSignal);
 
     // The proof travels wherever the token does not: in the url for every call
     // but the multipart one, whose body already carries it. Only the url that is

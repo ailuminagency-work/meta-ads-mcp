@@ -1,4 +1,5 @@
 import { logger } from "../utils/logger.js";
+import { abortableSleep, RequestAbortedError, throwIfAborted } from "../utils/abortable.js";
 
 /**
  * Preventive self-pacing for Ads Management writes.
@@ -30,8 +31,12 @@ interface Bucket {
   tier: Tier;
   lastUsedMs: number;
   lastWaitLogMs: number;
+  /** Callers in acquire(), whether queued or at the head. */
   waiters: number;
-  turn: Promise<void>;
+  /** True while one caller is at the head, checking the bucket and sleeping for a token. */
+  holder: boolean;
+  /** Callers behind the head, oldest first. A caller that gives up is removed from here. */
+  queue: Array<{ wake: () => void }>;
 }
 
 const DEFAULT_ACTIVE_ADS = 50;
@@ -179,20 +184,28 @@ export class WritePacer {
    * Callers on one bucket are served first-in first-out and each re-checks the
    * bucket after waking, so N concurrent writers leave at the refill rate
    * instead of all waking on the same timer.
+   *
+   * A caller whose signal aborts leaves at once, from the queue or from the
+   * head: it is removed (nothing keeps a reference to it), takes no token, and
+   * the next caller is not held up by it. The bucket's tokens and refill time
+   * are exactly as if it had never called.
    */
-  async acquire(tokenHash: string, scopeId: string | undefined): Promise<void> {
+  async acquire(tokenHash: string, scopeId: string | undefined, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     this.sweep();
     const key = this.keyFor(tokenHash, scopeId);
     const bucket = this.getOrCreate(key);
     bucket.waiters += 1;
-    const previous = bucket.turn;
-    let release!: () => void;
-    bucket.turn = new Promise<void>((resolve) => {
-      release = resolve;
-    });
     try {
-      await previous;
+      await this.takeTurn(bucket, signal);
+    } catch (error) {
+      bucket.waiters -= 1;
+      bucket.lastUsedMs = Date.now();
+      throw error;
+    }
+    try {
       for (;;) {
+        throwIfAborted(signal);
         this.refill(bucket);
         if (bucket.tokens >= 1 - TOKEN_EPSILON) {
           bucket.tokens = Math.max(0, bucket.tokens - 1);
@@ -218,13 +231,51 @@ export class WritePacer {
             "Write pacer delaying a write to stay under Ads Management quota",
           );
         }
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        await abortableSleep(waitMs, signal);
       }
     } finally {
       bucket.waiters -= 1;
       bucket.lastUsedMs = Date.now();
-      release();
+      this.passTurn(bucket);
     }
+  }
+
+  /** Resolves when this caller is at the head of the bucket; rejects, already out of the queue, if the signal aborts first. */
+  private takeTurn(bucket: Bucket, signal: AbortSignal | undefined): Promise<void> {
+    if (!bucket.holder) {
+      bucket.holder = true;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const entry = {
+        wake: () => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        },
+      };
+      const onAbort = () => {
+        const index = bucket.queue.indexOf(entry);
+        // Already promoted to the head: it will see the abort at its next check and pass the turn on.
+        if (index === -1) return;
+        bucket.queue.splice(index, 1);
+        reject(new RequestAbortedError());
+      };
+      bucket.queue.push(entry);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  private passTurn(bucket: Bucket): void {
+    const next = bucket.queue.shift();
+    if (next) next.wake();
+    else bucket.holder = false;
+  }
+
+  /** Callers waiting behind the head of any bucket (for tests and observability). */
+  get queuedCallers(): number {
+    let queued = 0;
+    for (const bucket of this.buckets.values()) queued += bucket.queue.length;
+    return queued;
   }
 
   /**
@@ -330,7 +381,8 @@ export class WritePacer {
         lastUsedMs: now,
         lastWaitLogMs: 0,
         waiters: 0,
-        turn: Promise.resolve(),
+        holder: false,
+        queue: [],
       };
       this.buckets.set(key, bucket);
     }
