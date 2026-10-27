@@ -13,6 +13,8 @@ import {issueHumanApproval} from "../../src/platform/approvals.js";
 import {configurePlatformRepository} from "../../src/platform/runtime.js";
 import {requestContext} from "../../src/auth/token-store.js";
 import {beforeEach,afterEach,it,expect,vi} from "vitest";
+import {stubBudgetCeilings} from "./budget-ceiling-fixture.js";
+beforeEach(()=>stubBudgetCeilings());
 import {createHash} from "node:crypto";
 import {InMemoryPlatformRepository} from "../../src/platform/repository.js";
 import {PlatformOAuthService,ImmutableOAuthProfileRegistry,atomicConnectionEnrollment,type TrustedOAuthProfile} from "../../src/platform/oauth.js";

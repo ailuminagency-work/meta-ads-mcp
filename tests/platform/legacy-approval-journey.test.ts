@@ -5,6 +5,8 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import type { Server } from "node:http";
 import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
+import {stubBudgetCeilings} from "./budget-ceiling-fixture.js";
+beforeEach(()=>stubBudgetCeilings());
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../../src/server.js";

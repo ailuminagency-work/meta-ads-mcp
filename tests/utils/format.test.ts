@@ -84,8 +84,25 @@ describe("formatBudget", () => {
     expect(formatBudget(5000, "USD")).toBe("50.00 USD");
   });
 
-  it("uses USD as default currency", () => {
-    expect(formatBudget(10050)).toBe("100.50 USD");
+  it("never assumes USD when the currency is unknown", () => {
+    expect(formatBudget(10050)).toBe("10050 (minor units; currency unknown)");
+    expect(formatBudget(10050, "")).toBe("10050 (minor units; currency unknown)");
+  });
+
+  it("does not scale a currency it has no offset for", () => {
+    expect(formatBudget(10050, "XTS")).toBe("10050 (minor units; offset for XTS unknown)");
+  });
+
+  it("uses the currency offset: whole-unit currencies are not divided by 100", () => {
+    expect(formatBudget(5000, "JPY")).toBe("5000 JPY");
+    expect(formatBudget("1000000", "KRW")).toBe("1000000 KRW");
+    expect(formatBudget(30000, "TWD")).toBe("30000 TWD");
+    expect(formatBudget(-250, "VND")).toBe("-250 VND");
+  });
+
+  it("labels unreadable amounts instead of printing NaN", () => {
+    expect(formatBudget("abc", "USD")).toBe("abc (unreadable amount)");
+    expect(formatBudget(12.5, "USD")).toBe("12.5 (unreadable amount)");
   });
 
   it("handles string input", () => {
@@ -93,7 +110,8 @@ describe("formatBudget", () => {
   });
 
   it("handles zero", () => {
-    expect(formatBudget(0)).toBe("0.00 USD");
+    expect(formatBudget(0, "USD")).toBe("0.00 USD");
+    expect(formatBudget(0, "JPY")).toBe("0 JPY");
   });
 
   it("handles large amounts", () => {

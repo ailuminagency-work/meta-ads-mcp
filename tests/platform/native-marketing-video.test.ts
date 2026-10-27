@@ -6,6 +6,8 @@ import {createPublishingVideoIngressRouter,publishingVideoIngressSignature,type 
 import {createVideoEnrollmentRouter} from "../../src/platform/video-enrollment-router.js";
 import {readFileSync} from "node:fs";
 import {afterEach,beforeEach,describe,it,expect,vi} from "vitest";
+import {stubBudgetCeilings} from "./budget-ceiling-fixture.js";
+beforeEach(()=>stubBudgetCeilings());
 const mocked=vi.hoisted(()=>({download:vi.fn()}));vi.mock("../../src/utils/safe-video-download.js",()=>({downloadSafePublicVideo:mocked.download}));
 
 import {Client} from "@modelcontextprotocol/sdk/client/index.js";

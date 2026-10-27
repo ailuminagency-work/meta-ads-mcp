@@ -13,6 +13,7 @@ import type {
   MetaApiResponse,
 } from "../meta/types/index.js";
 import { READ, UPDATE, TOGGLE, WRITE_WARNING } from "./_register.js";
+import { MAX_MINOR_UNIT_AMOUNT, normalizeMinorUnitAmount } from "../meta/currency.js";
 
 const entityTypeEnum = z.enum(["campaign", "ad_set", "ad"]);
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
@@ -113,7 +114,7 @@ export function registerEntityTools(server: McpServer): void {
         updates: z
           .record(z.string(), z.unknown())
           .describe(
-            "Fields to update (e.g. { name, status, daily_budget }). See entity-specific update tools for valid keys per type. Complex fields (targeting, creative, evaluation_spec) are JSON-encoded automatically.",
+            "Fields to update (e.g. { name, status, daily_budget }). See entity-specific update tools for valid keys per type. Complex fields (targeting, creative, evaluation_spec) are JSON-encoded automatically. Money fields (daily_budget, lifetime_budget, bid_amount and the spend-cap/target variants) must be whole minor-unit amounts from 1 to 1000000000; spend_cap, spend_cap_action, account_spend_limit and budget_remaining are refused.",
           ),
       },
       annotations: { ...UPDATE },
@@ -163,6 +164,73 @@ export function registerEntityTools(server: McpServer): void {
   );
 }
 
+const AMOUNT_FIELDS: ReadonlySet<string> = new Set([
+  "daily_budget",
+  "lifetime_budget",
+  "bid_amount",
+  "bid_cap",
+  "daily_spend_cap",
+  "lifetime_spend_cap",
+  "daily_min_spend_target",
+  "lifetime_min_spend_target",
+]);
+
+const UPDATE_FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
+const SPEND_CAP_REFUSAL =
+  "cannot be written through ads_update_entity: removing or raising a spend cap requires the strict financial gate (ads_update_spend_cap can only lower an account cap).";
+
+const REFUSED_FIELDS: ReadonlyMap<string, string> = new Map([
+  ["spend_cap", SPEND_CAP_REFUSAL],
+  ["spend_cap_action", SPEND_CAP_REFUSAL],
+  ["account_spend_limit", SPEND_CAP_REFUSAL],
+  ["budget_remaining", "is a read-only Meta field and cannot be written."],
+]);
+
+/**
+ * Money fields reach Meta unvalidated through `updates`, however deeply they are nested or whether they
+ * arrive inside an already JSON-encoded string, so every one is checked before anything is sent.
+ * Returns the canonical value for an amount field and undefined for anything else.
+ */
+function checkMoneyField(key: string, value: unknown, path: string, depth: number): string | undefined {
+  const lower = key.toLowerCase();
+  const refusal = REFUSED_FIELDS.get(lower);
+  if (refusal) throw new Error(`${path} ${refusal}`);
+  if (AMOUNT_FIELDS.has(lower)) {
+    if (value === undefined || value === null) return undefined;
+    const amount = normalizeMinorUnitAmount(value);
+    if (amount === undefined) {
+      throw new Error(
+        `${path} must be a whole number of the ad account currency's minor units between 1 and ${MAX_MINOR_UNIT_AMOUNT}, with no sign, fraction, exponent or leading zeros.`,
+      );
+    }
+    return amount;
+  }
+  checkNestedMoney(value, path, depth);
+  return undefined;
+}
+
+function checkNestedMoney(value: unknown, path: string, depth: number): void {
+  if (depth > 10) throw new Error(`${path} is nested too deeply to check for money fields.`);
+  if (typeof value === "string") {
+    if (!/^\s*[[{]/.test(value)) return;
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(value);
+    } catch {
+      return;
+    }
+    checkNestedMoney(decoded, path, depth + 1);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => checkNestedMoney(item, `${path}[${index}]`, depth + 1));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value)) checkMoneyField(key, item, `${path}.${key}`, depth + 1);
+}
+
 /**
  * Encode update fields into Meta's form body, JSON-encoding any nested objects.
  */
@@ -171,14 +239,18 @@ function encodeUpdatesBody(
 ): Record<string, string | number | boolean> {
   const body: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(updates)) {
+    if (!UPDATE_FIELD_NAME.test(key)) {
+      throw new Error(
+        `updates key ${JSON.stringify(key.slice(0, 40))} is not a plain field name (letters, digits and underscores only). Bracketed, dotted or padded keys can be read as nested Graph parameters and would bypass the money-field checks.`,
+      );
+    }
+    const amount = checkMoneyField(key, value, `updates.${key}`, 0);
     if (value === undefined || value === null) continue;
-    if (typeof value === "object") {
+    if (amount !== undefined) {
+      body[key] = amount;
+    } else if (typeof value === "object") {
       body[key] = JSON.stringify(value);
-    } else if (typeof value === "number") {
-      body[key] = key === "daily_budget" || key === "lifetime_budget" || key === "bid_amount"
-        ? String(value)
-        : value;
-    } else if (typeof value === "boolean" || typeof value === "string") {
+    } else if (typeof value === "number" || typeof value === "boolean" || typeof value === "string") {
       body[key] = value;
     }
   }
