@@ -8,7 +8,8 @@ import { AD_DEFAULT_FIELDS } from "../meta/types/ad.js";
 import { CREATIVE_DEFAULT_FIELDS } from "../meta/types/creative.js";
 import type { Ad, AdCreative, AdSet, GeoLocation, MetaApiResponse, TargetingSpec } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
-import { getCloneBundleStore, STALE_IN_PROGRESS_MS } from "../store/clone-bundle-store.js";
+import { getCloneBundleStore, STALE_IN_PROGRESS_MS, tenantCloneKey } from "../store/clone-bundle-store.js";
+import { resolveTenantId } from "../auth/tenant.js";
 import { adaptCopiedTargetingForCreate } from "../meta/targeting-compat.js";
 import { MAX_MINOR_UNIT_AMOUNT, MINOR_UNIT_NOTE, minorUnitAmount } from "../meta/currency.js";
 import { ctaEnum } from "./creatives.js";
@@ -430,8 +431,11 @@ export function registerAdSetTools(server: McpServer): void {
         target_ad_set,
         creative_overrides,
       });
-      const cacheKey = idempotency_key
-        ? `${idempotency_key}:${accountPath}:${sourceAdSetIdValidated}:${target_ad_set.name}`
+      const cacheKey = idempotency_key && !dry_run
+        ? tenantCloneKey(
+            resolveTenantId({ feature: "clone" }),
+            `${idempotency_key}:${accountPath}:${sourceAdSetIdValidated}:${target_ad_set.name}`,
+          )
         : undefined;
       const store = getCloneBundleStore();
 
