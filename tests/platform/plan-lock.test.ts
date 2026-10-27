@@ -12,10 +12,10 @@ const stores: Array<[string, () => { repo: PlatformRepository; data?: Map<string
   ["Firestore repository (transaction fake)", () => { const fake = fakeFirestore(); return { repo: new FirestorePlatformRepository(fake.db), data: fake.data }; }],
 ];
 
-const preparation = (id: string, over: { planHash?: string; tenantId?: string; approvalId?: string } = {}): Preparation => {
+const preparation = (id: string, over: { planHash?: string; lockHash?: string; tenantId?: string; approvalId?: string } = {}): Preparation => {
   const tenantId = over.tenantId ?? "tenant", planHash = over.planHash ?? "plan-1", approvalId = over.approvalId ?? null;
   return {
-    operation: { id, tenantId, clientId: "client", actorId: "actor", tool: "write", planHash, state: "PREPARED", approvalId, createdAt: 1, updatedAt: 1 },
+    operation: { id, tenantId, clientId: "client", actorId: "actor", tool: "write", planHash, ...(over.lockHash ? { lockHash: over.lockHash } : {}), state: "PREPARED", approvalId, createdAt: 1, updatedAt: 1 },
     audit: { id: `${id}:prepared`, tenantId, clientId: "client", actorId: "actor", tool: "write", operationId: id, event: "PREPARED", timestamp: 1, assetKeys: [], planHash, approvalId },
     ...(approvalId ? { approvalId } : {}), expectedRevisionHash: "revision", now: Date.now(), expectedRecords: [],
   };
@@ -53,6 +53,27 @@ describe.each(stores)("per-plan lock in the %s", (_name, make) => {
     expect(await lockOf(repo)).toMatchObject({ state: "HELD", operationId: "op-2", releasedAt: null });
     await repo.finishOperation(completion(second, "UNKNOWN"));
     await expect(repo.prepareOperation(preparation("op-3"))).rejects.toThrow("PRIOR_ATTEMPT_UNRECONCILED");
+  });
+
+  it("keys the lock on the operation's lock hash when it differs from the plan hash, and only that key", async () => {
+    const { repo } = make(), first = preparation("op-1", { planHash: "plan-a", lockHash: "effect-1" });
+    await repo.prepareOperation(first);
+    expect(await lockOf(repo, "effect-1")).toMatchObject({ id: "effect-1", operationId: "op-1", state: "HELD" });
+    expect(await lockOf(repo, "plan-a")).toBeNull();
+    await expect(repo.prepareOperation(preparation("op-2", { planHash: "plan-b", lockHash: "effect-1" }))).rejects.toThrow("PRIOR_ATTEMPT_UNRECONCILED");
+    await repo.finishOperation(completion(first, "UNKNOWN"));
+    await expect(repo.prepareOperation(preparation("op-3", { planHash: "plan-c", lockHash: "effect-1" }))).rejects.toThrow("PRIOR_ATTEMPT_UNRECONCILED");
+    await repo.prepareOperation(preparation("op-4", { planHash: "plan-a", lockHash: "effect-2" }));
+    expect(await lockOf(repo, "effect-2")).toMatchObject({ operationId: "op-4", state: "HELD" });
+  });
+
+  it("releases the lock under the lock hash when the attempt succeeds", async () => {
+    const { repo } = make(), first = preparation("op-1", { planHash: "plan-a", lockHash: "effect-1" });
+    await repo.prepareOperation(first);
+    await repo.finishOperation(completion(first, "SUCCEEDED"));
+    expect(await lockOf(repo, "effect-1")).toMatchObject({ state: "RELEASED", releasedResult: "SUCCEEDED" });
+    await repo.prepareOperation(preparation("op-2", { planHash: "plan-b", lockHash: "effect-1" }));
+    expect(await lockOf(repo, "effect-1")).toMatchObject({ operationId: "op-2", state: "HELD" });
   });
 
   it("is idempotent when the same outcome is finished twice and cannot be released by another operation", async () => {

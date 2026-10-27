@@ -6,13 +6,14 @@ import type { PlatformRepository } from "./repository.js";
  * when that operation finishes SUCCEEDED or FAILED: after UNKNOWN or PARTIAL a provider write may have happened, so the
  * identical plan is not approved or sent again until it is reconciled (a terminal UNKNOWN or PARTIAL operation never
  * changes state, so such a plan stays locked and a changed plan is a different hash).
+ *
+ * The record names no person, client or tool: it is keyed by a one-way hash and points at its operation, which is the
+ * record that carries the app-scoped user id and is covered by Meta data-deletion provenance. A lock row therefore has
+ * nothing of its own to erase.
  */
 export interface OperationPlanLock {
   id: string;
   tenantId: string;
-  clientId: string;
-  actorId: string;
-  tool: string;
   operationId: string;
   state: "HELD" | "RELEASED";
   createdAt: number;
@@ -22,8 +23,13 @@ export interface OperationPlanLock {
 
 export const PRIOR_ATTEMPT_UNRECONCILED = "PRIOR_ATTEMPT_UNRECONCILED";
 
-export function newPlanLock(operation: Pick<Operation, "planHash" | "tenantId" | "clientId" | "actorId" | "tool" | "id">, createdAt: number): OperationPlanLock {
-  return { id: operation.planHash, tenantId: operation.tenantId, clientId: operation.clientId, actorId: operation.actorId, tool: operation.tool, operationId: operation.id, state: "HELD", createdAt, releasedAt: null, releasedResult: null };
+/** The lock key of an operation: the hash of what it sends. Operations stored before the key existed, and plans without non-sent evidence, use the plan hash itself. */
+export function planLockKey(operation: Pick<Operation, "planHash" | "lockHash">): string {
+  return operation.lockHash ?? operation.planHash;
+}
+
+export function newPlanLock(operation: Pick<Operation, "planHash" | "lockHash" | "tenantId" | "id">, createdAt: number): OperationPlanLock {
+  return { id: planLockKey(operation), tenantId: operation.tenantId, operationId: operation.id, state: "HELD", createdAt, releasedAt: null, releasedResult: null };
 }
 
 export function releasedPlanLock(lock: OperationPlanLock, result: "SUCCEEDED" | "FAILED", releasedAt: number): OperationPlanLock {

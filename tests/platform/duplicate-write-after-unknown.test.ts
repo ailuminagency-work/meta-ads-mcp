@@ -56,16 +56,23 @@ const approve = async (f: Fixture, client: Client, args: Record<string, unknown>
 };
 const send = (client: Client, approvalId: string, args: Record<string, unknown> = input) => call(client, "ads_create_campaign", { ...args, client_id: "client", approval_id: approvalId });
 const reasonOf = (response: { content: unknown }) => JSON.stringify(response.content);
+type PostOutcome = "lost-response" | "created" | "rejected" | "server-error" | "graph-code-1" | "html-rejection" | "transient-rejection";
 /** Meta POSTs are scripted per attempt; every GET goes to the fixture's provider. */
-function scriptPosts(outcomes: Array<"lost-response" | "created">) {
+function scriptPosts(outcomes: PostOutcome[]) {
   const base = globalThis.fetch as typeof fetch, posts: string[] = [];
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   vi.stubGlobal("fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
     if (new URL(String(url)).hostname === "127.0.0.1") return localFetch(url, init);
     if (init?.method === "POST") {
       const outcome = outcomes[posts.length] ?? "created";
       posts.push(String(url));
       if (outcome === "lost-response") throw new Error("socket hang up (response lost after Meta processed the request)");
-      return new Response(JSON.stringify({ id: String(777 + posts.length) }));
+      if (outcome === "rejected") return json(400, { error: { message: "Invalid parameter", type: "OAuthException", code: 100 } });
+      if (outcome === "server-error") return json(500, { error: { message: "Internal error", code: 2 } });
+      if (outcome === "graph-code-1") return json(400, { error: { message: "An unknown error occurred", code: 1 } });
+      if (outcome === "transient-rejection") return json(400, { error: { message: "Please retry", code: 100, is_transient: true } });
+      if (outcome === "html-rejection") return new Response("<html>Bad Request</html>", { status: 400 });
+      return json(200, { id: String(777 + posts.length) });
     }
     return base(url as never, init);
   });
@@ -135,6 +142,41 @@ describe("an identical plan is not re-approved or re-sent after an attempt whose
       expect(again.isError, reasonOf(again)).not.toBe(true);
       expect(posts).toHaveLength(2);
       expect(await states(f)).toEqual(["SUCCEEDED", "SUCCEEDED"]);
+    });
+  });
+
+  describe("only a failure that cannot have changed anything at Meta frees the plan", () => {
+    it("Meta rejecting the request body (HTTP 400, Graph code 100) finishes FAILED, releases the lock and allows the identical retry", async () => {
+      const f = await fixture(), posts = scriptPosts(["rejected", "created"]);
+      await withClient(async client => {
+        const first = await send(client, await approve(f, client));
+        expect(first.isError).toBe(true);
+        expect(reasonOf(first)).toContain("LEGACY_WRITE_REJECTED_BY_PROVIDER");
+        expect(await states(f)).toEqual(["FAILED"]);
+        expect(await f.repo.list("operationPlanLocks", "tenant")).toMatchObject([{ state: "RELEASED", releasedResult: "FAILED" }]);
+        const retry = await send(client, await approve(f, client));
+        expect(retry.isError, reasonOf(retry)).not.toBe(true);
+        expect(posts).toHaveLength(2);
+        expect(await states(f)).toEqual(["FAILED", "SUCCEEDED"]);
+      });
+    });
+
+    it.each([
+      ["the POST was sent and the response was lost", "lost-response"],
+      ["Meta answered 5xx", "server-error"],
+      ["Meta answered 400 with Graph code 1 (unknown error)", "graph-code-1"],
+      ["Meta answered 400 with a transient error", "transient-rejection"],
+      ["Meta answered 400 with a body that is not a Graph error", "html-rejection"],
+    ] as Array<[string, PostOutcome]>)("stays UNKNOWN and keeps the lock when %s", async (_label, outcome) => {
+      const f = await fixture(), posts = scriptPosts([outcome, "created"]);
+      await withClient(async client => {
+        expect((await send(client, await approve(f, client))).isError).toBe(true);
+        expect(await states(f)).toEqual(["UNKNOWN"]);
+        expect(await f.repo.list("operationPlanLocks", "tenant")).toMatchObject([{ state: "HELD" }]);
+        const again = await prepare(client);
+        expect(again.body).toMatchObject({ status: "HOLD", reason: "PRIOR_ATTEMPT_UNRECONCILED" });
+        expect(posts).toHaveLength(1);
+      });
     });
   });
 });

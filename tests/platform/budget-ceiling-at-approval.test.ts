@@ -33,7 +33,15 @@ async function world() {
     await manual.attest({ tenantId: "tenant", operatorId: "100" }, "client", c.id, { requirementHash: requirement.requirementHash, documentReferenceHash: "d".repeat(64), ...(requirement.maxAgeMs < 3600000 ? { minutes: Math.floor(requirement.maxAgeMs / 60000) } : { hours: 1 }), reviewedIdentityHash: manualEligibilityIdentity(c, "client"), reviewedConnectionRevision: c.revision });
   }
   configurePlatformRepository(f.repo);
-  vi.stubGlobal("fetch", f.fetcher);
+  const sent: string[] = [];
+  let interception: ((request: { method: string; path: string }) => Response | Error | undefined) | undefined;
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = { method: init?.method ?? "GET", path: new URL(String(input)).pathname.replace("/v26.0", "") };
+    sent.push(request.method + ":" + request.path);
+    const scripted = interception?.(request);
+    if (scripted instanceof Error) throw scripted;
+    return scripted ?? f.fetcher(input, init);
+  });
   const server = createServer(), client = new Client({ name: "ceiling-at-approval", version: "1" }), [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a); await client.connect(b);
   const call = async (name: string, args: Record<string, unknown>) => {
@@ -45,7 +53,8 @@ async function world() {
   const activate = (approvalId: string) => call("marketing_activate_ad", { client_id: "client", asset_id: "401", connection_id: connected.connectionId, input: reviewed, approval_id: approvalId });
   const human = { tenantId: "tenant", operatorId: "200" };
   const posts = () => f.network.filter(n => n.startsWith("POST"));
-  return { f, call, prepare, activate, human, posts, close: async () => { await client.close(); await server.close(); } };
+  const intercept = (hook: typeof interception) => { interception = hook; };
+  return { f, call, prepare, activate, human, posts, sent, intercept, close: async () => { await client.close(); await server.close(); } };
 }
 
 describe("an over-ceiling or unconfigured activation never reaches a human", () => {
@@ -120,6 +129,53 @@ describe("the ceiling is re-checked while the approval is still unspent", () => 
       expect(allowed.isError, allowed.text).toBe(false);
       expect(w.posts()).toEqual(["POST:/401"]);
       expect((await w.f.repo.list("approvals", "tenant"))[0].consumedAt).not.toBeNull();
+    } finally { await w.close(); }
+  });
+});
+
+describe("a failure frees the plan only when it cannot have reached Meta", () => {
+  const operations = async (w: Awaited<ReturnType<typeof world>>) => (await w.f.repo.list("operations", "tenant")).filter(o => o.tool === "marketing_activate_ad");
+  const locks = async (w: Awaited<ReturnType<typeof world>>) => await w.f.repo.list("operationPlanLocks", "tenant");
+
+  it("a transient read failure before any write finishes FAILED, releases the plan lock and lets the identical request be approved and run", async () => {
+    vi.stubEnv(BUDGET_CEILINGS_ENV, within());
+    const w = await world();
+    try {
+      const approvalId = await issueHumanApproval(w.f.repo, w.human, (await w.prepare()).body.request_id as string);
+      let failed = 0;
+      w.intercept(({ method }) => method === "GET" && failed++ === 0 ? new Error("ECONNRESET (transient, before any write)") : undefined);
+      const first = await w.activate(approvalId);
+      w.intercept(undefined);
+      expect(first.isError).toBe(true);
+      expect(w.sent.filter(n => n.startsWith("POST"))).toEqual([]);
+      expect((await operations(w)).map(o => o.state)).toEqual(["FAILED"]);
+      expect((await locks(w)).map(l => l.state)).toEqual(["RELEASED"]);
+      const again = await w.prepare();
+      expect(again.isError, again.text).toBe(false);
+      expect(again.body).not.toMatchObject({ reason: "PRIOR_ATTEMPT_UNRECONCILED" });
+      const second = await w.activate(await issueHumanApproval(w.f.repo, w.human, again.body.request_id as string));
+      expect(second.isError, second.text).toBe(false);
+      expect(w.posts()).toEqual(["POST:/401"]);
+      expect((await operations(w)).map(o => o.state)).toEqual(["FAILED", "SUCCEEDED"]);
+    } finally { await w.close(); }
+  });
+
+  it("a write whose response was lost stays UNKNOWN, keeps the plan locked and refuses the identical request", async () => {
+    vi.stubEnv(BUDGET_CEILINGS_ENV, within());
+    const w = await world();
+    try {
+      const approvalId = await issueHumanApproval(w.f.repo, w.human, (await w.prepare()).body.request_id as string);
+      w.intercept(({ method }) => method === "POST" ? new Error("socket hang up (response lost after the request was sent)") : undefined);
+      const first = await w.activate(approvalId);
+      w.intercept(undefined);
+      expect(first.isError).toBe(true);
+      expect(w.sent.filter(n => n.startsWith("POST"))).toEqual(["POST:/401"]);
+      expect((await operations(w)).map(o => o.state)).toEqual(["UNKNOWN"]);
+      expect((await locks(w)).map(l => l.state)).toEqual(["HELD"]);
+      const again = await w.prepare();
+      expect(again.isError).toBe(true);
+      expect(again.body).toMatchObject({ status: "HOLD", reason: "PRIOR_ATTEMPT_UNRECONCILED" });
+      expect(w.sent.filter(n => n.startsWith("POST"))).toEqual(["POST:/401"]);
     } finally { await w.close(); }
   });
 });

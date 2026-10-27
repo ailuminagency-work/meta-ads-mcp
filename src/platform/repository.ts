@@ -63,7 +63,7 @@ import type { Approval, ApprovalRequest, ControlAudit, AssetGrant, AuditRecord, 
 import { PlatformDenied } from "./models.js";
 import { canonicalJson } from "./policy.js";
 import { assetKey } from "./assets.js";
-import { isPlanLockHeld, newPlanLock, releasedPlanLock, releasesPlanLock, type OperationPlanLock } from "./plan-lock.js";
+import { isPlanLockHeld, newPlanLock, planLockKey, releasedPlanLock, releasesPlanLock, type OperationPlanLock } from "./plan-lock.js";
 
 export interface Records {operationPlanLocks:OperationPlanLock;signalDiscoveryProposals:SignalDiscoveryProposal;appPromotionProposals:AppPromotionProposal;trackingChangeJobs:TrackingChangeJob;pausedAdBatchJobs:PausedAdBatchJob;businessOwnerAttestations:BusinessOwnerAttestation; whatsappSetupLeases:WhatsAppSetupLease;whatsappSetupCommands:WhatsAppSetupCommand; researchFinancialCheckpoints:ResearchFinancialCheckpoint;researchJobs:ResearchJob;researchBudgets:ResearchBudget;researchApprovals:ResearchApproval; manualEligibilityAttestations:ManualEligibilityAttestation; hashtagQuotas:HashtagQuota; ownerBillingAttestations:OwnerBillingAttestation;accountOwnershipObservations:AccountOwnershipObservation; pageInspectionDelegations:PageInspectionDelegation; compatibilityObservations:CompatibilityObservation; targetingLookups:TargetingLookup; mediaProposals:MediaProposal; videoProposals:VideoProposal; attachmentProposals:AttachmentProposal; discoveryProposals:DiscoveryProposal; tenants: Tenant; members: Member; clients: Client; assets: MetaAsset; grants: AssetGrant; connections: Connection; credentials: Credential; approvals: Approval; operations: Operation; audit: AuditRecord; operatorIndex: PlatformPrincipal; approvalRequests:ApprovalRequest; controlAudit:ControlAudit }
 export type Collection = keyof Records;
@@ -401,7 +401,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     let approval: Approval | null = null;
     if (input.approvalId) { approval = this.records.get(key("approvals", op.tenantId, input.approvalId)) as Approval ?? null; checkApproval(approval, input); checkApprover(this.records.get(key("members",op.tenantId,approval!.approverId)) as Member ?? null,approval!,input); }
     if (this.records.has(key("audit", op.tenantId, input.audit.id))) throw new PlatformDenied("AUDIT_ALREADY_EXISTS");
-    if (isPlanLockHeld(this.records.get(key("operationPlanLocks", op.tenantId, op.planHash)) as OperationPlanLock | undefined)) throw new PlatformDenied("PRIOR_ATTEMPT_UNRECONCILED");
+    if (isPlanLockHeld(this.records.get(key("operationPlanLocks", op.tenantId, planLockKey(op))) as OperationPlanLock | undefined)) throw new PlatformDenied("PRIOR_ATTEMPT_UNRECONCILED");
     const nextOperation = structuredClone(op);
     const nextAudit = structuredClone(input.audit);
     const nextApproval = approval ? structuredClone({ ...approval, consumedAt: input.now, operationId: op.id }) : null;
@@ -410,7 +410,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     if(input.deletionClaim)this.store("assets",op.tenantId,input.deletionClaim.after.key,structuredClone(input.deletionClaim.after));
     if(input.publicationClaim)this.store("assets",op.tenantId,input.publicationClaim.after.key,structuredClone(input.publicationClaim.after));
     if (nextApproval) this.store("approvals", op.tenantId, nextApproval.id, nextApproval);
-    this.store("operationPlanLocks", op.tenantId, op.planHash, newPlanLock(op, input.now));
+    this.store("operationPlanLocks", op.tenantId, planLockKey(op), newPlanLock(op, input.now));
     this.store("operations", op.tenantId, op.id, nextOperation);
     this.store("audit", op.tenantId, nextAudit.id, nextAudit);
   }
@@ -432,8 +432,8 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     if(input.created){const c=structuredClone(input.created);this.store("assets",input.tenantId,c.asset.key,c.asset);this.store("grants",input.tenantId,c.grant.id,c.grant);this.store("connections",input.tenantId,c.connectionAfter.id,c.connectionAfter);}
     if(input.deleted){const d=input.deleted;this.store("assets",input.tenantId,d.assetAfter.key,structuredClone(d.assetAfter));for(const g of d.grantsAfter)this.store("grants",input.tenantId,g.id,structuredClone(g));for(const c of d.connectionsAfter)this.store("connections",input.tenantId,c.id,structuredClone(c));}
     if(input.repointed)this.store("assets",input.tenantId,input.repointed.assetAfter.key,structuredClone(input.repointed.assetAfter));
-    const heldLock = this.records.get(key("operationPlanLocks",input.tenantId,operation!.planHash)) as OperationPlanLock | undefined;
-    if(releasesPlanLock(heldLock,operation!.id,input.result))this.store("operationPlanLocks",input.tenantId,operation!.planHash,releasedPlanLock(heldLock!,input.result as "SUCCEEDED"|"FAILED",input.audit.timestamp));
+    const heldLock = this.records.get(key("operationPlanLocks",input.tenantId,planLockKey(operation!))) as OperationPlanLock | undefined;
+    if(releasesPlanLock(heldLock,operation!.id,input.result))this.store("operationPlanLocks",input.tenantId,planLockKey(operation!),releasedPlanLock(heldLock!,input.result as "SUCCEEDED"|"FAILED",input.audit.timestamp));
     this.store("audit",input.tenantId,audit.id,audit);
     this.store("operations",input.tenantId,input.operationId,nextOperation);
   }
@@ -566,7 +566,7 @@ export class FirestorePlatformRepository implements PlatformRepository {
     const opRef = this.collection("operations", op.tenantId).doc(key("operations", op.tenantId, op.id));
     const auditRef = this.collection("audit", op.tenantId).doc(key("audit", op.tenantId, input.audit.id));
     const approvalRef = input.approvalId ? this.collection("approvals", op.tenantId).doc(key("approvals", op.tenantId, input.approvalId)) : null;
-    const lockRef = this.collection("operationPlanLocks", op.tenantId).doc(key("operationPlanLocks", op.tenantId, op.planHash));
+    const lockRef = this.collection("operationPlanLocks", op.tenantId).doc(key("operationPlanLocks", op.tenantId, planLockKey(op)));
     await this.db.runTransaction(async tx => {
       const existing = await tx.get(opRef);
       const audit = await tx.get(auditRef);
@@ -601,7 +601,7 @@ export class FirestorePlatformRepository implements PlatformRepository {
       if(checkCompletion(operation.exists ? operation.data() as Operation : null,audit.exists ? audit.data() as AuditRecord : null,input) === "IDEMPOTENT") return;
       const storedOperation=operation.data() as Operation,provenanceIdentities=privacyIdentities([], [storedOperation.actorId]);if(storedOperation.appId&&storedOperation.metaAppUserId)provenanceIdentities.push({appId:storedOperation.appId,appUserId:storedOperation.metaAppUserId});
       const privacyLocks=await Promise.all(provenanceIdentities.map(i=>tx.get(this.db.collection("platform_meta_privacy_subject_locks").doc(privacySubjectHash(i.appId,i.appUserId)))));if(privacyLocks.some(lock=>lock.exists))throw new PlatformDenied("APP_USER_PRIVACY_LOCKED");
-      const planLockRef=this.collection("operationPlanLocks",input.tenantId).doc(key("operationPlanLocks",input.tenantId,storedOperation.planHash)),planLock=await tx.get(planLockRef);
+      const planLockRef=this.collection("operationPlanLocks",input.tenantId).doc(key("operationPlanLocks",input.tenantId,planLockKey(storedOperation))),planLock=await tx.get(planLockRef);
       if(input.created){
         const c=input.created;
         const privacyLock=await tx.get(this.db.collection("platform_meta_privacy_subject_locks").doc(privacySubjectHash(c.connectionBefore.appId,connectionPrivacyAppUserId(c.connectionBefore)))),lifecycleLock=await tx.get(this.db.collection("platform_lifecycle_locks").doc(enrollmentLockKey(c.connectionBefore.appId,c.connectionBefore.operatorId)));if(privacyLock.exists||lifecycleLock.exists)throw new PlatformDenied("APP_USER_PRIVACY_LOCKED");

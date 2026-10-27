@@ -23,7 +23,9 @@ import { PlatformDenied } from "./models.js";
 import type { Collection, CreatedCompletion, PlatformRepository } from "./repository.js";
 import { assetKey, resolveAuthorizedAssets } from "./assets.js";
 import { decryptCredential, selectConnection, assertWhatsAppPhoneUnlocked } from "./connections.js";
-import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, normalizeSafeDiff, revisionHash } from "./policy.js";
+import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, hasPolicyGuard, normalizeSafeDiff, planLockHash, revisionHash } from "./policy.js";
+// Importing the value loads the module, which registers the per-client budget ceiling guard: every permit is issued here, so the guard must exist however this module is reached.
+import { BUDGET_CEILING_GUARD } from "./budget-ceiling-guard.js";
 
 export interface ExecutionPermit { readonly operationId: string; readonly context: Readonly<OperationContext>; readonly assetKeys: readonly string[]; readonly connectionId: string; readonly planHash: string }
 interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; providerReadProof?:{accountId:string;checkedAt:number;expiresAt:number;providerBusinessId?:string}; terminalHash?: string; finishing?: Promise<void>; createdHash?:string;createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
@@ -51,10 +53,12 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
       (g.expiresAt > now || allowExpiredBootstrap);
   });
   const snapshot: AuthorizationSnapshot = {tenant,member,client,assets,connection,grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client),financialEvidence:await loadOwnershipEvidence(repo,ctx,assets),manualEligibilityEvidence:await loadManualEligibilityEvidence(repo,ctx,connection,[...(connection.appPromotionProfile&&plan.assets.some(a=>a.type==="APP")?[appPurchaseRequirement(connection.appPromotionProfile.bindingHash)]:[]),...Object.keys(PRODUCT_CONTRACTS.find(c=>c.tool===ctx.tool&&c.provider===ctx.provider)?.eligibilityPolicies??{}),...(ctx.provider==="META_MARKETING"?[legacyMarketingReadRequirement(),...(ctx.tool.startsWith("ads_")&&plan.classes.some(c=>c!=="READ")?[legacyMarketingWriteRequirement()]:[])]:[])])};
+  if(!hasPolicyGuard(BUDGET_CEILING_GUARD)) throw new PlatformDenied("POLICY_GUARD_MISSING");
   const decision = evaluatePolicy(ctx, plan, snapshot, options);
   if(decision.decision === "DENY") throw new PlatformDenied(decision.reason);
   if(decision.decision === "REQUIRE_CONFIRMATION" && !options.approvalId) throw new PlatformDenied(decision.reason);
   const planHash = canonicalPlanHash(ctx, plan);
+  const lockHash = planLockHash(ctx, plan);
   const mutation = plan.classes.some(c => c !== "READ");
   const operationId = options.operationId ?? randomUUID();
   let approvalDeadline=Infinity;
@@ -82,7 +86,7 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
       publicationClaim={before,after:{...before,revision:before.revision+1,publicationClaim:{operationId,claimedAt:now}}};
     }
     if(ctx.tool==="marketing_delete_paused_ad"){const parameters=plan.parameters as {asset_id?:unknown},before=snapshot.assets.find(a=>a.type==="AD"&&a.id===parameters.asset_id);if(!before||before.deletionClaim)throw new PlatformDenied("DELETION_ALREADY_CLAIMED_RECONCILE");deletionClaim={before,after:{...before,revision:before.revision+1,deletionClaim:{operationId,claimedAt:now}}};}
-    const operation: Operation = {appId:connection.appId,metaAppUserId:connectionPrivacyAppUserId(connection),id: operationId, tenantId: ctx.principal.tenantId, clientId: ctx.clientId, actorId: ctx.principal.operatorId, tool: ctx.tool, planHash, state: "PREPARED", approvalId: options.approvalId ?? null, createdAt: now, updatedAt: now};
+    const operation: Operation = {appId:connection.appId,metaAppUserId:connectionPrivacyAppUserId(connection),id: operationId, tenantId: ctx.principal.tenantId, clientId: ctx.clientId, actorId: ctx.principal.operatorId, tool: ctx.tool, planHash, ...(lockHash !== planHash ? { lockHash } : {}), state: "PREPARED", approvalId: options.approvalId ?? null, createdAt: now, updatedAt: now};
     const audit: AuditRecord = {id: `${operationId}:prepared`, tenantId: operation.tenantId, clientId: ctx.clientId, actorId: operation.actorId, tool: ctx.tool, operationId, event: "PREPARED", timestamp: now, assetKeys: assets.map(a => a.key), planHash, approvalId: operation.approvalId,requestedChange:normalizeSafeDiff(plan.parameters),beforeEvidence:"UNKNOWN"};
     await repo.prepareOperation({selectedConnectionId:connection.id,operation,audit,creativeRepointClaim,deletionClaim,publicationClaim,publicationClaims,approvalId: options.approvalId,expectedRevisionHash: revisionHash(snapshot),now, expectedRecords: [
       ...preparationApprovalExpected,
@@ -243,6 +247,8 @@ export function claimMutationStep(permit: ExecutionPermit): void {
   if(!state.mutation || state.mutationClaimed || state.finishing || state.terminalHash) throw new PlatformDenied("MUTATION_STEP_ALREADY_CLAIMED_OR_NOT_AUTHORIZED");
   state.mutationClaimed = true;
 }
+/** True once this permit has begun its single provider mutation, which is the point after which a write may have reached Meta. */
+export function mutationStepClaimed(permit: ExecutionPermit): boolean { return permits.get(permit)?.mutationClaimed === true; }
 export async function withConnectionCredential<T>(permit: ExecutionPermit, fn: (token: string) => Promise<T>): Promise<T> {
   await revalidateExecutionPermit(permit);
   const state = validate(permit);
