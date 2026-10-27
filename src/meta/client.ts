@@ -21,17 +21,58 @@ import { assertExecutionPermit, getExecutionScope, persistProviderReadEligibilit
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
 const MAX_RETRIES = 3;
+const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const STRICT_MAX_RESPONSE_BYTES = 2_000_000;
 const RETRY_BASE_DELAY = 1000;
 const USAGE_LOG_INTERVAL_MS = 60_000;
 const VERSION_WARNING_LOG_INTERVAL_MS = 60 * 60_000;
 
 class ProviderHttpError extends Error {}
 
+/**
+ * A transport retry replays the request after a timeout, 5xx or dropped
+ * connection, where the first attempt may already have succeeded on Meta's
+ * side. Meta has no native idempotency key, so that is only safe for reads,
+ * DELETEs and a POST that updates a node in place (`/{id}`, `/act_{id}`).
+ * Every POST to an edge (`/act_N/campaigns`, `/{id}/copies`, `/{id}/feed`,
+ * `/{id}/media_publish`, `/{id}/messages`, the WhatsApp creating edges...)
+ * creates a resource or sends something, and the batch endpoint (`POST /`) can
+ * carry any of those, so none of them is ever replayed. New edges are
+ * protected by default rather than by remembering to list them.
+ */
+export function isTransportRetrySafe(method: string, path: string): boolean {
+  if (method === "GET" || method === "DELETE") return true;
+  if (method !== "POST") return false;
+  return /^\/?[A-Za-z0-9_]+$/.test(path.split("?")[0]);
+}
+
+/**
+ * The request timer covers the body read, not just the headers, and a body is
+ * read under a byte budget. The race with the abort signal makes the deadline
+ * ours rather than a property of the fetch implementation: a server that sends
+ * headers and then drips (or stops) can no longer hold the call open.
+ */
+function readBounded(response: Response, signal: AbortSignal, maxBytes: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const onAbort = (): void => reject(new DOMException("The operation was aborted", "AbortError"));
+    if (signal.aborted) {
+      void response.body?.cancel().catch(() => undefined);
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    readBodyWithLimit(response, maxBytes)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 export interface MetaApiClientConfig {
   apiVersion?: string;
   baseUrl?: string;
   timeout?: number;
   maxRetries?: number;
+  maxResponseBytes?: number;
 }
 
 interface RequestScope {
@@ -60,6 +101,7 @@ export class MetaApiClient {
   private readonly baseUrl: string;
   private readonly timeout: number;
   private readonly maxRetries: number;
+  private readonly maxResponseBytes: number;
   private readonly rateLimiter = new RateLimiter();
   private readonly circuitBreaker = new CircuitBreaker();
   private readonly writePacer = new WritePacer();
@@ -71,6 +113,7 @@ export class MetaApiClient {
     this.baseUrl = config?.baseUrl ?? DEFAULT_BASE_URL;
     this.timeout = config?.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = config?.maxRetries ?? MAX_RETRIES;
+    this.maxResponseBytes = config?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   }
 
   async get<T>(
@@ -219,26 +262,14 @@ export class MetaApiClient {
 
     const reqUrl = platformEnabled() || skipTokenParam ? url : this.appendToken(url, token);
 
-    // POST to /act_<id>/<collection> creates new resources without native
-    // idempotency on Meta's side — retrying a timeout/5xx/network error can
-    // mint duplicates (e.g. two ad sets for one user intent). The /<id>/copies
-    // edge (ad/ad set/campaign duplication) creates a resource on a non-act_
-    // path, so it must be classed as creating too — otherwise a retried copy
-    // mints a duplicate ad. The WhatsApp creating edges live on plain-numeric
-    // WABA/phone paths: /message_templates, /flows, /message_qrdls create
-    // resources, and /request_code sends a real SMS/voice call — all mint
-    // duplicates on retry. Other POSTs (updates on /<id>) and DELETEs are
-    // idempotent at the API level.
-    const isCreatingRequest =
-      method === "POST" &&
-      (/^\/?act_[A-Za-z0-9]+\//.test(path) ||
-        /\/copies$/.test(path) ||
-        /\/(message_templates|flows|message_qrdls|request_code)$/.test(path));
-    const canRetryTransport = !isCreatingRequest;
+    const canRetryTransport = isTransportRetrySafe(method, path);
 
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      if (attempt > 0 && !canRetryTransport) {
+        throw new Error("INVARIANT_VIOLATED: a non-idempotent request must not be retried");
+      }
       try {
         await assertLegacyReadEgress(method,path,url);
         const controller = new AbortController();
@@ -266,8 +297,6 @@ export class MetaApiClient {
           : await performFetch(token);
         } catch(error){clearTimeout(timeoutId);throw error;}
 
-        if(!platformEnabled()) clearTimeout(timeoutId);
-
         // Update rate-limiter + pacer from response headers — regardless of
         // whether the response was OK. Throttle signals travel on error
         // responses too.
@@ -277,7 +306,7 @@ export class MetaApiClient {
         this.maybeLogVersionWarning(response.headers);
 
         let body:unknown;
-        try { body=platformEnabled()?JSON.parse(await readBodyWithLimit(response,2_000_000)):await response.json(); }
+        try { body=JSON.parse(await readBounded(response,controller.signal,platformEnabled()?STRICT_MAX_RESPONSE_BYTES:this.maxResponseBytes)); }
         finally { clearTimeout(timeoutId); }
 
         if (typeof body === "object" && body !== null && Object.hasOwn(body, "error") && !isMetaApiError(body)) {
@@ -329,6 +358,7 @@ export class MetaApiClient {
           throw lastError;
         }
 
+        this.writePacer.learnFromResponse(tokenHash, accountId, path, body);
         const projected=projectLegacyReadResponse(path,url,body) as T;
         const requestUrl=new URL(url);
         const scope=platformEnabled()?getExecutionScope():undefined;
@@ -342,6 +372,7 @@ export class MetaApiClient {
       } catch (error) {
         if(error instanceof PlatformDenied)throw error;
         if(platformEnabled()&&(error instanceof BodyTooLargeError||error instanceof SyntaxError))throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_INVALID_OR_TOO_LARGE");
+        if(error instanceof BodyTooLargeError)throw new ProviderHttpError("META_PROVIDER_RESPONSE_TOO_LARGE");
         if (error instanceof Error && error.name === "AbortError") {
           lastError = new Error(`Request timeout after ${this.timeout}ms`);
           if (canRetryTransport && attempt < this.maxRetries) {

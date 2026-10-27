@@ -3,6 +3,17 @@ import { logger } from "../utils/logger.js";
 
 const DEFAULT_GRACE_MS = 25_000;
 
+let draining = false;
+
+/** True from the first SIGTERM/SIGINT; /ready uses it to leave rotation while in-flight work finishes. */
+export function isShuttingDown(): boolean {
+  return draining;
+}
+
+export function resetShutdownStateForTests(): void {
+  draining = false;
+}
+
 interface ShutdownOptions {
   graceMs?: number;
   signals?: NodeJS.Signals[];
@@ -33,6 +44,7 @@ export function installGracefulShutdown(server: Server, options: ShutdownOptions
       return;
     }
     shuttingDown = true;
+    draining = true;
     logger.info({ signal, graceMs }, "Shutting down: no new connections, waiting for in-flight requests");
 
     const forced = setTimeout(() => {

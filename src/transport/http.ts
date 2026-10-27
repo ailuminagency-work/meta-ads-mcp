@@ -56,6 +56,7 @@ import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
 import { installGracefulShutdown } from "./graceful-shutdown.js";
+import { createReadinessCheck, createReadinessHandler } from "./readiness.js";
 import {
   CONNECTIONS_PATH,
   PAGE_STYLES,
@@ -585,7 +586,7 @@ export async function startHttpTransport(
 
   if (isProduction) {
     app.use((req, res, next) => {
-      if (req.path === "/health") { next(); return; }
+      if (req.path === "/health" || req.path === "/ready") { next(); return; }
       if (req.header("x-forwarded-proto") !== "https") {
         res.redirect(301, `${getServerUrl().origin}${req.originalUrl}`);
         return;
@@ -710,6 +711,8 @@ export async function startHttpTransport(
   app.get("/health", (_req, res) => {
     res.json(healthPayload({ ffmpeg: ffmpegRuntime.lastKnownAvailability() }));
   });
+
+  app.get("/ready", createReadinessHandler(createReadinessCheck()));
 
   if (config.multiTenantEnabled) {
     // Registered BEFORE mountAuthRoutes on purpose: Express matches in

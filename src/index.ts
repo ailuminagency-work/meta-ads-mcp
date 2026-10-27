@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 
 import { parseArgs } from "node:util";
-import { resolveDeploymentMode, validateAgencyEnvironment } from "./transport/deployment-config.js";
+import {
+  describeDeployment,
+  resolveDeploymentMode,
+  validateAgencyEnvironment,
+  validateVideoConcurrency,
+} from "./transport/deployment-config.js";
 import { startWaitingTransport } from "./transport/waiting.js";
 import { materializeGoogleCredentials } from "./transport/google-credentials.js";
 import { logger } from "./utils/logger.js";
@@ -29,14 +34,17 @@ async function main(): Promise<void> {
   const mode = resolveDeploymentMode();
   if (mode === "awaiting_credentials") {
     if (transport !== "http") throw new Error("Credential-waiting mode requires HTTP transport");
+    logger.info(describeDeployment(mode), "Deployment configuration");
     await startWaitingTransport(port);
     return;
   }
+  validateVideoConcurrency();
   if (mode === "agency") {
     const cleanup = materializeGoogleCredentials();
     process.once("exit", cleanup);
     validateAgencyEnvironment();
   }
+  logger.info(describeDeployment(mode), "Deployment configuration");
   const { createServer } = await import("./server.js");
   logger.info(
     { transport, port: transport === "http" ? port : undefined },
