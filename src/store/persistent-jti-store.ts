@@ -30,6 +30,8 @@ export interface JtiStore {
   put(jti: string, entry: JtiEntry): Promise<void>;
   /** Returns true if the jti exists and is not expired. */
   has(jti: string): Promise<boolean>;
+  /** The stored entry, or undefined when it is missing or expired. */
+  get(jti: string): Promise<JtiEntry | undefined>;
   /**
    * Atomically: returns true and removes the jti if it existed (and is
    * not expired); returns false otherwise. Used by refresh-token rotation
@@ -61,6 +63,13 @@ export class FirestoreJtiStore implements JtiStore {
       return false;
     }
     return true;
+  }
+
+  async get(jti: string): Promise<JtiEntry | undefined> {
+    const snap = await this.collection.doc(jti).get();
+    if (!snap.exists) return undefined;
+    const data = snap.data() as JtiEntry;
+    return data.expiresAt < Math.floor(Date.now() / 1000) ? undefined : data;
   }
 
   async consume(jti: string, options?: ConsumeOptions): Promise<boolean> {
@@ -99,6 +108,16 @@ export class InMemoryJtiStore implements JtiStore {
       return false;
     }
     return true;
+  }
+
+  async get(jti: string): Promise<JtiEntry | undefined> {
+    const entry = this.map.get(jti);
+    if (!entry) return undefined;
+    if (entry.expiresAt < Math.floor(Date.now() / 1000)) {
+      this.map.delete(jti);
+      return undefined;
+    }
+    return entry;
   }
 
   async consume(jti: string, options?: ConsumeOptions): Promise<boolean> {

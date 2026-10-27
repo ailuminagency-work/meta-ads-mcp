@@ -48,6 +48,7 @@ const REFRESH_TTL_SECONDS = 30 * 24 * 3600;
 const REFRESH_REUSE_GRACE_SECONDS = 60;
 const FAMILY_REVOKED_PREFIX = "rtfam:";
 const ROTATED_PREFIX = "rtrot:";
+const CODE_REDEEMED_PREFIX = "rtcode:";
 const REVOKED_MESSAGE = "User authorization has been revoked";
 
 let cachedSecret: Uint8Array | undefined;
@@ -70,6 +71,10 @@ function getJwtSecret(): Uint8Array {
   process.env.OAUTH_SECRET = randomSecret;
   cachedSecret = new TextEncoder().encode(randomSecret);
   return cachedSecret;
+}
+
+function redeemedCodeKey(code: string): string {
+  return CODE_REDEEMED_PREFIX + crypto.createHash("sha256").update(code).digest("hex");
 }
 
 function pkceVerifierMatches(verifier: string | undefined, challenge: string | undefined): boolean {
@@ -185,6 +190,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     // first caller sees the entry. RFC 6749 §10.5: codes must be single-use.
     const entry = await this.authCodesImpl.consume(authorizationCode);
     if (!entry) {
+      await this.handleCodeReplay(authorizationCode, client.client_id);
       throw new InvalidGrantError("Invalid authorization code");
     }
 
@@ -212,11 +218,50 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       throw new InvalidGrantError(REVOKED_MESSAGE);
     }
 
+    const familyId = crypto.randomBytes(16).toString("hex");
+    const redeemedAt = Math.floor(Date.now() / 1000);
+    // Lets a later replay of this code find, and revoke, the tokens it produced.
+    // Keyed by a hash so the code itself is not kept beside the refresh tokens.
+    await this.refreshJtiStoreImpl
+      .put(redeemedCodeKey(authorizationCode), {
+        expiresAt: redeemedAt + REFRESH_TTL_SECONDS,
+        meta: { kind: "code_redeemed", family: familyId, redeemedAt },
+      })
+      .catch((error: unknown) => {
+        logger.error({ err: error }, "Could not record the redeemed authorization code; a replay will not revoke its tokens");
+      });
+
     return this.generateTokens({
       clientId: client.client_id,
       resource:
         resource ?? (entry.resource ? new URL(entry.resource) : undefined),
       fbUserId: entry.fbUserId,
+      familyId,
+    });
+  }
+
+  private async handleCodeReplay(authorizationCode: string, clientId: string): Promise<void> {
+    try {
+      const redeemed = await this.refreshJtiStoreImpl.get(redeemedCodeKey(authorizationCode));
+      const family = redeemed?.meta?.family;
+      if (typeof family !== "string") return;
+      const redeemedAt = redeemed?.meta?.redeemedAt;
+      const now = Math.floor(Date.now() / 1000);
+      if (typeof redeemedAt === "number" && now - redeemedAt < REFRESH_REUSE_GRACE_SECONDS) return;
+      await this.revokeFamily(family, clientId);
+      logger.warn(
+        { clientId, family: hashPii(family) },
+        "An authorization code was redeemed again; the tokens issued from it have been revoked",
+      );
+    } catch (error) {
+      logger.error({ err: error, clientId }, "Could not record an authorization code replay");
+    }
+  }
+
+  private async revokeFamily(familyId: string, clientId: string): Promise<void> {
+    await this.refreshJtiStoreImpl.put(FAMILY_REVOKED_PREFIX + familyId, {
+      expiresAt: Math.floor(Date.now() / 1000) + REFRESH_TTL_SECONDS,
+      meta: { kind: "family_revoked", clientId },
     });
   }
 
@@ -312,10 +357,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       // Every token in the chain, including the one the legitimate client now
       // holds, is refused from here on so the next sign-in re-establishes who
       // owns it.
-      await this.refreshJtiStoreImpl.put(FAMILY_REVOKED_PREFIX + familyId, {
-        expiresAt: Math.floor(Date.now() / 1000) + REFRESH_TTL_SECONDS,
-        meta: { kind: "family_revoked", clientId },
-      });
+      await this.revokeFamily(familyId, clientId);
       logger.warn(
         { clientId, subject: hashPii(subject), family: hashPii(familyId) },
         "Rotated refresh token was presented again; its token chain has been revoked",

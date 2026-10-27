@@ -225,6 +225,28 @@ describe("authorization code replay", () => {
     expect(((await replay.json()) as { error: string }).error).toBe("invalid_grant");
   });
 
+  it("revokes the refresh token issued from a code when the code is replayed later", async () => {
+    const context = await start();
+    const { verifier, challenge } = pkce();
+    const params = authorizeParams({ clientId: context.client.client_id, challenge });
+    const code = codeFrom(await approveConsent(context.origin, context.jar, params, "personal"));
+    const body = {
+      grant_type: "authorization_code",
+      client_id: context.client.client_id,
+      code,
+      code_verifier: verifier,
+      redirect_uri: CLAUDE_REDIRECT,
+    };
+    const redeemed = await postToken(context.origin, body);
+    expect(redeemed.status).toBe(200);
+    const tokens = (await redeemed.json()) as { refresh_token: string };
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + GRACE_MS + 1_000);
+    expect((await postToken(context.origin, body)).status).toBe(400);
+    expect((await refresh(context, tokens.refresh_token)).status).toBe(400);
+  });
+
   it("does not let someone who only captured the code redeem it", async () => {
     const context = await start();
     const { verifier, challenge } = pkce();
