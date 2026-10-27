@@ -64,6 +64,30 @@ describe("consent page client identity", () => {
     expect(html).not.toContain("A".repeat(200));
   });
 
+  it("strips bidi, zero-width and tag characters from the client name", () => {
+    const hidden = ["\u202e", "\u202c", "\u200b", "\u200d", "\ufeff", "\u2066", String.fromCodePoint(0xe0041)];
+    const html = render(
+      { client_id: "uuid-7", redirect_uri: "https://claude.ai/cb" },
+      `${hidden.join("")}Cl${hidden.join("")}aude`,
+    );
+    expect(html).toContain("Claude");
+    for (const char of hidden) expect(html.includes(char), JSON.stringify(char)).toBe(false);
+  });
+
+  it("normalises compatibility characters in the client name (NFKC)", () => {
+    const html = render({ client_id: "uuid-8", redirect_uri: "https://claude.ai/cb" }, "\uff23\uff4c\uff41\uff55\uff44\uff45 \u2460");
+    expect(html).toContain("Claude 1");
+    expect(html).not.toContain("\uff23");
+  });
+
+  it("puts the destination of the code ahead of the client id and in its own emphasised block", () => {
+    const html = render({ client_id: "uuid-9999", redirect_uri: "https://evil.example/cb" }, "Claude.ai");
+    const block = /<p class="subtitle" id="destination"[^>]*>([\s\S]*?)<\/p>/.exec(html);
+    expect(block).not.toBeNull();
+    expect(block![1]).toContain("https://evil.example");
+    expect(html.indexOf('id="destination"')).toBeLessThan(html.indexOf("uuid-9999"));
+  });
+
   it("falls back to the client id when the client has no name", () => {
     const html = render({ client_id: "uuid-5", redirect_uri: "https://claude.ai/cb" }, null);
     expect(html).toContain("uuid-5");

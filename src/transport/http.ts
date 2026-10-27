@@ -203,7 +203,7 @@ function describeRedirectTarget(redirectUri: string | undefined): string {
 export function renderConsentPage(ctx: ConsentContext): string {
   const readOnlyAgency = process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true";
   const clientId = escapeHtml(ctx.query.client_id || "Unknown");
-  const clientLabel = singleLine(ctx.client?.name, 80);
+  const clientLabel = singleLine(ctx.client?.name?.normalize("NFKC"), 80);
   const redirectTarget = describeRedirectTarget(ctx.query.redirect_uri);
   const hiddenFields = Object.entries(ctx.query)
     .map(
@@ -274,9 +274,12 @@ ${PAGE_STYLES}
     <p class="subtitle">
       <span class="client">${escapeHtml(clientLabel || clientId)}</span> quiere acceder a tu servidor Meta Ads MCP.
     </p>
+    <p class="subtitle" id="destination" style="color:#fff;border:1px solid #666;border-radius:8px;padding:0.6rem 0.8rem;margin:0.8rem 0">
+      Al aprobar, el código se enviará a:<br />
+      <b style="font-size:1.25rem">${escapeHtml(redirectTarget)}</b>
+    </p>
     <p class="subtitle">
       ID: ${clientId}<br />
-      Al aprobar, el código se enviará a: <b>${escapeHtml(redirectTarget)}</b><br />
       Cualquiera puede registrar un cliente con cualquier nombre. Aprueba solo si tú iniciaste esta conexión desde esa aplicación.
     </p>
 
