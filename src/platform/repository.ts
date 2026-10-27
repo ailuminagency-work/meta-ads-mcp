@@ -63,8 +63,9 @@ import type { Approval, ApprovalRequest, ControlAudit, AssetGrant, AuditRecord, 
 import { PlatformDenied } from "./models.js";
 import { canonicalJson } from "./policy.js";
 import { assetKey } from "./assets.js";
+import { isPlanLockHeld, newPlanLock, releasedPlanLock, releasesPlanLock, type OperationPlanLock } from "./plan-lock.js";
 
-export interface Records {signalDiscoveryProposals:SignalDiscoveryProposal;appPromotionProposals:AppPromotionProposal;trackingChangeJobs:TrackingChangeJob;pausedAdBatchJobs:PausedAdBatchJob;businessOwnerAttestations:BusinessOwnerAttestation; whatsappSetupLeases:WhatsAppSetupLease;whatsappSetupCommands:WhatsAppSetupCommand; researchFinancialCheckpoints:ResearchFinancialCheckpoint;researchJobs:ResearchJob;researchBudgets:ResearchBudget;researchApprovals:ResearchApproval; manualEligibilityAttestations:ManualEligibilityAttestation; hashtagQuotas:HashtagQuota; ownerBillingAttestations:OwnerBillingAttestation;accountOwnershipObservations:AccountOwnershipObservation; pageInspectionDelegations:PageInspectionDelegation; compatibilityObservations:CompatibilityObservation; targetingLookups:TargetingLookup; mediaProposals:MediaProposal; videoProposals:VideoProposal; attachmentProposals:AttachmentProposal; discoveryProposals:DiscoveryProposal; tenants: Tenant; members: Member; clients: Client; assets: MetaAsset; grants: AssetGrant; connections: Connection; credentials: Credential; approvals: Approval; operations: Operation; audit: AuditRecord; operatorIndex: PlatformPrincipal; approvalRequests:ApprovalRequest; controlAudit:ControlAudit }
+export interface Records {operationPlanLocks:OperationPlanLock;signalDiscoveryProposals:SignalDiscoveryProposal;appPromotionProposals:AppPromotionProposal;trackingChangeJobs:TrackingChangeJob;pausedAdBatchJobs:PausedAdBatchJob;businessOwnerAttestations:BusinessOwnerAttestation; whatsappSetupLeases:WhatsAppSetupLease;whatsappSetupCommands:WhatsAppSetupCommand; researchFinancialCheckpoints:ResearchFinancialCheckpoint;researchJobs:ResearchJob;researchBudgets:ResearchBudget;researchApprovals:ResearchApproval; manualEligibilityAttestations:ManualEligibilityAttestation; hashtagQuotas:HashtagQuota; ownerBillingAttestations:OwnerBillingAttestation;accountOwnershipObservations:AccountOwnershipObservation; pageInspectionDelegations:PageInspectionDelegation; compatibilityObservations:CompatibilityObservation; targetingLookups:TargetingLookup; mediaProposals:MediaProposal; videoProposals:VideoProposal; attachmentProposals:AttachmentProposal; discoveryProposals:DiscoveryProposal; tenants: Tenant; members: Member; clients: Client; assets: MetaAsset; grants: AssetGrant; connections: Connection; credentials: Credential; approvals: Approval; operations: Operation; audit: AuditRecord; operatorIndex: PlatformPrincipal; approvalRequests:ApprovalRequest; controlAudit:ControlAudit }
 export type Collection = keyof Records;
 export interface Preparation {creativeRepointClaim?:{before:MetaAsset;after:MetaAsset}; selectedConnectionId?:string; operation: Operation; audit: AuditRecord; approvalId?: string; expectedRevisionHash: string; now: number; deletionClaim?:{before:MetaAsset;after:MetaAsset}; publicationClaim?:{before:MetaAsset;after:MetaAsset}; publicationClaims?:Array<{before:MetaAsset;after:MetaAsset}>; expectedRecords: { collection: Collection; id: string; canonical: string }[] }
 export interface CreatedCompletion { asset: MetaAsset; grant: AssetGrant; connectionBefore: Connection; connectionAfter: Connection; expectedRecords: Preparation["expectedRecords"]; authorizationExpiresAt: number }
@@ -400,6 +401,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     let approval: Approval | null = null;
     if (input.approvalId) { approval = this.records.get(key("approvals", op.tenantId, input.approvalId)) as Approval ?? null; checkApproval(approval, input); checkApprover(this.records.get(key("members",op.tenantId,approval!.approverId)) as Member ?? null,approval!,input); }
     if (this.records.has(key("audit", op.tenantId, input.audit.id))) throw new PlatformDenied("AUDIT_ALREADY_EXISTS");
+    if (isPlanLockHeld(this.records.get(key("operationPlanLocks", op.tenantId, op.planHash)) as OperationPlanLock | undefined)) throw new PlatformDenied("PRIOR_ATTEMPT_UNRECONCILED");
     const nextOperation = structuredClone(op);
     const nextAudit = structuredClone(input.audit);
     const nextApproval = approval ? structuredClone({ ...approval, consumedAt: input.now, operationId: op.id }) : null;
@@ -408,6 +410,7 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     if(input.deletionClaim)this.store("assets",op.tenantId,input.deletionClaim.after.key,structuredClone(input.deletionClaim.after));
     if(input.publicationClaim)this.store("assets",op.tenantId,input.publicationClaim.after.key,structuredClone(input.publicationClaim.after));
     if (nextApproval) this.store("approvals", op.tenantId, nextApproval.id, nextApproval);
+    this.store("operationPlanLocks", op.tenantId, op.planHash, newPlanLock(op, input.now));
     this.store("operations", op.tenantId, op.id, nextOperation);
     this.store("audit", op.tenantId, nextAudit.id, nextAudit);
   }
@@ -429,6 +432,8 @@ export class InMemoryPlatformRepository implements PlatformRepository {
     if(input.created){const c=structuredClone(input.created);this.store("assets",input.tenantId,c.asset.key,c.asset);this.store("grants",input.tenantId,c.grant.id,c.grant);this.store("connections",input.tenantId,c.connectionAfter.id,c.connectionAfter);}
     if(input.deleted){const d=input.deleted;this.store("assets",input.tenantId,d.assetAfter.key,structuredClone(d.assetAfter));for(const g of d.grantsAfter)this.store("grants",input.tenantId,g.id,structuredClone(g));for(const c of d.connectionsAfter)this.store("connections",input.tenantId,c.id,structuredClone(c));}
     if(input.repointed)this.store("assets",input.tenantId,input.repointed.assetAfter.key,structuredClone(input.repointed.assetAfter));
+    const heldLock = this.records.get(key("operationPlanLocks",input.tenantId,operation!.planHash)) as OperationPlanLock | undefined;
+    if(releasesPlanLock(heldLock,operation!.id,input.result))this.store("operationPlanLocks",input.tenantId,operation!.planHash,releasedPlanLock(heldLock!,input.result as "SUCCEEDED"|"FAILED",input.audit.timestamp));
     this.store("audit",input.tenantId,audit.id,audit);
     this.store("operations",input.tenantId,input.operationId,nextOperation);
   }
@@ -561,10 +566,12 @@ export class FirestorePlatformRepository implements PlatformRepository {
     const opRef = this.collection("operations", op.tenantId).doc(key("operations", op.tenantId, op.id));
     const auditRef = this.collection("audit", op.tenantId).doc(key("audit", op.tenantId, input.audit.id));
     const approvalRef = input.approvalId ? this.collection("approvals", op.tenantId).doc(key("approvals", op.tenantId, input.approvalId)) : null;
+    const lockRef = this.collection("operationPlanLocks", op.tenantId).doc(key("operationPlanLocks", op.tenantId, op.planHash));
     await this.db.runTransaction(async tx => {
       const existing = await tx.get(opRef);
       const audit = await tx.get(auditRef);
       const approval = approvalRef ? await tx.get(approvalRef) : null;
+      const planLock = await tx.get(lockRef);
       const approvalDoc = approval?.exists ? approval.data() as Approval : null;
       const selectedConnections=input.expectedRecords.filter(e=>e.collection==="connections").map(e=>JSON.parse(e.canonical) as Connection),provenanceIdentities=privacyIdentities(selectedConnections,[op.actorId,...(approvalDoc?[approvalDoc.approverId]:[])]);
       const privacyLocks=await Promise.all(provenanceIdentities.map(i=>tx.get(this.db.collection("platform_meta_privacy_subject_locks").doc(privacySubjectHash(i.appId,i.appUserId)))));if(privacyLocks.some(lock=>lock.exists))throw new PlatformDenied("APP_USER_PRIVACY_LOCKED");
@@ -574,11 +581,13 @@ export class FirestorePlatformRepository implements PlatformRepository {
       for(let i = 0; i < checks.length; i++) if(canonicalJson(checks[i].exists ? recordValue(input.expectedRecords[i].collection,checks[i].data()!) : null) !== input.expectedRecords[i].canonical) throw new PlatformDenied("AUTHORIZATION_CHANGED");
       if(existing.exists || audit.exists) throw new PlatformDenied("OPERATION_ALREADY_EXISTS");
       if(approvalRef) { checkApproval(approvalDoc, input); checkApprover(approver?.exists ? approver.data() as Member : null,approvalDoc!,input); }
+      if(planLock.exists && isPlanLockHeld(planLock.data() as OperationPlanLock)) throw new PlatformDenied("PRIOR_ATTEMPT_UNRECONCILED");
       for(const claim of input.publicationClaims??[])tx.set(this.collection("assets",op.tenantId).doc(key("assets",op.tenantId,claim.after.key)),claim.after);
       if(input.creativeRepointClaim)tx.set(this.collection("assets",op.tenantId).doc(key("assets",op.tenantId,input.creativeRepointClaim.after.key)),input.creativeRepointClaim.after);
       if(input.deletionClaim)tx.set(this.collection("assets",op.tenantId).doc(key("assets",op.tenantId,input.deletionClaim.after.key)),input.deletionClaim.after);
       if(input.publicationClaim)tx.set(this.collection("assets",op.tenantId).doc(key("assets",op.tenantId,input.publicationClaim.after.key)),input.publicationClaim.after);
       if(approvalRef) tx.update(approvalRef, { consumedAt: input.now, operationId: op.id });
+      tx.set(lockRef, newPlanLock(op, input.now));
       tx.create(opRef, op); tx.create(auditRef, input.audit);
       for(const p of privacyRecords(provenanceIdentities,op.tenantId,[{collection:"operations",id:op.id},{collection:"audit",id:input.audit.id},...(input.approvalId?[{collection:"approvals",id:input.approvalId}]:[])]))tx.set(this.db.collection(PRIVACY_PROVENANCE_COLLECTION).doc(p.id),p.record);
     });
@@ -592,6 +601,7 @@ export class FirestorePlatformRepository implements PlatformRepository {
       if(checkCompletion(operation.exists ? operation.data() as Operation : null,audit.exists ? audit.data() as AuditRecord : null,input) === "IDEMPOTENT") return;
       const storedOperation=operation.data() as Operation,provenanceIdentities=privacyIdentities([], [storedOperation.actorId]);if(storedOperation.appId&&storedOperation.metaAppUserId)provenanceIdentities.push({appId:storedOperation.appId,appUserId:storedOperation.metaAppUserId});
       const privacyLocks=await Promise.all(provenanceIdentities.map(i=>tx.get(this.db.collection("platform_meta_privacy_subject_locks").doc(privacySubjectHash(i.appId,i.appUserId)))));if(privacyLocks.some(lock=>lock.exists))throw new PlatformDenied("APP_USER_PRIVACY_LOCKED");
+      const planLockRef=this.collection("operationPlanLocks",input.tenantId).doc(key("operationPlanLocks",input.tenantId,storedOperation.planHash)),planLock=await tx.get(planLockRef);
       if(input.created){
         const c=input.created;
         const privacyLock=await tx.get(this.db.collection("platform_meta_privacy_subject_locks").doc(privacySubjectHash(c.connectionBefore.appId,connectionPrivacyAppUserId(c.connectionBefore)))),lifecycleLock=await tx.get(this.db.collection("platform_lifecycle_locks").doc(enrollmentLockKey(c.connectionBefore.appId,c.connectionBefore.operatorId)));if(privacyLock.exists||lifecycleLock.exists)throw new PlatformDenied("APP_USER_PRIVACY_LOCKED");
@@ -609,6 +619,7 @@ export class FirestorePlatformRepository implements PlatformRepository {
       if(input.repointed){const r=input.repointed,deps=repointDependencies(r.expectedRecords),indices=await Promise.all(deps.operators.map(id=>tx.get(this.db.collection("platform_operator_index").doc(key("operatorIndex","_index",id))))),depLocks=await Promise.all([...deps.connections.map(c=>tx.get(this.db.collection("platform_lifecycle_locks").doc(enrollmentLockKey(c.appId,c.operatorId)))),...deps.operators.map(id=>tx.get(this.db.collection("platform_lifecycle_locks").doc(enrollmentLockKey(deps.authAppId,id)))),...privacyIdentities(deps.connections,deps.operators).map(i=>tx.get(this.db.collection("platform_meta_privacy_subject_locks").doc(privacySubjectHash(i.appId,i.appUserId))))]);for(let i=0;i<indices.length;i++)if(canonicalJson(indices[i].exists?indices[i].data():null)!==canonicalJson({operatorId:deps.operators[i],tenantId:input.tenantId}))throw new PlatformDenied("REPOINTED_AD_AUTHORIZATION_CHANGED");if(depLocks.some(lock=>lock.exists))throw new PlatformDenied("REPOINT_DEPENDENCY_LOCKED");const checks=await Promise.all(r.expectedRecords.map(e=>tx.get(this.collection(e.collection,input.tenantId).doc(key(e.collection,input.tenantId,e.id))))),assets=await tx.get(this.collection("assets",input.tenantId).limit(1001)),grants=await tx.get(this.collection("grants",input.tenantId).limit(1001)),connections=await tx.get(this.collection("connections",input.tenantId).limit(1001)),lock=await tx.get(this.db.collection("platform_lifecycle_locks").doc(enrollmentLockKey(r.connection.appId,r.connection.operatorId)));if(lock.exists||assets.size>1000||grants.size>1000||connections.size>1000)throw new PlatformDenied("REPOINTED_AD_CAPACITY_OR_LOCK_HOLD");for(let i=0;i<checks.length;i++)if(canonicalJson(checks[i].exists?recordValue(r.expectedRecords[i].collection,checks[i].data()!):null)!==r.expectedRecords[i].canonical)throw new PlatformDenied("REPOINTED_AD_AUTHORIZATION_CHANGED");validateRepointedAdCompletion(input,assets.docs.map(d=>d.data() as MetaAsset),grants.docs.map(d=>d.data() as AssetGrant),connections.docs.map(d=>d.data() as Connection),storedOperation);tx.set(this.collection("assets",input.tenantId).doc(key("assets",input.tenantId,r.assetAfter.key)),r.assetAfter);}
       tx.create(auditRef,input.audit);
       for(const p of privacyRecords(provenanceIdentities,input.tenantId,[{collection:"audit",id:input.audit.id}]))tx.set(this.db.collection(PRIVACY_PROVENANCE_COLLECTION).doc(p.id),p.record);
+      if(planLock.exists&&releasesPlanLock(planLock.data() as OperationPlanLock,storedOperation.id,input.result))tx.set(planLockRef,releasedPlanLock(planLock.data() as OperationPlanLock,input.result as "SUCCEEDED"|"FAILED",input.audit.timestamp));
       tx.update(opRef,{state:input.result,updatedAt:input.audit.timestamp});
     });
   }

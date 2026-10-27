@@ -59,7 +59,7 @@ describe("guarded WhatsApp Flow operations",()=>{
 
 describe("native MCP reviewed WhatsApp Flow lifecycle",()=>{
  it.each([false,true])("creates/uploads/publishes through native MCP, legacy alias=%s",async legacy=>{
-  const f=await fixture();configurePlatformRepository(f.repo);for(const [key,value] of Object.entries({DEPLOYMENT_MODE:"legacy",LUMIN_PLATFORM_ENABLED:"true",LUMIN_PLATFORM_WRITES_ENABLED:"true",AGENCY_WRITES_ENABLED:"true",META_APP_ID:"300",META_APP_SECRET:"synthetic-app-secret"}))vi.stubEnv(key,value);
+  const f=await fixture();configurePlatformRepository(f.repo);/* the fixture's own permit is a different attempt at this plan and is closed so the native journey is the one in flight */await finishOperation(f.permit,"FAILED");for(const [key,value] of Object.entries({DEPLOYMENT_MODE:"legacy",LUMIN_PLATFORM_ENABLED:"true",LUMIN_PLATFORM_WRITES_ENABLED:"true",AGENCY_WRITES_ENABLED:"true",META_APP_ID:"300",META_APP_SECRET:"synthetic-app-secret"}))vi.stubEnv(key,value);
   for(const operator of ["actor","human"])await f.repo.put("operatorIndex","_index",operator,{operatorId:operator,tenantId:"tenant"});
   vi.stubGlobal("fetch",f.fetcher);const server=createServer(),client=new Client({name:"synthetic-flow-journey",version:"1"}),[ct,st]=InMemoryTransport.createLinkedPair();await Promise.all([client.connect(ct),server.connect(st)]);
   const call=(name:string,args:Record<string,unknown>)=>requestContext.run({fbUserId:"actor"},()=>client.callTool({name,arguments:args}));

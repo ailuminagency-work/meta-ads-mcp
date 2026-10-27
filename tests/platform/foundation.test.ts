@@ -138,7 +138,7 @@ describe("atomic created asset completion",()=>{
     expect((await repo.list("assets","tenant")).filter(a=>a.id==="303")).toHaveLength(1);
   });
   it("concurrent distinct creations on one stale connection permit only one registry commit",async()=>{
-    const repo=await fixture();const a=await approvedPermit(repo,creation);const b=await approvedPermit(repo,creation);claimMutationStep(a);claimMutationStep(b);
+    const repo=await fixture();const a=await approvedPermit(repo,creation);const b=await approvedPermit(repo,{...creation,parameters:{status:"PAUSED",name:"Second distinct creation"}});claimMutationStep(a);claimMutationStep(b);
     const results=await Promise.all([finishCreatedAsset(a,{id:"303",type:"CAMPAIGN",parent:creation.assets[0]}),finishCreatedAsset(b,{id:"304",type:"CAMPAIGN",parent:creation.assets[0]})]);
     expect(results.sort()).toEqual([false,true]);
   });

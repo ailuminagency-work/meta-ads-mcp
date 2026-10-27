@@ -20,6 +20,7 @@ import { resolveAuthorizedAssets } from "./assets.js";
 import { platformWritesEnabled } from "./runtime.js";
 import "./budget-ceiling-guard.js";
 import { selectConnection } from "./connections.js";
+import { assertNoUnreconciledAttempt } from "./plan-lock.js";
 import { assertContractEligibility, contractPlanParameters, validateContractParameters } from "./clients.js";
 import { PRODUCT_CONTRACTS, type ProductContract } from "./products/contracts.js";
 
@@ -34,6 +35,7 @@ async function snapshot(repo:PlatformRepository,ctx:OperationContext,plan:Operat
   const state={tenant,member,client,assets,connection,grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client),financialEvidence:await loadOwnershipEvidence(repo,ctx,assets),manualEligibilityEvidence:await loadManualEligibilityEvidence(repo,ctx,connection,[...(connection.appPromotionProfile&&plan.assets.some(a=>a.type==="APP")?[appPurchaseRequirement(connection.appPromotionProfile.bindingHash)]:[]),...Object.keys(PRODUCT_CONTRACTS.find(c=>c.tool===ctx.tool&&c.provider===ctx.provider)?.eligibilityPolicies??{}),...(ctx.provider==="META_MARKETING"?[legacyMarketingReadRequirement(),...(ctx.tool.startsWith("ads_")&&plan.classes.some(c=>c!=="READ")?[legacyMarketingWriteRequirement()]:[])]:[])])};
   const decision=evaluatePolicy(ctx,plan,state,{writesEnabled:platformWritesEnabled()});
   if(decision.decision!=="REQUIRE_CONFIRMATION")throw new PlatformDenied(decision.decision==="DENY"?decision.reason:"HUMAN_APPROVAL_NOT_REQUIRED_FOR_PLAN");
+  await assertNoUnreconciledAttempt(repo,ctx.principal.tenantId,canonicalPlanHash(ctx,plan));
   return state;
 }
 function expected(snapshot:AuthorizationSnapshot):Array<{collection:Collection;id:string;canonical:string}>{
