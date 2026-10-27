@@ -88,6 +88,18 @@ export function fromMinorUnits(minor: string | number, currency: string): string
   return negative && /[^0.]/.test(body) ? `-${body}` : body;
 }
 
+/**
+ * Canonical decimal form of a whole minor-unit amount between 1 and MAX_MINOR_UNIT_AMOUNT, for fields forwarded
+ * from untyped input. Fractions, signs, exponents, hex, whitespace and leading zeros are all refused.
+ */
+export function normalizeMinorUnitAmount(value: unknown): string | undefined {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 1 && value <= MAX_MINOR_UNIT_AMOUNT ? String(value) : undefined;
+  }
+  if (typeof value === "string" && /^[1-9]\d{0,9}$/.test(value) && Number(value) <= MAX_MINOR_UNIT_AMOUNT) return value;
+  return undefined;
+}
+
 export function minorUnitAmount(description: string) {
   return z.number().int().min(1).max(MAX_MINOR_UNIT_AMOUNT).describe(description);
 }

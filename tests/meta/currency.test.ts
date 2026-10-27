@@ -7,6 +7,7 @@ import {
   fromMinorUnits,
   minorUnitAmount,
   minorUnitDigits,
+  normalizeMinorUnitAmount,
   requireCurrencyOffset,
   toMinorUnits,
 } from "../../src/meta/currency.js";
@@ -108,6 +109,23 @@ describe("fromMinorUnits", () => {
   it("rejects an unsafe integer number", () => {
     expect(() => fromMinorUnits(Number.MAX_SAFE_INTEGER + 2, "USD")).toThrow(RangeError);
   });
+});
+
+describe("normalizeMinorUnitAmount", () => {
+  it("returns the canonical decimal form of whole amounts in range", () => {
+    expect(normalizeMinorUnitAmount(1)).toBe("1");
+    expect(normalizeMinorUnitAmount(5000)).toBe("5000");
+    expect(normalizeMinorUnitAmount("5000")).toBe("5000");
+    expect(normalizeMinorUnitAmount(MAX_MINOR_UNIT_AMOUNT)).toBe("1000000000");
+    expect(normalizeMinorUnitAmount("1000000000")).toBe("1000000000");
+  });
+
+  it.each([0, -1, 1.5, MAX_MINOR_UNIT_AMOUNT + 1, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 2, "0", "-1", "1.5", "1e3", "0x10", "007", "+5", " 5", "5 ", "", "abc", "1000000001", "99999999999999999999", true, null, undefined, {}, []])(
+    "refuses %s",
+    (value) => {
+      expect(normalizeMinorUnitAmount(value)).toBeUndefined();
+    },
+  );
 });
 
 describe("minorUnitAmount schema", () => {
