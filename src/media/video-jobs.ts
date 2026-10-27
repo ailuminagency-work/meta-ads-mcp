@@ -9,6 +9,8 @@ const DEFAULT_MAX_CONCURRENT = 2;
 const DEFAULT_MAX_QUEUED = 8;
 // One tenant may wait for at most this many places, so a burst from one account cannot take the whole queue.
 const DEFAULT_MAX_QUEUED_PER_TENANT = 2;
+// Tenants remembered for fair dequeue; the oldest are forgotten first.
+const MAX_REMEMBERED_TENANTS = 1024;
 const DEFAULT_QUEUE_WAIT_MS = 20_000;
 // Cloud Run caps a request at 300 s; leave headroom to serialise the response.
 const DEFAULT_BUDGET_MS = 240_000;
@@ -94,6 +96,42 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
   let running = 0;
   const waiters: Waiter[] = [];
   const tenantWindows = new Map<string, number[]>();
+  // Insertion order is service order: the first key is the tenant that ran longest ago.
+  const lastServed = new Map<string, true>();
+
+  const markServed = (tenantId: string): void => {
+    lastServed.delete(tenantId);
+    lastServed.set(tenantId, true);
+    if (lastServed.size > MAX_REMEMBERED_TENANTS) {
+      const oldest = lastServed.keys().next().value;
+      if (oldest !== undefined) lastServed.delete(oldest);
+    }
+  };
+
+  // Round-robin across tenants: the waiting tenant that ran longest ago goes next
+  // (one that never ran, or is forgotten, before any that did), oldest waiter first
+  // within a tenant, so a tenant that keeps its places full cannot stand ahead of the rest.
+  const pickNextWaiter = (): Waiter | undefined => {
+    if (waiters.length === 0) return undefined;
+    const waiting = new Set(waiters.map((w) => w.tenantId));
+    let tenant: string | undefined;
+    for (const candidate of waiting) {
+      if (!lastServed.has(candidate)) {
+        tenant = candidate;
+        break;
+      }
+    }
+    if (tenant === undefined) {
+      for (const served of lastServed.keys()) {
+        if (waiting.has(served)) {
+          tenant = served;
+          break;
+        }
+      }
+    }
+    const index = waiters.findIndex((w) => w.tenantId === tenant);
+    return waiters.splice(index >= 0 ? index : 0, 1)[0];
+  };
 
   const removeWaiter = (waiter: Waiter) => {
     const idx = waiters.indexOf(waiter);
@@ -104,6 +142,7 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
     if (signal?.aborted) return Promise.reject(new VideoJobAbortedError());
     if (running < maxConcurrent) {
       running += 1;
+      markServed(tenantId);
       return Promise.resolve();
     }
     if (waiters.filter((w) => w.tenantId === tenantId).length >= maxQueuedPerTenant) {
@@ -121,6 +160,7 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
           running += 1;
+          markServed(tenantId);
           resolve();
         },
         reject,
@@ -140,7 +180,7 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
 
   const release = (): void => {
     running -= 1;
-    const next = waiters.shift();
+    const next = pickNextWaiter();
     if (next) next.resolve();
   };
 
