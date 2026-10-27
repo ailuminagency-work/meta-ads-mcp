@@ -72,3 +72,18 @@ The ciphertext, IV, tag and AAD formats are identical in `main` (251249e), the s
   3. Platform credentials (`platform_v1/.../credentials`) are not read by `main`; they stay encrypted under the key that wrote them, so every key id must be retained for any later return to this line.
 - Without the key a record was written under, rollback cannot succeed and the only repair is a fresh login for the affected users.
 - `inspectLegacyTokenCensus` (`src/store/legacy-token-census.ts`) reports, without any identifier or value, which key id decrypts each legacy record and how many records a single-key runtime cannot read.
+
+## Legacy tokens without identity binding (`TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD`)
+
+Meta tokens are sealed with the owner and token name as associated data (AAD), so a ciphertext copied to another user's record fails to decrypt. Records written before that binding existed carry no AAD, and the token store retries without AAD when the bound read fails. That retry is also the only way a ciphertext moved between users can still be read, so it is now an explicit setting instead of a permanent behaviour:
+
+- `TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD` unset or `true` (the default) keeps the retry, so data written by older releases keeps working. The server logs one count-free warning at startup while it is on.
+- `false` refuses the retry: a record that is not bound to its owner and name is not served. Identity-bound records are unaffected. Any other value stops startup with a configuration error, and a read under such a value fails closed.
+- The migration (`npm run migrate:token-encryption`) keeps its own explicit legacy read and re-encrypts those records with the binding; it does not depend on this setting. A user's next login or token refresh also rewrites a record with the binding. Apify and Gemini keys have no such retry.
+
+To turn the retry off safely:
+
+1. Run the census over the whole legacy corpus (`inspectLegacyTokenCensus(db, keyring, { kind: "all" })`, read-only, counts only; the runtime diagnostic's `legacy_tokens` covers only the signed-in administrator's own records) and read `collections.meta_tokens.aadLegacy`. The result is conclusive only when `truncated` is `false`; otherwise raise the limit or run it per user.
+2. While it is above zero, run the migration (dry run first, then `--apply` with a reviewed operation id) or let the affected users sign in again, then repeat the census.
+3. When it reports 0, set `TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD=false`, redeploy, and confirm a normal sign-in and an MCP call still work.
+4. If a legacy record turns up afterwards, set the variable back to `true` until it has been migrated; nothing is lost by switching it.

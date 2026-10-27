@@ -13,6 +13,29 @@ import {
 import { hashPii } from "../auth/token-store.js";
 import { logger } from "../utils/logger.js";
 
+/**
+ * Token names become Firestore document ids and are bound into the ciphertext
+ * AAD, and they arrive from forms and tool arguments. Anything outside this
+ * set (path separators, dots, whitespace, control characters) is refused
+ * before any Firestore reference is built.
+ */
+export const TOKEN_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+export class InvalidTokenNameError extends Error {
+  constructor() {
+    super("Invalid token name: use 1-64 characters from a-z, A-Z, 0-9, _ and -.");
+    this.name = "InvalidTokenNameError";
+  }
+}
+
+export function isValidTokenName(name: unknown): name is string {
+  return typeof name === "string" && TOKEN_NAME_PATTERN.test(name);
+}
+
+function assertValidTokenName(name: unknown): asserts name is string {
+  if (!isValidTokenName(name)) throw new InvalidTokenNameError();
+}
+
 const REFRESH_THRESHOLD_SECONDS = 7 * 24 * 60 * 60;
 
 /**
@@ -25,12 +48,43 @@ function aadFor(fbUserId: string, tokenName: string): string {
   return `mcp_token:${fbUserId}:${tokenName}`;
 }
 
+const LEGACY_NO_AAD_ENV = "TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD";
+let legacyNoAadLogged = false;
+
 /**
- * Decrypt a token, transparently handling docs encrypted with AAD (new)
- * or without (legacy). On AAD-tag mismatch we retry without AAD; if that
- * also fails the underlying error propagates. Once every doc has been
- * re-encrypted with AAD (e.g. via natural rotation or a one-shot
- * migration script), the legacy fallback can be removed.
+ * Whether a token that fails identity-bound (AAD) decryption may be retried
+ * without AAD. Records written before AAD existed need the retry, so the
+ * default is on; but the retry is also what lets someone with Firestore write
+ * access move a legacy ciphertext from one user to another. Turn it off once
+ * the legacy token census reports no AAD-less records. Anything other than
+ * "true" or "false" is a configuration error and fails closed.
+ */
+export function legacyNoAadDecryptAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[LEGACY_NO_AAD_ENV]?.trim().toLowerCase();
+  if (raw === undefined || raw === "" || raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${LEGACY_NO_AAD_ENV} must be "true" or "false"`);
+}
+
+/** Call once at startup. Logs a single count-free warning while the fallback is on. */
+export function logLegacyNoAadPolicyAtStartup(env: NodeJS.ProcessEnv = process.env): void {
+  if (!legacyNoAadDecryptAllowed(env) || legacyNoAadLogged) return;
+  legacyNoAadLogged = true;
+  logger.warn(
+    { event: "legacy_no_aad_decrypt_enabled", setting: LEGACY_NO_AAD_ENV },
+    "Legacy token decryption without identity binding is enabled; set TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD=false once the legacy token census reports no AAD-less records",
+  );
+}
+
+export function resetLegacyNoAadLogForTests(): void {
+  legacyNoAadLogged = false;
+}
+
+/**
+ * Decrypt a token bound to its owner and name (AAD). A record written before
+ * AAD existed is retried without AAD only while the explicit legacy policy
+ * allows it (see legacyNoAadDecryptAllowed); the migration re-encrypts such
+ * records with AAD, after which the policy can be switched off.
  */
 function decryptCompat(
   payload: EncryptedPayload,
@@ -39,7 +93,8 @@ function decryptCompat(
 ): string {
   try {
     return decryptToken(payload, aadFor(fbUserId, tokenName));
-  } catch {
+  } catch (error) {
+    if (!legacyNoAadDecryptAllowed()) throw error;
     return decryptToken(payload);
   }
 }
@@ -232,6 +287,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
   }
 
   private tokenDocRef(fbUserId: string, name: string) {
+    assertValidTokenName(name);
     return this.userDocRef(fbUserId).collection("meta_tokens").doc(name);
   }
 
@@ -265,6 +321,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
   }
 
   async saveToken(input: SaveTokenInput): Promise<void> {
+    assertValidTokenName(input.name);
     const now = Math.floor(Date.now() / 1000);
     const encryptedToken = encryptToken(
       input.accessToken,
@@ -322,17 +379,11 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     const ref = this.tokenDocRef(fbUserId, name);
     const snap = await ref.get();
     if (!snap.exists) return false;
-    const wasDefault = (snap.data() as MetaTokenDoc).isDefault;
+    // Deleting the default leaves the set without one. Promoting whichever
+    // document happens to come first would silently point every MCP request
+    // at an arbitrary client's token; the read-time rule applies instead
+    // (a single survivor is the default, otherwise the user must choose).
     await ref.delete();
-    if (wasDefault) {
-      const remaining = await this.userDocRef(fbUserId)
-        .collection("meta_tokens")
-        .limit(1)
-        .get();
-      if (!remaining.empty) {
-        await remaining.docs[0].ref.update({ isDefault: true });
-      }
-    }
     return true;
   }
 
@@ -364,6 +415,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     name?: string,
     serverUrl?: URL,
   ): Promise<string> {
+    if (name !== undefined) assertValidTokenName(name);
     const tokenName = name ?? (await this.getDefaultTokenName(fbUserId));
     if (!tokenName) {
       throw new Error(`No Meta token registered for user ${hashPii(fbUserId)}`);
@@ -422,6 +474,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async saveToken(input: SaveTokenInput): Promise<void> {
+    assertValidTokenName(input.name);
     const now = Math.floor(Date.now() / 1000);
     const bucket = this.getUserTokens(input.fbUserId);
 
@@ -458,6 +511,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async setDefaultToken(fbUserId: string, name: string): Promise<boolean> {
+    assertValidTokenName(name);
     const bucket = this.tokens.get(fbUserId);
     if (!bucket || !bucket.has(name)) return false;
     const now = Math.floor(Date.now() / 1000);
@@ -468,18 +522,11 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async deleteToken(fbUserId: string, name: string): Promise<boolean> {
+    assertValidTokenName(name);
     const bucket = this.tokens.get(fbUserId);
     if (!bucket) return false;
-    const existing = bucket.get(name);
-    if (!existing) return false;
+    if (!bucket.has(name)) return false;
     bucket.delete(name);
-    if (existing.isDefault) {
-      const next = bucket.entries().next();
-      if (!next.done) {
-        const [k, v] = next.value;
-        bucket.set(k, { ...v, isDefault: true });
-      }
-    }
     return true;
   }
 
@@ -501,6 +548,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
     name?: string,
     serverUrl?: URL,
   ): Promise<string> {
+    if (name !== undefined) assertValidTokenName(name);
     const tokenName = name ?? (await this.getDefaultTokenName(fbUserId));
     if (!tokenName) {
       throw new Error(`No Meta token registered for user ${hashPii(fbUserId)}`);

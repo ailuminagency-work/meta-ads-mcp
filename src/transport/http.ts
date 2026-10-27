@@ -92,7 +92,9 @@ import {
   InMemoryMetaTokenRepo,
   getDecryptedToken,
   getDefaultTokenName,
+  isValidTokenName,
   listTokens,
+  logLegacyNoAadPolicyAtStartup,
   setDefaultToken,
 } from "../store/meta-token-repo.js";
 import { isFirestoreEnabled } from "../store/firestore.js";
@@ -688,6 +690,7 @@ export async function startHttpTransport(
       });
       configureSessionJtiStore(new FirestoreJtiStore("mcp_session_jti"));
       configureMetaTokenRepo(new FirestoreMetaTokenRepo());
+      logLegacyNoAadPolicyAtStartup();
     }
   }
 
@@ -889,6 +892,10 @@ export async function startHttpTransport(
             ? req.body.token
             : null;
         if (requestedToken) {
+          if (!isValidTokenName(requestedToken)) {
+            res.status(400).type("html").send("<p>Nombre de token no válido. Vuelve a iniciar la autorización desde tu cliente MCP.</p>");
+            return;
+          }
           await setDefaultToken(session.fbUserId, requestedToken);
           activeName = requestedToken;
         } else {
