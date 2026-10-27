@@ -54,10 +54,14 @@ interface ReplayOptions {
 /**
  * Delivery ids seen on authenticated requests, per profile, for as long as the
  * header set that carried them could still be replayed. An entry is `active`
- * while its request is arriving and `settled` once it was processed; a request
- * that failed or was cut off is released so the sender can retry the same
- * delivery. The table is capped per profile: a full table evicts its oldest
- * settled entry and, when every entry is active, refuses the new delivery.
+ * while its request is arriving and `settled` once that request ended, however
+ * it ended: the body is chosen by whoever holds the captured headers, so a
+ * failed or cut-off request must not hand the id back, or the same headers
+ * could hold the in-flight slot again and again. Only a request refused before
+ * it started (the slot was busy) is released. A sender whose delivery failed
+ * retries with a new delivery id. The table is capped per profile: a full table
+ * evicts its oldest settled entry and, when every entry is active, refuses the
+ * new delivery.
  */
 export class DeliveryReplayCache {
   private readonly profiles = new Map<string, Map<string, { expiresAt: number; settled: boolean }>>();
@@ -107,9 +111,6 @@ export class DeliveryReplayCache {
     return this.profiles.get(profileId)?.size ?? 0;
   }
 }
-
-/** Outcomes of an authenticated request that count as processed; anything else lets the sender retry the delivery. */
-const processedStatus = (status: number): boolean => (status >= 200 && status < 300) || status === 400 || status === 403;
 
 export interface IngressGateProfile {
   id: string;
@@ -161,16 +162,14 @@ export function createIngressGate<P extends IngressGateProfile>(options: Ingress
     }
     active += 1;
     let released = false;
-    const release = (completed: boolean): void => {
+    const release = (): void => {
       if (released) return;
       released = true;
       active -= 1;
-      if (!claimed) return;
-      if (completed && processedStatus(res.statusCode)) replay.settle(claimed.profileId, claimed.deliveryId);
-      else replay.release(claimed.profileId, claimed.deliveryId);
+      if (claimed) replay.settle(claimed.profileId, claimed.deliveryId);
     };
-    res.once("finish", () => release(true));
-    res.once("close", () => release(false));
+    res.once("finish", release);
+    res.once("close", release);
     const bodyDeadline = setTimeout(() => req.destroy(), BODY_DEADLINE_MS);
     bodyDeadline.unref();
     req.once("end", () => clearTimeout(bodyDeadline));
