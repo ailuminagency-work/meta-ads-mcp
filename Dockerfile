@@ -21,6 +21,11 @@ ENV NODE_ENV=production
 # A larger container overrides this with a NODE_OPTIONS variable (the Cloud Run
 # deploy sets 1536 for 2 GiB).
 ENV NODE_OPTIONS=--max-old-space-size=512
+# dns.lookup, fs, crypto and zlib share libuv's pool of 4 threads, and a hostile
+# name server can hold a getaddrinfo thread for tens of seconds (image_url on
+# ads_upload_ad_image resolves caller-chosen names). 8 threads keep file and
+# crypto work moving while a few lookups stall; idle threads cost nothing.
+ENV UV_THREADPOOL_SIZE=8
 
 # ffmpeg + ffprobe for keyframe extraction / compact video transcodes (ads_get_video_media).
 RUN apk add --no-cache ffmpeg

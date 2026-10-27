@@ -13,6 +13,7 @@ set -uo pipefail
 PATTERNS=(
   'meta-app-secret|(^|[^A-Za-z0-9_])META_APP_SECRET[[:space:]]*=[[:space:]]*["'\''"]?[A-Za-z0-9]{16,}'
   'meta-access-token|EAA[A-Za-z0-9]{20,}'
+  'apify-api-token|apify_api_[A-Za-z0-9]{20,}'
   'oauth-secret|(^|[^A-Za-z0-9_])OAUTH_SECRET[[:space:]]*=[[:space:]]*["'\''"]?[A-Za-z0-9+/=]{32,}'
   'oauth-approval-pin|(^|[^A-Za-z0-9_])OAUTH_APPROVAL_PIN[[:space:]]*=[[:space:]]*["'\''"]?[A-Za-z0-9]{6,}'
   'token-encryption-key|(^|[^A-Za-z0-9_])TOKEN_ENCRYPTION_KEY[[:space:]]*=[[:space:]]*["'\''"]?[A-Fa-f0-9]{64}'
