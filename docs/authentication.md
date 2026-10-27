@@ -22,27 +22,44 @@ This section covers the OAuth server that MCP clients (Claude, ChatGPT, Claude C
 
 | Variable | Default | Effect |
 |---|---|---|
-| OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS | empty | Comma-separated exact DNS host names added to the https redirect allowlist. Entries with a scheme, port, path, wildcard or IP address are ignored with a warning. |
+| OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS | empty | Comma-separated exact DNS host names added to the https redirect allowlist (any path). Needed for chatgpt.com, platform.openai.com and vscode.dev. Entries with a scheme, port, path, wildcard or IP address are ignored with a warning. |
 | AUTH_DENIED_FB_USER_IDS | empty | Comma-separated Facebook user ids refused everywhere, even when AUTH_ALLOWED_* would admit them. |
 | CORS_ALLOWED_ORIGINS | https://claude.ai, https://claude.com | Browser origins accepted on /mcp. Setting it replaces the defaults. |
+| TRUST_PROXY_HOPS | 1 | Number of reverse proxies in front of the server, 0 to 10. Decides which X-Forwarded-For entry is the client address for the rate limits. Any other value stops the server at startup. |
+| MCP_API_KEY | unset | Key for API-key deployments (no Meta login). At least 32 characters or the server refuses to start; generate one with `openssl rand -hex 32`. |
 
-The rate limits below are constants in code. There is no variable to change them.
+The rate limit sizes below are constants in code. There is no variable to change them.
+
+### Who can obtain a grant
+
+- /authorize needs a signed-in operator who passes the allowlist and is not on the deny list. Only the exact path /authorize (and /authorize/) is served: any other shape, such as /authorize//, is a 404, because the SDK router behind it would otherwise issue a code around the login, consent and CSRF checks. As a second layer the OAuth provider itself refuses to issue a code when no operator is signed in, and it refuses access tokens, refresh tokens and stored codes that do not name an operator.
+- A session cookie is valid for 30 days but is re-checked against the allowlist and the deny list on every request, so removing an operator from AUTH_ALLOWED_* or listing them in AUTH_DENIED_FB_USER_IDS ends their /auth/*, diagnostics and approval access on the next request. /authorize still answers such an operator with 403 and ends the session.
+- The domain allowlist (AUTH_ALLOWED_DOMAINS) matches only an email address with exactly one @.
+- Without a Meta login (META_APP_ID or META_APP_SECRET unset, API-key deployments) there is no operator who could approve a grant, so /authorize, /register, /token and /revoke answer 404 and no OAuth access token is accepted on /mcp. Clients authenticate with X-API-Key or an Authorization bearer equal to MCP_API_KEY. Twenty failed credentials from one client address in 15 minutes lock that address out with 429 and Retry-After; a request with no credential, or a bearer that verifies, does not count.
 
 ### Client registration
 
 POST /register accepts a redirect URI only when it is one of:
 
-- https on claude.ai, claude.com, chatgpt.com or a host named in OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS. The host must match exactly: no port, no user information, no trailing dot, no percent-encoded spelling, no subdomain.
+- https://claude.ai/api/mcp/auth_callback or https://claude.com/api/mcp/auth_callback, exactly: any other path, a query, a trailing slash, a different case or an encoded or dot-segment spelling is refused.
+- https on a host named in OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS, with any path. The host must match exactly: no port, no user information, no trailing dot, no percent-encoded spelling, no subdomain. Listing claude.ai or claude.com there does not widen the pinned path.
 - http on a loopback address (127.0.0.1, localhost, [::1]) with any port and path, for CLI clients that listen on an ephemeral port.
 - A cursor://, vscode:// or vscode-insiders:// URI that names an application host.
 
 Fragments, wildcards, backslashes, whitespace, control characters, other schemes, plain http to a non-loopback host, more than 10 URIs and URIs over 2048 characters are refused. One refused URI refuses the whole registration with HTTP 400 and the error invalid_redirect_uri. The same check runs when a stored client is read, so a client registered before this policy existed with a URI that is no longer allowed is treated as unknown (invalid_client) until its host is added or it registers again.
 
-Anthropic documents https://claude.ai/api/mcp/auth_callback as Claude's callback and says it may move to https://claude.com/api/mcp/auth_callback, so both hosts are on by default. Some clients register more than the hosts above; add them before they need to register, for example OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS=vscode.dev,insiders.vscode.dev for VS Code builds that also register https://vscode.dev/redirect, and platform.openai.com for ChatGPT's app review flow. Which client builds register which URIs has not been verified against the real clients.
+Anthropic documents https://claude.ai/api/mcp/auth_callback as Claude's callback and says it may move to https://claude.com/api/mcp/auth_callback, so both are on by default.
+
+chatgpt.com is not a default host. Anyone with a ChatGPT account can publish a Custom GPT whose Action OAuth callback is a path on chatgpt.com, so trusting the host would let an anonymous attacker register a client whose callback hands an approved authorization code to their GPT. To use ChatGPT as a client, set OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS=chatgpt.com (and platform.openai.com for its app review flow); every path on a listed host is then accepted, so the residual risk is the one just described, limited to operators who approve a consent page that names that host. VS Code builds that also register https://vscode.dev/redirect need vscode.dev and insiders.vscode.dev listed the same way. Which client builds register which URIs has not been verified against the real clients.
+
+Two kinds of redirect stay open by design. Loopback http (127.0.0.1, localhost, [::1]) accepts any port and path because CLI clients listen on an ephemeral port (RFC 8252); a process on the operator's machine can bind a port and receive a code the operator approved for a client of the same name. The cursor://, vscode:// and vscode-insiders:// schemes accept any application host, so an application registered for the scheme on the operator's machine, or a deep link such as vscode://attacker.publisher/callback, can receive a code; the consent page shows the full redirect host and scheme so an operator can tell. Neither is a network-attacker risk, and both need the operator to approve a consent page for a client they did not start.
 
 ### Authorization codes and tokens
 
-- /token requires the redirect_uri used at /authorize and a PKCE code_verifier (S256). The code is consumed before the verifier is checked, so any failed redemption (wrong verifier, client, redirect_uri or resource) burns the code.
+- /token requires the redirect_uri used at /authorize and a PKCE code_verifier (S256) of 43 to 128 unreserved characters (RFC 7636). The code is consumed before the verifier is checked, so any failed redemption (wrong or malformed verifier, client, redirect_uri or resource) burns the code.
+- A parameter repeated on GET /authorize (two redirect_uri, two state, and so on) is answered with 400.
+- The client name chosen at registration is cut to 100 characters. The consent page normalises it (NFKC), drops invisible and reordering characters (bidi controls, zero-width characters, tag characters) and shows where the code will be sent in its own block ahead of the client id. Look-alike letters from other scripts cannot be detected; the destination is what the operator should check.
+- Client secrets issued to clients that ask for one are stored as the SDK hands them over (plaintext) and compared by the SDK. Hashing them needs a migration of stored clients and is not done.
 - Access tokens last one hour and refresh tokens 30 days. Refresh tokens rotate on every use.
 - Login, GET and POST /authorize, code exchange, refresh and every access-token verification check AUTH_DENIED_FB_USER_IDS, so a denied user loses access on the next request once the process has the new value. Refresh and code exchange also re-run the allowlist, using the email stored at login; a user removed from AUTH_ALLOWED_* keeps a live access token until it expires (up to one hour) but cannot refresh it. Denial returns invalid_grant and burns the refresh token.
 - A rotated refresh token presented again after a 60 second grace window revokes every refresh token of that chain; inside the window the replay is only refused, so a client retry does not lose its session. An authorization code redeemed a second time outside the same window revokes the refresh tokens issued from it. Access tokens already issued from either chain stay valid until they expire; the deny list is the immediate cut-off.
@@ -55,19 +72,22 @@ A request that carries an Origin header not listed in CORS_ALLOWED_ORIGINS is re
 
 ### Rate limits and CSRF
 
-Limits are counted per client address per 15 minutes, with IPv6 addresses grouped by their /64 and IPv4-mapped addresses counted as IPv4:
+Two limiters apply to the OAuth routes and the smaller allowance wins. This server counts per client address per 15 minutes (the /register window is one hour in the SDK), with IPv6 addresses grouped by their /64 and IPv4-mapped addresses counted as IPv4. The MCP SDK's own limiters sit inside the routes it serves and group IPv6 addresses by /56, so an IPv6 client is bucketed by the wider /56 there.
 
-| Route | Requests |
-|---|---|
-| /authorize | 120 |
-| /auth/meta | 60 |
-| /auth/meta/callback | 60 |
-| /token | 60 |
-| /register | 20 |
-| /auth/register-apify-token | 10 |
-| /auth/register-gemini-key | 10 |
+| Route | This server | MCP SDK | Effective |
+|---|---|---|---|
+| /authorize (GET) | 120 per 15 min | not reached | 120 per 15 min |
+| /authorize (POST) | 120 per 15 min | 100 per 15 min | 100 per 15 min |
+| /token | 60 per 15 min | 50 per 15 min | 50 per 15 min |
+| /register | 20 per 15 min | 20 per hour | 20 per hour |
+| /revoke | none | 50 per 15 min | 50 per 15 min |
+| /auth/meta | 60 per 15 min | none | 60 per 15 min |
+| /auth/meta/callback | 60 per 15 min | none | 60 per 15 min |
+| /auth/register-apify-token | 10 per 15 min | none | 10 per 15 min |
+| /auth/register-gemini-key | 10 per 15 min | none | 10 per 15 min |
+| /mcp, failed credentials (API-key deployments) | 20 per 15 min | none | 20 per 15 min, then 429 |
 
-Exceeding a limit returns HTTP 429. The server trusts one proxy hop (trust proxy = 1); if more proxies sit in front of it, every client shares one address, which has not been checked on the deployment platform.
+Exceeding a limit returns HTTP 429. The address comes from X-Forwarded-For, counted TRUST_PROXY_HOPS entries from the right (default 1). Set it to the number of proxies in front of the server: too low and every client shares the proxy's address, too high and a client can pick its own address by sending the header. Which value the deployment platform needs has not been checked. Each limiter keeps at most 10,000 addresses; when a rotating attacker fills the table, expired entries go first and then the oldest, so a new address can push out an old one but memory stays bounded.
 
 POST /authorize, /auth/logout, /auth/select-token, /auth/register-system-token and /auth/delete-token refuse a cross-site request: Sec-Fetch-Site is checked first, then Origin, and a request carrying neither header is allowed, as for the Apify and Gemini key routes.
 
@@ -77,7 +97,9 @@ The OAuth routes, the OAuth provider and the /mcp token middleware write Faceboo
 
 ### Operator checklist before a deploy
 
-1. Decide on OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS for the clients in use (vscode.dev, platform.openai.com).
+1. Decide on OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS for the clients in use (chatgpt.com, platform.openai.com, vscode.dev).
 2. Confirm CORS_ALLOWED_ORIGINS covers every browser client that calls /mcp.
 3. Confirm the TTL policy on mcp_refresh_jti.expiresAt.
-4. Record the deny list procedure: edit AUTH_DENIED_FB_USER_IDS and redeploy. There is no admin endpoint for per-user revocation.
+4. Set TRUST_PROXY_HOPS to the number of proxies in front of the server and check a rate-limited route from two addresses.
+5. If the deployment uses MCP_API_KEY, confirm it is at least 32 characters.
+6. Record the deny list procedure: edit AUTH_DENIED_FB_USER_IDS and redeploy. There is no admin endpoint for per-user revocation.

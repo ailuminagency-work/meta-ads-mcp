@@ -91,6 +91,9 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
     ["fragment", "https://claude.ai/cb#x"],
     ["wildcard host", "https://*.claude.ai/cb"],
     ["userinfo", "https://claude.ai@evil.example/cb"],
+    ["another path on claude.ai", "https://claude.ai/anything/the/attacker/likes"],
+    ["a Custom GPT callback on chatgpt.com", "https://chatgpt.com/aip/g-SYNTHETIC-GPT/oauth/callback"],
+    ["the ChatGPT connector callback before the operator opts in", "https://chatgpt.com/connector_platform_oauth_redirect"],
     ["lookalike of claude.com", "https://claude.com.evil.example/x"],
     ["plain http on claude.com", "http://claude.com/x"],
     ["unlisted custom scheme", "myapp://callback"],
@@ -112,13 +115,14 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
     expect(((await response.json()) as { error: string }).error).toBe("invalid_redirect_uri");
   });
 
-  const LEGITIMATE: Array<[string, string[], string]> = [
+  const LEGITIMATE: Array<[string, string[], string, string?]> = [
     ["Claude", ["https://claude.ai/api/mcp/auth_callback"], "https://claude.ai/api/mcp/auth_callback"],
     ["Claude on claude.com", ["https://claude.com/api/mcp/auth_callback"], "https://claude.com/api/mcp/auth_callback"],
     [
-      "ChatGPT",
+      "ChatGPT (opted in with OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS)",
       ["https://chatgpt.com/connector_platform_oauth_redirect"],
       "https://chatgpt.com/connector_platform_oauth_redirect",
+      "chatgpt.com",
     ],
     [
       "Claude Code loopback",
@@ -139,7 +143,8 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
 
   it.each(LEGITIMATE)(
     "still completes registration, authorization and token exchange for %s",
-    async (_client, redirectUris, chosenRedirect) => {
+    async (_client, redirectUris, chosenRedirect, extraHosts) => {
+      if (extraHosts) vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", extraHosts);
       const registration = await register(harness.origin, redirectUris);
       expect(registration.status).toBe(201);
       const registered = (await registration.json()) as OAuthClientInformationFull;
@@ -186,6 +191,21 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
       expect(await token.json()).toMatchObject({ token_type: "Bearer" });
     },
   );
+
+  it("registers a client with a very long name under a bounded name", async () => {
+    const response = await fetch(`${harness.origin}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "N".repeat(90_000),
+        redirect_uris: ["http://127.0.0.1:38123/cb"],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    expect(response.status).toBe(201);
+    const registered = (await response.json()) as OAuthClientInformationFull;
+    expect(Array.from(registered.client_name ?? "")).toHaveLength(100);
+  });
 
   it("accepts a ChatGPT-style registration only for hosts the operator allowlisted", async () => {
     const hosted = ["https://tools.agency.example/oauth/callback"];

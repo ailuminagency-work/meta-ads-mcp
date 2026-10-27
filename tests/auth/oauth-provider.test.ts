@@ -38,6 +38,7 @@ describe("MetaAdsOAuthProvider", () => {
   beforeEach(() => {
     process.env.OAUTH_SECRET = "x".repeat(64);
     resetOAuthProviderForTests();
+    oauthProvider.configure({ resolvePendingAuth: () => ({ fbUserId: "fb-default" }) });
   });
 
   afterEach(() => {

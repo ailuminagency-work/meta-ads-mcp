@@ -77,8 +77,11 @@ function redeemedCodeKey(code: string): string {
   return CODE_REDEEMED_PREFIX + crypto.createHash("sha256").update(code).digest("hex");
 }
 
+// RFC 7636 section 4.1: 43 to 128 unreserved characters.
+const PKCE_VERIFIER_FORMAT = /^[A-Za-z0-9._~-]{43,128}$/;
+
 function pkceVerifierMatches(verifier: string | undefined, challenge: string | undefined): boolean {
-  if (!verifier || !challenge) return false;
+  if (!verifier || !challenge || !PKCE_VERIFIER_FORMAT.test(verifier)) return false;
   const computed = Buffer.from(crypto.createHash("sha256").update(verifier).digest("base64url"));
   const expected = Buffer.from(challenge);
   return computed.length === expected.length && crypto.timingSafeEqual(computed, expected);
@@ -127,11 +130,16 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
-    const code = crypto.randomBytes(32).toString("hex");
+    // The SDK router reaches this method for every request it accepts, so the
+    // identity must be checked here and not only by the routes in front of it.
     const pending = this.pendingAuthResolver();
-    if (pending?.fbUserId && isDenied(pending.fbUserId)) {
+    if (!pending?.fbUserId) {
+      throw new AccessDeniedError("Sign in with an authorized Meta account before approving an application");
+    }
+    if (isDenied(pending.fbUserId)) {
       throw new AccessDeniedError("This account is not permitted to authorize clients");
     }
+    const code = crypto.randomBytes(32).toString("hex");
     const suppliedRedirectUri = res.req?.method === "POST"
       ? res.req.body?.redirect_uri
       : res.req?.query?.redirect_uri;
@@ -142,7 +150,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       redirectUri: params.redirectUri,
       redirectUriRequired: this.requireRedirectUri && typeof suppliedRedirectUri === "string",
       resource: (params.resource ?? this.defaultResource)?.href,
-      fbUserId: pending?.fbUserId,
+      fbUserId: pending.fbUserId,
       expiresAt: Math.floor(Date.now() / 1000) + 600,
     });
 
@@ -153,7 +161,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     }
 
     logger.info(
-      { clientId: client.client_id, fbUserId: hashPii(pending?.fbUserId) },
+      { clientId: client.client_id, fbUserId: hashPii(pending.fbUserId) },
       "Authorization code issued",
     );
     res.redirect(302, redirectUrl.toString());
@@ -202,6 +210,9 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if (entry.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new InvalidGrantError("Authorization code has expired");
     }
+    if (!entry.fbUserId) {
+      throw new InvalidGrantError("Authorization code is not bound to an operator");
+    }
 
     if ((entry.redirectUriRequired || redirectUri !== undefined) && redirectUri !== entry.redirectUri) {
       throw new InvalidGrantError("Authorization code redirect URI mismatch");
@@ -214,7 +225,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       throw new InvalidGrantError("PKCE verification failed");
     }
 
-    if (entry.fbUserId && !(await this.isSubjectAuthorized(entry.fbUserId))) {
+    if (!(await this.isSubjectAuthorized(entry.fbUserId))) {
       throw new InvalidGrantError(REVOKED_MESSAGE);
     }
 
@@ -305,8 +316,12 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if (await this.refreshJtiStoreImpl.has(FAMILY_REVOKED_PREFIX + familyId)) {
       throw new InvalidGrantError("Refresh token has been revoked or already used");
     }
-    const subject = typeof payload.fb_user_id === "string" ? payload.fb_user_id : undefined;
-    if (subject && !(await this.isSubjectAuthorized(subject))) {
+    const subject = typeof payload.fb_user_id === "string" && payload.fb_user_id ? payload.fb_user_id : undefined;
+    if (!subject) {
+      await this.refreshJtiStoreImpl.consume(jti);
+      throw new InvalidGrantError("Refresh token is not bound to an operator");
+    }
+    if (!(await this.isSubjectAuthorized(subject))) {
       await this.refreshJtiStoreImpl.consume(jti);
       logger.warn(
         { clientId: client.client_id, fbUserId: hashPii(subject) },
@@ -348,7 +363,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     jti: string,
     familyId: string,
     clientId: string,
-    subject: string | undefined,
+    subject: string,
   ): Promise<void> {
     try {
       if (await this.refreshJtiStoreImpl.has(ROTATED_PREFIX + jti)) return;
@@ -399,21 +414,21 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if (payload.type !== "access") {
       throw new InvalidTokenError("Token is not an access token");
     }
-    if (typeof payload.fb_user_id === "string" && isDenied(payload.fb_user_id)) {
+    if (typeof payload.fb_user_id !== "string" || !payload.fb_user_id) {
+      throw new InvalidTokenError("Access token is not bound to an operator");
+    }
+    if (isDenied(payload.fb_user_id)) {
       throw new InvalidTokenError(REVOKED_MESSAGE);
     }
 
-    const extra: Record<string, unknown> = {};
-    if (typeof payload.fb_user_id === "string") {
-      extra.fbUserId = payload.fb_user_id;
-    }
+    const extra: Record<string, unknown> = { fbUserId: payload.fb_user_id };
 
     const authInfo: AuthInfo = {
       token,
       clientId: payload.sub!,
       scopes: [],
       expiresAt: payload.exp,
-      extra: Object.keys(extra).length > 0 ? extra : undefined,
+      extra,
     };
     if (payload.resource) {
       authInfo.resource = new URL(payload.resource as string);
@@ -451,7 +466,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   private async generateTokens(input: {
     clientId: string;
     resource?: URL;
-    fbUserId?: string;
+    fbUserId: string;
     familyId?: string;
   }): Promise<OAuthTokens> {
     const secret = getJwtSecret();
@@ -463,9 +478,9 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     };
     const resource = input.resource ?? this.defaultResource;
     if (resource) claims.resource = resource.href;
-    if(input.fbUserId&&await isMetaPrincipalPrivacyLocked(input.fbUserId))throw new InvalidGrantError("User authorization has been revoked");
-    if (input.fbUserId && isDenied(input.fbUserId)) throw new InvalidGrantError(REVOKED_MESSAGE);
-    if (input.fbUserId) claims.fb_user_id = input.fbUserId;
+    if(await isMetaPrincipalPrivacyLocked(input.fbUserId))throw new InvalidGrantError("User authorization has been revoked");
+    if (isDenied(input.fbUserId)) throw new InvalidGrantError(REVOKED_MESSAGE);
+    claims.fb_user_id = input.fbUserId;
 
     const accessToken = await new SignJWT(claims)
       .setProtectedHeader({ alg: "HS256" })
@@ -487,7 +502,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       fid: familyId,
     };
     if (resource) refreshClaims.resource = resource.href;
-    if (input.fbUserId) refreshClaims.fb_user_id = input.fbUserId;
+    refreshClaims.fb_user_id = input.fbUserId;
 
     const refreshToken = await new SignJWT(refreshClaims)
       .setProtectedHeader({ alg: "HS256" })
@@ -500,7 +515,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       expiresAt: refreshExpiresAt,
       meta: {
         clientId: input.clientId,
-        fbUserId: input.fbUserId ?? null,
+        fbUserId: input.fbUserId,
         family: familyId,
       },
     });

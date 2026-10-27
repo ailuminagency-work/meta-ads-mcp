@@ -1,4 +1,5 @@
 import {isMetaPrincipalPrivacyLocked} from "../platform/meta-privacy-access.js";
+import { isAllowed } from "./email-allowlist.js";
 import crypto from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import type { Request, Response } from "express";
@@ -96,7 +97,22 @@ export async function setSession(
   });
 }
 
+/**
+ * The signed-in operator, or null. A valid cookie is not enough: the operator
+ * must still pass the allowlist and not be on the deny list, so removing
+ * someone from AUTH_ALLOWED_* or adding them to AUTH_DENIED_FB_USER_IDS ends
+ * their live session on the next request instead of after 30 days.
+ */
 export async function getSession(
+  req: Request,
+): Promise<SessionPayload | null> {
+  const session = await readSession(req);
+  if (!session) return null;
+  return isAllowed({ email: session.email, fbUserId: session.fbUserId }) ? session : null;
+}
+
+/** The operator named by a valid cookie even if they are no longer allowed, so /authorize can say so and end the session. */
+export async function readSession(
   req: Request,
 ): Promise<SessionPayload | null> {
   const reqCookies = (req as Request & { cookies?: Record<string, string> })

@@ -46,16 +46,25 @@ import {
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { oauthProvider } from "../auth/oauth-provider.js";
-import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
+import { assertApiKeyStrength, isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { hashPii, requestContext } from "../auth/token-store.js";
 import { tokenManager } from "../auth/token-manager.js";
-import { clearSession, configureSessionJtiStore, getSession } from "../auth/session.js";
+import { clearSession, configureSessionJtiStore, getSession, readSession } from "../auth/session.js";
 import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
 import { clientIpKey } from "../utils/client-ip-key.js";
+import { resolveTrustProxyHops } from "./trust-proxy.js";
+import { WindowCounter } from "../utils/window-counter.js";
 import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
-import { DEFAULT_CORS_ALLOWED_ORIGINS, mcpBodyErrorHandler, mcpOriginGuard } from "./mcp-guards.js";
+import {
+  authorizeExactPathOnly,
+  DEFAULT_CORS_ALLOWED_ORIGINS,
+  mcpBodyErrorHandler,
+  mcpOriginGuard,
+  oauthEndpointsUnavailable,
+  rejectEveryToken,
+} from "./mcp-guards.js";
 import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
@@ -198,7 +207,7 @@ function describeRedirectTarget(redirectUri: string | undefined): string {
 export function renderConsentPage(ctx: ConsentContext): string {
   const readOnlyAgency = process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true";
   const clientId = escapeHtml(ctx.query.client_id || "Unknown");
-  const clientLabel = singleLine(ctx.client?.name, 80);
+  const clientLabel = singleLine(ctx.client?.name?.normalize("NFKC"), 80);
   const redirectTarget = describeRedirectTarget(ctx.query.redirect_uri);
   const hiddenFields = Object.entries(ctx.query)
     .map(
@@ -269,9 +278,12 @@ ${PAGE_STYLES}
     <p class="subtitle">
       <span class="client">${escapeHtml(clientLabel || clientId)}</span> quiere acceder a tu servidor Meta Ads MCP.
     </p>
+    <p class="subtitle" id="destination" style="color:#fff;border:1px solid #666;border-radius:8px;padding:0.6rem 0.8rem;margin:0.8rem 0">
+      Al aprobar, el código se enviará a:<br />
+      <b style="font-size:1.25rem">${escapeHtml(redirectTarget)}</b>
+    </p>
     <p class="subtitle">
       ID: ${clientId}<br />
-      Al aprobar, el código se enviará a: <b>${escapeHtml(redirectTarget)}</b><br />
       Cualquiera puede registrar un cliente con cualquier nombre. Aprueba solo si tú iniciaste esta conexión desde esa aplicación.
     </p>
 
@@ -343,29 +355,13 @@ async function sessionStillAllowed(
   return false;
 }
 
-export function createRateLimiter(maxRequests: number, windowMs: number) {
-  const requests = new Map<string, { count: number; resetAt: number }>();
-
-  setInterval(() => {
-    const now = Date.now();
-    for (const [ip, entry] of requests) {
-      if (entry.resetAt < now) requests.delete(ip);
-    }
-  }, windowMs).unref();
+export function createRateLimiter(maxRequests: number, windowMs: number, maxKeys?: number) {
+  const requests = new WindowCounter({ limit: maxRequests + 1, windowMs, maxKeys });
 
   return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
     const ip = clientIpKey(req.ip ?? req.socket.remoteAddress);
-    const now = Date.now();
-    const entry = requests.get(ip);
-
-    if (!entry || entry.resetAt < now) {
-      requests.set(ip, { count: 1, resetAt: now + windowMs });
-      next();
-      return;
-    }
-
-    entry.count++;
-    if (entry.count > maxRequests) {
+    requests.record(ip);
+    if (requests.isBlocked(ip)) {
       logger.warn({ ip, path: req.path }, "Rate limit exceeded");
       res.status(429).json({ error: "Too many requests, please try again later" });
       return;
@@ -406,12 +402,28 @@ function sendMcpAuthRequired(
   });
 }
 
+const API_KEY_MAX_FAILURES = 20;
+const API_KEY_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+
 function createCombinedAuthMiddleware(
   oauthMiddleware: express.RequestHandler,
 ): express.RequestHandler {
+  const failures = new WindowCounter({ limit: API_KEY_MAX_FAILURES, windowMs: API_KEY_FAILURE_WINDOW_MS });
   return (req, res, next) => {
     if (!isApiKeyConfigured()) {
       oauthMiddleware(req, res, next);
+      return;
+    }
+
+    const client = clientIpKey(req.ip ?? req.socket.remoteAddress);
+    if (failures.isBlocked(client)) {
+      logger.warn({ ip: client, path: req.path }, "Too many failed /mcp credentials");
+      res.setHeader("Retry-After", String(Math.ceil(API_KEY_FAILURE_WINDOW_MS / 1000)));
+      res.status(429).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Too many failed attempts, please try again later" },
+        id: null,
+      });
       return;
     }
 
@@ -422,6 +434,7 @@ function createCombinedAuthMiddleware(
         next();
         return;
       }
+      failures.record(client);
       res.status(401).json({
         jsonrpc: "2.0",
         error: { code: -32000, message: "Invalid API key" },
@@ -437,6 +450,14 @@ function createCombinedAuthMiddleware(
       return;
     }
 
+    // A bearer that is not the key may be a valid OAuth token, so it only
+    // counts as a failure when the OAuth check refuses it as well. A request
+    // with no credential at all is just the client asking how to authenticate.
+    if (req.headers.authorization) {
+      res.once("finish", () => {
+        if (res.statusCode === 401) failures.record(client);
+      });
+    }
     oauthMiddleware(req, res, next);
   };
 }
@@ -540,9 +561,12 @@ export async function startHttpTransport(
   const app = express();
   const isProduction = process.env.NODE_ENV === "production";
   const config = resolveSecurityConfig();
+  assertApiKeyStrength();
 
   app.disable("x-powered-by");
-  app.set("trust proxy", 1);
+  const trustProxyHops = resolveTrustProxyHops();
+  app.set("trust proxy", trustProxyHops);
+  logger.info({ trustProxyHops }, "Proxy trust configured");
   // CORS: explicit allowlist instead of wildcard. The previous app.use(cors())
   // set Access-Control-Allow-Origin: * on every response, which let any origin
   // invoke /mcp with a stolen Bearer token. We only need cross-origin reads
@@ -803,7 +827,7 @@ export async function startHttpTransport(
       }
       const { redirectOrigin, clientName } = validation;
 
-      const session = await getSession(req);
+      const session = await readSession(req);
       if (!session) {
         const returnTo = req.originalUrl;
         res.redirect(302, `/auth/meta?return=${encodeURIComponent(returnTo)}`);
@@ -875,7 +899,7 @@ export async function startHttpTransport(
       requireSameOriginPost("/authorize"),
       express.urlencoded({ extended: false }),
       async (req, res, next) => {
-        const session = await getSession(req);
+        const session = await readSession(req);
         if (!session) {
           const recoverTo = safeReturnTo(req.body?.return);
           const link =
@@ -925,6 +949,10 @@ export async function startHttpTransport(
 
   oauthProvider.configure({ defaultResource: new URL("/mcp", serverUrl), requireRedirectUri: true });
 
+  if (!config.multiTenantEnabled) {
+    app.use(["/authorize", "/register", "/token", "/revoke"], oauthEndpointsUnavailable);
+  }
+  app.use("/authorize", authorizeExactPathOnly);
   app.use("/authorize", echoStateOnAuthorizeErrors());
   app.use(
     mcpAuthRouter({
@@ -935,7 +963,7 @@ export async function startHttpTransport(
   );
 
   const oauthBearerAuth = requireBearerAuth({
-    verifier: oauthProvider,
+    verifier: config.multiTenantEnabled ? oauthProvider : rejectEveryToken,
     resourceMetadataUrl: getMcpProtectedResourceMetadataUrl(serverUrl),
     expectedResource: new URL("/mcp", serverUrl),
   });

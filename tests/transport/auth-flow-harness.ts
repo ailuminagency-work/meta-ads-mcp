@@ -1,7 +1,7 @@
 import express from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer as createNodeServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { vi } from "vitest";
 import { resetOAuthProviderForTests } from "../../src/auth/oauth-provider.js";
@@ -240,4 +240,49 @@ export function codeFrom(response: Response): string {
   const code = location ? new URL(location).searchParams.get("code") : null;
   if (!code) throw new Error(`no authorization code in response ${response.status}`);
   return code;
+}
+
+export interface RawResponse {
+  status: number;
+  location: string | null;
+  body: string;
+}
+
+/**
+ * Sends the request line exactly as given. fetch normalises paths such as
+ * "/authorize//" or "/authorize/.", which are the shapes worth attacking.
+ */
+export function rawRequest(
+  origin: string,
+  input: { method?: string; target: string; headers?: Record<string, string>; body?: string },
+): Promise<RawResponse> {
+  const { port } = new URL(origin);
+  const body = input.body ?? "";
+  const headers = Object.entries({
+    Host: `127.0.0.1:${port}`,
+    Connection: "close",
+    "Content-Length": String(Buffer.byteLength(body)),
+    ...input.headers,
+  })
+    .map(([name, value]) => `${name}: ${value}\r\n`)
+    .join("");
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(Number(port), "127.0.0.1", () => {
+      socket.write(`${input.method ?? "GET"} ${input.target} HTTP/1.1\r\n${headers}\r\n${body}`);
+    });
+    let received = "";
+    socket.on("data", (chunk) => {
+      received += chunk.toString();
+    });
+    socket.on("error", reject);
+    socket.on("close", () => {
+      const head = received.split("\r\n")[0] ?? "";
+      resolve({
+        status: Number(head.split(" ")[1] ?? 0),
+        location: /^location: (.*)$/im.exec(received)?.[1]?.trim() ?? null,
+        body: received.slice(received.indexOf("\r\n\r\n") + 4),
+      });
+    });
+    socket.setTimeout(5000, () => socket.destroy());
+  });
 }

@@ -99,12 +99,17 @@ describe("clients registered before the policy existed", () => {
       registered_at: 1,
     });
     double.data.set("mcp_clients/legacy-good", {
-      ...client("legacy-good", ["https://chatgpt.com/connector_platform_oauth_redirect"]),
+      ...client("legacy-good", ["https://claude.ai/api/mcp/auth_callback"]),
+      registered_at: 1,
+    });
+    double.data.set("mcp_clients/legacy-custom-gpt", {
+      ...client("legacy-custom-gpt", ["https://chatgpt.com/aip/g-SYNTHETIC-GPT/oauth/callback"]),
       registered_at: 1,
     });
     const store = new FirestoreClientsStore();
 
     expect(await store.getClient("legacy-evil")).toBeUndefined();
+    expect(await store.getClient("legacy-custom-gpt")).toBeUndefined();
     expect(await store.getClient("legacy-good")).toMatchObject({ client_id: "legacy-good" });
   });
 
@@ -116,5 +121,39 @@ describe("clients registered before the policy existed", () => {
 
     vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "");
     expect(await store.getClient("temporary")).toBeUndefined();
+  });
+});
+
+describe.each(stores)("%s client name", (_name, create) => {
+  it("keeps a long client name to 100 characters, stored and returned", async () => {
+    const store = create();
+    const submitted = { ...client("long-name", ["http://127.0.0.1:38123/cb"]), client_name: "N".repeat(90_000) };
+
+    const registered = await store.registerClient!(submitted);
+
+    expect(Array.from(registered.client_name ?? "")).toHaveLength(100);
+    expect(Array.from((await store.getClient("long-name"))?.client_name ?? "")).toHaveLength(100);
+    expect(submitted.client_name).toHaveLength(90_000);
+  });
+
+  it("does not split a character when it cuts", async () => {
+    const store = create();
+    const registered = await store.registerClient!({
+      ...client("emoji-name", ["http://127.0.0.1:38123/cb"]),
+      client_name: "\u{1F600}".repeat(150),
+    });
+
+    expect(Array.from(registered.client_name ?? "")).toHaveLength(100);
+    expect(registered.client_name).not.toMatch(/[\ud800-\udbff]$/);
+  });
+
+  it("leaves a short or missing name alone", async () => {
+    const store = create();
+    expect((await store.registerClient!(client("short-name", ["http://127.0.0.1:38123/cb"]))).client_name).toBe(
+      "Synthetic client",
+    );
+    const nameless = { ...client("no-name", ["http://127.0.0.1:38123/cb"]) } as Partial<OAuthClientInformationFull>;
+    delete nameless.client_name;
+    expect((await store.registerClient!(nameless as OAuthClientInformationFull)).client_name).toBeUndefined();
   });
 });

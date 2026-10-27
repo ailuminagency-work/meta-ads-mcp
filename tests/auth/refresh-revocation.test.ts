@@ -324,8 +324,8 @@ describe.each([
     oauthProvider.configure({ refreshJtiStore: store });
     const legacyJti = randomBytes(16).toString("hex");
     const now = Math.floor(Date.now() / 1000);
-    await store.put(legacyJti, { expiresAt: now + 3600, meta: { clientId: client.client_id, fbUserId: null } });
-    const legacyToken = await new SignJWT({ sub: client.client_id, type: "refresh", jti: legacyJti })
+    await store.put(legacyJti, { expiresAt: now + 3600, meta: { clientId: client.client_id, fbUserId: OPERATOR } });
+    const legacyToken = await new SignJWT({ sub: client.client_id, type: "refresh", jti: legacyJti, fb_user_id: OPERATOR })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt(now)
       .setExpirationTime(now + 3600)

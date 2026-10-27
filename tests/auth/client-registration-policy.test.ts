@@ -14,10 +14,6 @@ afterEach(() => {
 const LEGITIMATE_REDIRECTS: Record<string, string[]> = {
   "Claude (web and mobile)": ["https://claude.ai/api/mcp/auth_callback"],
   "Claude (callback on claude.com)": ["https://claude.com/api/mcp/auth_callback"],
-  ChatGPT: [
-    "https://chatgpt.com/connector_platform_oauth_redirect",
-    "https://chatgpt.com/connector/oauth/synthetic-callback-id",
-  ],
   "Claude Code and other CLIs (ephemeral loopback port)": [
     "http://localhost:54321/callback",
     "http://127.0.0.1:38123/oauth/callback",
@@ -44,6 +40,17 @@ describe("client registration redirect policy: legitimate clients", () => {
     });
   }
 
+  it("accepts the ChatGPT callbacks only once the operator opts chatgpt.com in", () => {
+    const chatgpt = [
+      "https://chatgpt.com/connector_platform_oauth_redirect",
+      "https://chatgpt.com/connector/oauth/synthetic-callback-id",
+    ];
+    for (const uri of chatgpt) expect(checkRedirectUri(uri).ok, uri).toBe(false);
+
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "chatgpt.com");
+    for (const uri of chatgpt) expect(checkRedirectUri(uri), uri).toEqual({ ok: true });
+  });
+
   it("accepts a mixed registration when every URI is acceptable", () => {
     expect(
       checkRedirectUris(["http://127.0.0.1:33418/", "vscode://vscode.github-authentication/did-authenticate"]),
@@ -52,7 +59,7 @@ describe("client registration redirect policy: legitimate clients", () => {
 
   it("does not trust hosts outside the defaults until the operator names them", () => {
     expect(checkRedirectUri("https://vscode.dev/redirect").ok).toBe(false);
-    expect(allowedRedirectHosts()).toEqual(["claude.ai", "claude.com", "chatgpt.com"]);
+    expect(allowedRedirectHosts()).toEqual(["claude.ai", "claude.com"]);
 
     vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "vscode.dev, Insiders.VSCode.dev");
     expect(checkRedirectUri("https://vscode.dev/redirect")).toEqual({ ok: true });
@@ -66,7 +73,7 @@ describe("client registration redirect policy: legitimate clients", () => {
       "OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS",
       "*.example.com,https://scheme.example,host.example:8443,192.0.2.7,path.example/x,,ok.example",
     );
-    expect(allowedRedirectHosts()).toEqual(["claude.ai", "claude.com", "chatgpt.com", "ok.example"]);
+    expect(allowedRedirectHosts()).toEqual(["claude.ai", "claude.com", "ok.example"]);
   });
 });
 
@@ -75,6 +82,15 @@ describe("client registration redirect policy: hostile registrations", () => {
     ["attacker origin", "https://evil.example/cb"],
     ["attacker origin on a lookalike of an allowed host", "https://claude.ai.evil.example/cb"],
     ["allowed host as a subdomain prefix", "https://evilclaude.ai/cb"],
+    ["another path on claude.ai", "https://claude.ai/anything/the/attacker/likes?next=x"],
+    ["another path on claude.com", "https://claude.com/api/mcp/other_callback"],
+    ["the callback path with a query", "https://claude.ai/api/mcp/auth_callback?next=https://evil.example"],
+    ["the callback path with an empty query", "https://claude.ai/api/mcp/auth_callback?"],
+    ["the callback path with a trailing slash", "https://claude.ai/api/mcp/auth_callback/"],
+    ["the callback path in another case", "https://claude.ai/API/MCP/auth_callback"],
+    ["the callback path percent-encoded", "https://claude.ai/api/mcp/auth%5Fcallback"],
+    ["the callback path reached through dot segments", "https://claude.ai/api/x/../mcp/auth_callback"],
+    ["a Custom GPT callback on chatgpt.com", "https://chatgpt.com/aip/g-SYNTHETIC-GPT/oauth/callback"],
     ["lookalike of claude.com", "https://claude.com.evil.example/x"],
     ["claude.com as a subdomain prefix", "https://evilclaude.com/x"],
     ["subdomain of claude.com", "https://attacker.claude.com/x"],
@@ -127,6 +143,12 @@ describe("client registration redirect policy: hostile registrations", () => {
       expect(checkRedirectUri(uri).ok, uri).toBe(false);
     });
   }
+
+  it("pins the default hosts to the callback path even when the operator also lists them", () => {
+    vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "claude.ai,chatgpt.com");
+    expect(checkRedirectUri("https://claude.ai/anything/else").ok).toBe(false);
+    expect(checkRedirectUri("https://claude.ai/api/mcp/auth_callback")).toEqual({ ok: true });
+  });
 
   it("rejects non-string entries", () => {
     for (const value of [null, undefined, 42, {}, ["https://claude.ai/cb"]]) {

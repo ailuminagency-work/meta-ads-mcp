@@ -26,7 +26,7 @@ beforeAll(async () => {
     NODE_ENV: "production", DEPLOYMENT_MODE: "upstream", SERVER_URL: ORIGIN, SESSION_COOKIE_SECRET: SECRET, TOKEN_ENCRYPTION_KEY: "d".repeat(64),
     LUMIN_PLATFORM_ENABLED: "true", LUMIN_PLATFORM_WRITES_ENABLED: "true", AGENCY_WRITES_ENABLED: "true",
     META_APP_ID: "", META_APP_SECRET: "", MCP_API_KEY: "", META_ACCESS_TOKEN: "", META_TOKENS: "", LUMIN_META_PRIVACY_ENABLED: "false",
-    OAUTH_SECRET: randomBytes(32).toString("hex"),
+    OAUTH_SECRET: randomBytes(32).toString("hex"), AUTH_ALLOWED_FB_USER_IDS: human.operatorId,
   })) vi.stubEnv(key, value);
   vi.resetModules();
   const { InMemoryPlatformRepository } = await import("../../src/platform/repository.js");
