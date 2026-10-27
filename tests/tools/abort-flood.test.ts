@@ -68,17 +68,25 @@ describe("dropped tool calls do not keep running", () => {
     const { pairs, calls } = await dropped("ads_run_report_and_wait", { object_id: "act_1", date_preset: "last_7d", level: "campaign", max_wait_seconds: 900 }, CALLS);
     await Promise.all(calls);
     await settle();
+    const stillHeld = graph.open;
+    const stillRunning = runningToolCallsForTests();
+
+    // The test's own references go first: what is left after a collection is what the dropped calls pinned.
+    await Promise.all(pairs.map(async ({ client, closeServer }) => { await client.close(); await closeServer(); }));
+    pairs.length = 0;
+    calls.length = 0;
+    const gc = (globalThis as { gc?: () => void }).gc;
+    let retained = 0;
+    if (gc) {
+      await sleep(50);
+      gc();
+      retained = process.memoryUsage().heapUsed - heapBefore;
+    }
 
     expect(graph.started, "every call reached Graph").toBeGreaterThan(0);
-    expect(graph.open, "Graph requests still held after the clients dropped").toBe(0);
-    expect(runningToolCallsForTests(), "handlers still running").toEqual({ total: 0, subjects: 0 });
-
-    await Promise.all(pairs.map(async ({ client, closeServer }) => { await client.close(); await closeServer(); }));
-    const gc = (globalThis as { gc?: () => void }).gc;
-    if (gc) {
-      gc();
-      expect(process.memoryUsage().heapUsed - heapBefore, "heap retained by dropped calls").toBeLessThan(120 * 1024 * 1024);
-    }
+    expect(stillHeld, "Graph requests still held after the clients dropped").toBe(0);
+    expect(stillRunning, "handlers still running").toEqual({ total: 0, subjects: 0 });
+    if (gc) expect(retained, "heap retained by dropped calls (run with NODE_OPTIONS=--expose-gc)").toBeLessThan(60 * 1024 * 1024);
   }, 120_000);
 
   it("an ordinary read tool: the held Graph request is aborted with the client", async () => {
