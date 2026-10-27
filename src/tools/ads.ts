@@ -6,6 +6,7 @@ import { buildFieldsParam, normalizeUrlTags, requireOneOf } from "../utils/valid
 import { AD_DEFAULT_FIELDS } from "../meta/types/ad.js";
 import type { Ad, AdCreative, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, untrustedText } from "../media/content-blocks.js";
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
@@ -197,12 +198,12 @@ export function registerAdTools(server: McpServer): void {
       const text =
         ads.length === 0
           ? "No ads found."
-          : ads
-              .map(
+          : fenceBlock(
+              ads.map(
                 (a) =>
-                  `• ${a.name} (${a.id}) — ${a.status} — Creative: ${a.creative?.id ?? "N/A"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(a.name) || "Unnamed"} (${untrustedText(a.id, 40)}) — ${untrustedText(a.status, 40)} — Creative: ${untrustedText(a.creative?.id, 40) || "N/A"}`,
+              ),
+            );
 
       return {
         content: [
@@ -233,7 +234,15 @@ export function registerAdTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Ad: ${ad.name}\nID: ${ad.id}\nAd Set: ${ad.adset_id}\nCampaign: ${ad.campaign_id}\nStatus: ${ad.status} (effective: ${ad.effective_status})\nCreative ID: ${ad.creative?.id ?? "N/A"}\nCreated: ${ad.created_time}`,
+            text: fenceBlock([
+              `Ad: ${untrustedText(ad.name) || "Unnamed"}`,
+              `ID: ${untrustedText(ad.id, 40)}`,
+              `Ad Set: ${untrustedText(ad.adset_id, 40)}`,
+              `Campaign: ${untrustedText(ad.campaign_id, 40)}`,
+              `Status: ${untrustedText(ad.status, 40)} (effective: ${untrustedText(ad.effective_status, 40)})`,
+              `Creative ID: ${untrustedText(ad.creative?.id, 40) || "N/A"}`,
+              `Created: ${untrustedText(ad.created_time, 40)}`,
+            ]),
           },
           { type: "text", text: JSON.stringify(ad, null, 2) },
         ],
