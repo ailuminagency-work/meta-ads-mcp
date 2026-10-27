@@ -16,7 +16,7 @@ Status: ENGINEERING_IN_PROGRESS / NO_DEPLOYMENT_AUTHORIZED. Checked implementati
 - [x] Signed durable webhook intake, normalized bounded events, fenced workers, replay protection, retries/DLQ and supervised lifecycle/reconciliation.
 - [x] Explicit public research provenance, one-attempt paid job approval/reservation, bounded Gemini text analysis and separately configured pinned Apify acquisitions; no paid provider is enabled.
 - [x] Finish and independently review the registered creative-image inspection and two-observation temporal comparison integrations, including saved-public-acquisition listing.
-- [x] Regenerate the exact SDK/source inventory and requirement/permission matrix: 370 registered names, with exact baseline and documented HOLD subsets. The frozen full-suite registration check remains a release gate.
+- [x] Regenerate the exact SDK/source inventory and requirement/permission matrix: 371 registered names (the generated inventory is authoritative; earlier drafts said 370), with exact baseline and documented HOLD subsets. The frozen full-suite registration check remains a release gate.
 - [ ] Run the complete frozen test suite, lint, type checking, build, prohibited-file checks, pinned Gitleaks staged/history scans and custom secret scan.
 - [ ] Record independent final security/release review, exact local commit, changed-file inventory and evidence report.
 - [x] Produce an isolated staging proposal with separate database/project, keys, OAuth namespace, safe flags, reviewed bootstrap/index/TTL requirements and rollback rules. See staging-approval-plan.md.
