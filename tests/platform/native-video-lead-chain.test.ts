@@ -4,6 +4,8 @@ import {videoLeadFixture as fixture} from "./video-lead-fixture.js";
 
 
 import {beforeEach,afterEach,it,expect,vi} from "vitest";
+import {stubBudgetCeilings} from "./budget-ceiling-fixture.js";
+beforeEach(()=>stubBudgetCeilings());
 import {Client} from "@modelcontextprotocol/sdk/client/index.js";
 import {InMemoryTransport} from "@modelcontextprotocol/sdk/inMemory.js";
 import {createServer} from "../../src/server.js";

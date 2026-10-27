@@ -10,6 +10,7 @@ import {readBodyWithLimit} from "../utils/bounded-body.js";
 import {resolveMetaApiVersion} from "../meta/api-version.js";
 import {assertNoCredentialShapedString} from "./input-safety.js";
 import {resolveAuthorizedAssets} from "./assets.js";
+import {assertPlanWithinBudgetCeiling} from "./marketing-budget-ceiling.js";
 export interface TargetingLookup {id:string;tenantId:string;clientId:string;actorId:string;appId:string;accountKey:string;accountId:string;connectionId:string;kind:"CITY"|"INTEREST";checkedAt:number;expiresAt:number;queryDigest:string;encryptedRows:EncryptedPayload}
 export interface TargetingOption {id:string;name:string;kind:"CITY"|"INTEREST";region?:string;countryCode?:string}
 const source="https://developers.facebook.com/documentation/ads-commerce/marketing-api/audiences/reference/targeting-search",hash=(v:string)=>createHash("sha256").update(v).digest("hex");
@@ -50,6 +51,8 @@ export async function lookupAdTargeting(repo:PlatformRepository,ctx:OperationCon
  }));}catch(error){await finishOperation(permit,"FAILED");throw error;}
 }
 export async function bindLegacyTargetingEvidence(repo:PlatformRepository,ctx:OperationContext,plan:OperationPlan):Promise<OperationPlan>{
+ // Every strict legacy plan passes through here at observation, approval request, approval issue, execution and egress, so the per-client budget ceiling holds at each of them.
+ assertPlanWithinBudgetCeiling(ctx,plan);
  if(plan.capability==="legacy.ads_create_ad"||plan.capability==="legacy.ads_update_ad"&&plan.parameters.expected_original_creative_id){const closure=await resolveAuthorizedAssets(repo,ctx,plan.assets,Date.now(),300000),videos=closure.filter(a=>a.type==="AD_VIDEO");if(videos.length>1)throw new PlatformDenied("CREATIVE_EXACT_ONE_VIDEO_REQUIRED");if(videos.length){const extras=videos.filter(a=>!plan.assets.some(ref=>ref.type===a.type&&ref.id===a.id));plan={...plan,assets:[...plan.assets,...extras.map(a=>({type:a.type,id:a.id}))]};}}
  if(plan.capability==="legacy.ads_update_ad"&&plan.parameters.expected_original_creative_id){const closure=await resolveAuthorizedAssets(repo,ctx,plan.assets,Date.now(),300000),target=closure.find(a=>a.type==="AD"&&a.id===plan.parameters.marketing_source_ad_id),sets=closure.filter(a=>a.type==="AD_SET"&&target?.parents.some(p=>p.type==="AD_SET"&&p.id===a.id));if(sets.length!==1)throw new PlatformDenied("REPOINT_REGISTERED_ADSET_REQUIRED");if(!plan.assets.some(a=>a.type==="AD_SET"&&a.id===sets[0].id))plan={...plan,assets:[...plan.assets,{type:"AD_SET",id:sets[0].id}]};}
  const step=plan.parameters.legacy_write_step as {body?:{targeting?:Record<string,unknown>}}|undefined,targeting=step?.body?.targeting;if(!targeting){if(plan.parameters.targeting_lookup_ids!==undefined)throw new PlatformDenied("TARGETING_UNUSED_LOOKUP_DENIED");return plan;}

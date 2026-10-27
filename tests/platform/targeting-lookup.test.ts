@@ -6,6 +6,8 @@ import {requestContext} from "../../src/auth/token-store.js";
 import {configurePlatformRepository} from "../../src/platform/runtime.js";
 import {observeCampaignCompatibility} from "../../src/platform/compatibility-observer.js";
 import {beforeEach,afterEach,describe,expect,it,vi} from "vitest";
+import {stubBudgetCeilings} from "./budget-ceiling-fixture.js";
+beforeEach(()=>stubBudgetCeilings());
 import {InMemoryPlatformRepository} from "../../src/platform/repository.js";
 import {encryptCredential} from "../../src/platform/connections.js";
 import {lookupAdTargeting,bindLegacyTargetingEvidence,targetingLookupRows} from "../../src/platform/targeting-lookup.js";
