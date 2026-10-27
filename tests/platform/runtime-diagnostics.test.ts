@@ -40,4 +40,26 @@ describe("runtime compatibility diagnostics",()=>{
     expect(result.encryption.failed_decryptions).toBe(1);
     expect(JSON.stringify(result)).not.toContain("opaque-token");
   });
+
+  it("fails closed for a non-administrator and a disabled member",async()=>{
+    const credential=encryptCredential(base,"opaque-token");
+    const repo={
+      get:async(collection:string)=>collection==="members"?{tenantId:"tenant",operatorId:"operator",roles:["connection_admin"],allowedClientIds:[],revision:1,disabledAt:null}:credential,
+      list:async()=>[],
+    } as never;
+    await expect(inspectRuntimeCompatibility(repo,principal)).rejects.toMatchObject({reason:"RUNTIME_DIAGNOSTICS_ADMIN_REQUIRED"});
+    const disabled={
+      get:async(collection:string)=>collection==="members"?{tenantId:"tenant",operatorId:"operator",roles:["admin"],allowedClientIds:[],revision:1,disabledAt:Date.now()}:credential,
+      list:async()=>[],
+    } as never;
+    await expect(inspectRuntimeCompatibility(disabled,principal)).rejects.toMatchObject({reason:"RUNTIME_DIAGNOSTICS_ADMIN_REQUIRED"});
+  });
+
+  it("rejects a member record from another tenant before any diagnostic read",async()=>{
+    const repo={
+      get:async()=>({tenantId:"other-tenant",operatorId:"operator",roles:["admin"],allowedClientIds:[],revision:1,disabledAt:null}),
+      list:async()=>[],
+    } as never;
+    await expect(inspectRuntimeCompatibility(repo,principal)).rejects.toMatchObject({reason:"RUNTIME_DIAGNOSTICS_ADMIN_REQUIRED"});
+  });
 });
