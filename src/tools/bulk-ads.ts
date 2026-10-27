@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { metaApiClient } from "../meta/client.js";
+import { getRequestSignal } from "../auth/token-store.js";
+import { abortableSleep, throwIfAborted } from "../utils/abortable.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { errorLine } from "../media/content-blocks.js";
@@ -65,7 +67,9 @@ function isItemScopedError(err: unknown): boolean {
 async function waitForVideoReady(videoId: string, maxWaitSeconds: number): Promise<VideoStatus> {
   const deadline = Date.now() + maxWaitSeconds * 1000;
 
+  const signal = getRequestSignal();
   for (;;) {
+    throwIfAborted(signal);
     const video = await metaApiClient.get<VideoStatus>(`/${videoId}`, {
       fields: "status,thumbnails{uri,is_preferred}",
     });
@@ -84,7 +88,7 @@ async function waitForVideoReady(videoId: string, maxWaitSeconds: number): Promi
       );
     }
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    await abortableSleep(POLL_INTERVAL_MS, signal);
   }
 }
 

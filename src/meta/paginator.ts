@@ -1,4 +1,6 @@
 import type { MetaApiResponse, Paging } from "./types/common.js";
+import { getRequestSignal } from "../auth/token-store.js";
+import { throwIfAborted } from "../utils/abortable.js";
 
 /** Pages one collection may take, however small the pages are; maxItems still bounds the rows. */
 const MAX_PAGES = 1000;
@@ -33,7 +35,9 @@ export async function collectAllPages<T>(
   // this loop calling Graph for as long as the response says there is more.
   const seenCursors = new Set<string>();
   let paging = firstPage.paging;
+  const signal = getRequestSignal();
   while (items.length < maxItems && hasNextPage(paging) && seenCursors.size < MAX_PAGES) {
+    throwIfAborted(signal);
     const after = getAfterCursor(paging);
     if (!after || seenCursors.has(after)) break;
     seenCursors.add(after);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { getAccessTokenHash, getCurrentFbUserId } from "../auth/token-store.js";
+import { getAccessTokenHash, getCurrentFbUserId, getRequestSignal } from "../auth/token-store.js";
+import { abortableSleep, throwIfAborted } from "../utils/abortable.js";
 import { metaApiClient } from "../meta/client.js";
 import { truncateResponse, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
@@ -34,7 +35,8 @@ const levelEnum = z.enum(["ad", "adset", "campaign", "account"]);
 const MIN_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_POLL_INTERVAL_SECONDS = 10;
 const DEFAULT_MAX_WAIT_SECONDS = 600;
-const MAX_MAX_WAIT_SECONDS = 3600;
+// A wait this long holds a connection, a handler and its memory; the tool names the report id so the caller can poll later.
+const MAX_MAX_WAIT_SECONDS = 900;
 
 interface AsyncReportRun {
   id: string;
@@ -220,7 +222,7 @@ export function registerReportTools(server: McpServer): void {
   server.registerTool(
     "ads_run_report_and_wait",
     {
-      description: `${WRITE_WARNING}Create an async report and wait for completion in one call. Uses safe polling (start 10s, backoff to 60s max) and returns results directly when Job Completed. On timeout, returns the report_run_id so you can continue polling later. Max wait: 3600s.`,
+      description: `${WRITE_WARNING}Create an async report and wait for completion in one call. Uses safe polling (start 10s, backoff to 60s max) and returns results directly when Job Completed. On timeout, returns the report_run_id so you can continue polling later. Max wait: ${MAX_MAX_WAIT_SECONDS}s.`,
       inputSchema: {
         object_id: z.string(),
         level: levelEnum.optional(),
@@ -254,8 +256,11 @@ export function registerReportTools(server: McpServer): void {
     async ({
       object_id, level, time_range, date_preset, breakdowns, fields,
       use_unified_attribution_setting, time_increment,
-      max_wait_seconds, poll_interval_seconds, result_limit,
-    }) => {
+      max_wait_seconds: requestedWaitSeconds, poll_interval_seconds, result_limit,
+    }, extra?: { signal?: AbortSignal }) => {
+      const signal = extra?.signal ?? getRequestSignal();
+      throwIfAborted(signal);
+      const max_wait_seconds = Math.min(requestedWaitSeconds, MAX_MAX_WAIT_SECONDS);
       const objectId = validateMetaId(object_id, "object");
       enforceInsightsGuardrails({
         level,
@@ -284,7 +289,7 @@ export function registerReportTools(server: McpServer): void {
       let interval = Math.max(MIN_POLL_INTERVAL_MS, poll_interval_seconds * 1000);
 
       while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, interval));
+        await abortableSleep(interval, signal);
         interval = Math.min(60_000, Math.round(interval * 1.5));
 
         const status = await metaApiClient.get<ReportRunStatus>(

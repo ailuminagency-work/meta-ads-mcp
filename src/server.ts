@@ -6,6 +6,7 @@ import { PLATFORM_SERVER_INSTRUCTIONS } from "./platform/instructions.js";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAllTools } from "./tools/index.js";
+import { installToolRuntime } from "./tools/tool-runtime.js";
 import { SERVER_INSTRUCTIONS } from "./skills/instructions.js";
 import { registerSkillPrompts } from "./skills/prompts.js";
 import { registerSkillResources } from "./skills/resources.js";
@@ -50,6 +51,7 @@ export function createServer(): McpServer {
     { instructions: platformEnabled()?PLATFORM_SERVER_INSTRUCTIONS:SERVER_INSTRUCTIONS },
   );
 
+  installToolRuntime(server);
   platformEnabled();
   const finishLegacyRegistration = installLegacyGuard(server);
   registerAllTools(server);
