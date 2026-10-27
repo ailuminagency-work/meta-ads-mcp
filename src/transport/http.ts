@@ -59,6 +59,7 @@ import { DEFAULT_CORS_ALLOWED_ORIGINS, mcpBodyErrorHandler, mcpOriginGuard } fro
 import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
+import { createMcpAdmission, readMcpAdmissionConfig } from "./mcp-admission.js";
 import { installGracefulShutdown } from "./graceful-shutdown.js";
 import { createReadinessCheck, createReadinessHandler } from "./readiness.js";
 import {
@@ -934,8 +935,10 @@ export async function startHttpTransport(
   const auth = createCombinedAuthMiddleware(oauthBearerAuth);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
+  const mcpAdmission = createMcpAdmission(readMcpAdmissionConfig());
+
   app.use("/mcp", mcpOriginGuard(corsAllowedOrigins));
-  app.post("/mcp", auth, metaTokenMw, mcpJsonParser(), async (req, res) => {
+  app.post("/mcp", auth, mcpAdmission, metaTokenMw, mcpJsonParser(), async (req, res) => {
     try {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
