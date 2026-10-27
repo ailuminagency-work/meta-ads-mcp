@@ -175,6 +175,8 @@ const AMOUNT_FIELDS: ReadonlySet<string> = new Set([
   "lifetime_min_spend_target",
 ]);
 
+const UPDATE_FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
 const SPEND_CAP_REFUSAL =
   "cannot be written through ads_update_entity: removing or raising a spend cap requires the strict financial gate (ads_update_spend_cap can only lower an account cap).";
 
@@ -237,6 +239,11 @@ function encodeUpdatesBody(
 ): Record<string, string | number | boolean> {
   const body: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(updates)) {
+    if (!UPDATE_FIELD_NAME.test(key)) {
+      throw new Error(
+        `updates key ${JSON.stringify(key.slice(0, 40))} is not a plain field name (letters, digits and underscores only). Bracketed, dotted or padded keys can be read as nested Graph parameters and would bypass the money-field checks.`,
+      );
+    }
     const amount = checkMoneyField(key, value, `updates.${key}`, 0);
     if (value === undefined || value === null) continue;
     if (amount !== undefined) {

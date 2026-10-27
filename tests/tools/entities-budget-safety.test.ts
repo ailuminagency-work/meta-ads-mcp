@@ -136,6 +136,30 @@ describe("ads_update_entity checks money fields nested in structured updates", (
   });
 });
 
+describe("ads_update_entity refuses update keys that are not plain field names", () => {
+  it.each([
+    "adset_budgets[0][daily_budget]",
+    "daily_budget[0]",
+    "spend_cap[x]",
+    "budget.daily_budget",
+    "daily_budget ",
+    " spend_cap",
+    "spend_cap\n",
+    "daily-budget",
+    "1daily_budget",
+    "",
+    "a".repeat(65),
+  ])("refuses the key %j before any request", async (key) => {
+    await expect(update({ [key]: "-1" })).rejects.toThrow(/not a plain field name/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("still accepts the ordinary snake_case field names", async () => {
+    await update({ name: "Renamed", is_adset_budget_sharing_enabled: false, bid_strategy: "LOWEST_COST_WITHOUT_CAP" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("ads_update_entity keeps ordinary updates unchanged", () => {
   it("forwards names, statuses and structured fields as before", async () => {
     await update({ name: "[PROMO] Summer", status: "PAUSED", targeting: { geo_locations: { countries: ["US"] } }, is_adset_budget_sharing_enabled: false });
