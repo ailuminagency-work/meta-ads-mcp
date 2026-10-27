@@ -91,6 +91,8 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
     ["fragment", "https://claude.ai/cb#x"],
     ["wildcard host", "https://*.claude.ai/cb"],
     ["userinfo", "https://claude.ai@evil.example/cb"],
+    ["lookalike of claude.com", "https://claude.com.evil.example/x"],
+    ["plain http on claude.com", "http://claude.com/x"],
     ["unlisted custom scheme", "myapp://callback"],
   ])("refuses a %s redirect", async (_label, uri) => {
     const response = await register(harness.origin, [uri]);
@@ -112,6 +114,7 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
 
   const LEGITIMATE: Array<[string, string[], string]> = [
     ["Claude", ["https://claude.ai/api/mcp/auth_callback"], "https://claude.ai/api/mcp/auth_callback"],
+    ["Claude on claude.com", ["https://claude.com/api/mcp/auth_callback"], "https://claude.com/api/mcp/auth_callback"],
     [
       "ChatGPT",
       ["https://chatgpt.com/connector_platform_oauth_redirect"],

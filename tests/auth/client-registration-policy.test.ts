@@ -13,6 +13,7 @@ afterEach(() => {
 
 const LEGITIMATE_REDIRECTS: Record<string, string[]> = {
   "Claude (web and mobile)": ["https://claude.ai/api/mcp/auth_callback"],
+  "Claude (callback on claude.com)": ["https://claude.com/api/mcp/auth_callback"],
   ChatGPT: [
     "https://chatgpt.com/connector_platform_oauth_redirect",
     "https://chatgpt.com/connector/oauth/synthetic-callback-id",
@@ -51,7 +52,7 @@ describe("client registration redirect policy: legitimate clients", () => {
 
   it("does not trust hosts outside the defaults until the operator names them", () => {
     expect(checkRedirectUri("https://vscode.dev/redirect").ok).toBe(false);
-    expect(allowedRedirectHosts()).toEqual(["claude.ai", "chatgpt.com"]);
+    expect(allowedRedirectHosts()).toEqual(["claude.ai", "claude.com", "chatgpt.com"]);
 
     vi.stubEnv("OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS", "vscode.dev, Insiders.VSCode.dev");
     expect(checkRedirectUri("https://vscode.dev/redirect")).toEqual({ ok: true });
@@ -65,7 +66,7 @@ describe("client registration redirect policy: legitimate clients", () => {
       "OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS",
       "*.example.com,https://scheme.example,host.example:8443,192.0.2.7,path.example/x,,ok.example",
     );
-    expect(allowedRedirectHosts()).toEqual(["claude.ai", "chatgpt.com", "ok.example"]);
+    expect(allowedRedirectHosts()).toEqual(["claude.ai", "claude.com", "chatgpt.com", "ok.example"]);
   });
 });
 
@@ -74,6 +75,13 @@ describe("client registration redirect policy: hostile registrations", () => {
     ["attacker origin", "https://evil.example/cb"],
     ["attacker origin on a lookalike of an allowed host", "https://claude.ai.evil.example/cb"],
     ["allowed host as a subdomain prefix", "https://evilclaude.ai/cb"],
+    ["lookalike of claude.com", "https://claude.com.evil.example/x"],
+    ["claude.com as a subdomain prefix", "https://evilclaude.com/x"],
+    ["subdomain of claude.com", "https://attacker.claude.com/x"],
+    ["plain http on claude.com", "http://claude.com/x"],
+    ["explicit port on claude.com", "https://claude.com:8443/x"],
+    ["userinfo in front of claude.com", "https://evil.example@claude.com/x"],
+    ["trailing-dot claude.com", "https://claude.com./x"],
     ["allowed host only in the path", "https://evil.example/https://claude.ai/cb"],
     ["allowed host only in the query", "https://evil.example/cb?next=https://claude.ai/"],
     ["userinfo naming an allowed host", "https://claude.ai@evil.example/cb"],

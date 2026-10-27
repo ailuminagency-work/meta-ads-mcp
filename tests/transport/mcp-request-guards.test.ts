@@ -75,9 +75,10 @@ describe("Origin validation on /mcp", () => {
     expect((await mcp(origin, bearer)).status).toBe(200);
   });
 
-  it("accepts the origin the operator allowlisted for browsers (https://claude.ai by default)", async () => {
+  it("accepts the origins allowlisted for browsers by default (https://claude.ai and https://claude.com)", async () => {
     const { origin, bearer } = await bearerFor();
     expect((await mcp(origin, bearer, { headers: { origin: "https://claude.ai" } })).status).toBe(200);
+    expect((await mcp(origin, bearer, { headers: { origin: "https://claude.com" } })).status).toBe(200);
   });
 
   it.each([
@@ -86,6 +87,10 @@ describe("Origin validation on /mcp", () => {
     ["a lookalike of an allowed origin", "https://claude.ai.attacker.example"],
     ["an allowed host on another scheme", "http://claude.ai"],
     ["an allowed host on another port", "https://claude.ai:8443"],
+    ["a lookalike of the claude.com origin", "https://claude.com.attacker.example"],
+    ["claude.com on another scheme", "http://claude.com"],
+    ["claude.com on another port", "https://claude.com:8443"],
+    ["a subdomain of claude.com", "https://attacker.claude.com"],
     ["the opaque origin", "null"],
   ])("rejects %s even with a valid bearer token", async (_label, hostile) => {
     const { origin, bearer } = await bearerFor();
@@ -120,6 +125,19 @@ describe("Origin validation on /mcp", () => {
     });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe("https://claude.ai");
+
+    const comPreflight = await fetch(`${origin}/mcp`, {
+      method: "OPTIONS",
+      headers: { origin: "https://claude.com", "access-control-request-method": "POST" },
+    });
+    expect(comPreflight.status).toBe(204);
+    expect(comPreflight.headers.get("access-control-allow-origin")).toBe("https://claude.com");
+
+    const hostile = await fetch(`${origin}/mcp`, {
+      method: "OPTIONS",
+      headers: { origin: "https://claude.com.attacker.example", "access-control-request-method": "POST" },
+    });
+    expect(hostile.headers.get("access-control-allow-origin")).toBeNull();
 
     const metadata = await fetch(`${origin}/.well-known/oauth-protected-resource/mcp`, {
       headers: { origin: "https://attacker.example" },

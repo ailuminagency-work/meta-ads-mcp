@@ -55,7 +55,7 @@ import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
 import { clientIpKey } from "../utils/client-ip-key.js";
 import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
-import { mcpBodyErrorHandler, mcpOriginGuard } from "./mcp-guards.js";
+import { DEFAULT_CORS_ALLOWED_ORIGINS, mcpBodyErrorHandler, mcpOriginGuard } from "./mcp-guards.js";
 import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
@@ -544,7 +544,7 @@ export async function startHttpTransport(
   // invoke /mcp with a stolen Bearer token. We only need cross-origin reads
   // for Claude.ai (and any operator-configured peers); /authorize and /auth/*
   // are top-level navigations that don't depend on CORS.
-  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || "https://claude.ai")
+  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || DEFAULT_CORS_ALLOWED_ORIGINS.join(","))
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);

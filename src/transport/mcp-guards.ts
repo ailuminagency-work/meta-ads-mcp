@@ -1,6 +1,8 @@
 import type express from "express";
 import { logger } from "../utils/logger.js";
 
+export const DEFAULT_CORS_ALLOWED_ORIGINS: readonly string[] = ["https://claude.ai", "https://claude.com"];
+
 function normalizeOrigin(value: string): string {
   const trimmed = value.trim();
   try {

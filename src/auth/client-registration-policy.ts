@@ -13,7 +13,7 @@ export class InvalidRedirectUriError extends OAuthError {
   static errorCode = "invalid_redirect_uri";
 }
 
-const DEFAULT_REDIRECT_HOSTS: readonly string[] = ["claude.ai", "chatgpt.com"];
+const DEFAULT_REDIRECT_HOSTS: readonly string[] = ["claude.ai", "claude.com", "chatgpt.com"];
 const ALLOWED_CUSTOM_SCHEMES: readonly string[] = ["cursor", "vscode", "vscode-insiders"];
 const LOOPBACK_HOSTNAMES: readonly string[] = ["127.0.0.1", "localhost", "[::1]"];
 const MAX_REDIRECT_URIS = 10;
