@@ -98,6 +98,16 @@ POST /authorize, /auth/logout, /auth/select-token, /auth/register-system-token a
 
 The OAuth routes, the OAuth provider and the /mcp token middleware write Facebook user ids and emails to logs only as a 12 character hash (field fbUserId for ids). They do not log authorization codes or tokens.
 
+### Proxy hops
+
+Set `TRUST_PROXY_HOPS` explicitly in the deployment to the real number of reverse proxies between the internet and this process, and do not rely on the default of 1. Railway's edge: **UNVERIFIED**, the owner must confirm how many entries the platform appends to `X-Forwarded-For` (send a request with a made-up `X-Forwarded-For: 198.51.100.1` and look at the address the server logs for it) before the value is trusted.
+
+- **Too low** (fewer hops than there really are): the address the server sees is a proxy's, so every client shares one rate-limit bucket. In an API-key deployment, 20 wrong keys from anyone lock out every API-key client for 15 minutes, and the OAuth route limits become global.
+- **Too high**: a client can pick its own address by sending an `X-Forwarded-For` header, so each request can land in a fresh bucket and the rate limits and the API-key lockout stop limiting it.
+- `0` ignores `X-Forwarded-For` altogether and uses the connecting address, which is right only when nothing proxies the traffic.
+
+The server stops at startup on a value that is not a whole number from 0 to 10; it cannot tell a wrong but valid number from the right one.
+
 ### Operator checklist before a deploy
 
 1. Decide on OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS for the clients in use (chatgpt.com, platform.openai.com, vscode.dev).
