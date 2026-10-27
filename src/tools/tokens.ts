@@ -8,6 +8,7 @@ import {
   listTokens as repoListTokens,
   saveToken as repoSaveToken,
   setDefaultToken as repoSetDefault,
+  TOKEN_NAME_PATTERN,
 } from "../store/meta-token-repo.js";
 import { validateToken as validateMetaToken } from "../auth/meta-oauth.js";
 import { logger } from "../utils/logger.js";
@@ -173,8 +174,8 @@ export function registerTokenTools(server: McpServer): void {
           .string()
           .min(1)
           .max(64)
-          .regex(/^[a-zA-Z0-9_-]+$/)
-          .describe("Friendly name (a-z, A-Z, 0-9, _, -)"),
+          .regex(TOKEN_NAME_PATTERN)
+          .describe("Friendly name (a-z, A-Z, 0-9, _, -; not of the form __x__)"),
         access_token: z
           .string()
           .min(10)

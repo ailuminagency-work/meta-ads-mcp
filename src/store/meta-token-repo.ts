@@ -17,9 +17,11 @@ import { logger } from "../utils/logger.js";
  * Token names become Firestore document ids and are bound into the ciphertext
  * AAD, and they arrive from forms and tool arguments. Anything outside this
  * set (path separators, dots, whitespace, control characters) is refused
- * before any Firestore reference is built.
+ * before any Firestore reference is built. Firestore reserves document ids of
+ * the form __.*__ (the client accepts them and the backend answers with an
+ * error), so those are refused here with the same clean failure.
  */
-export const TOKEN_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const TOKEN_NAME_PATTERN = /^(?!__.*__$)[A-Za-z0-9_-]{1,64}$/;
 
 export class InvalidTokenNameError extends Error {
   constructor() {
