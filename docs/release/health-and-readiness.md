@@ -33,7 +33,7 @@ It answers 200 only when all three hold:
 | Code | Meaning |
 | --- | --- |
 | `shutting_down` | SIGTERM/SIGINT received; the instance is draining in-flight requests |
-| `deployment_mode_invalid` | `DEPLOYMENT_MODE` is unset in production or not one of the three modes |
+| `deployment_mode_invalid` | `DEPLOYMENT_MODE` is unset while `NODE_ENV` is set to anything but `development` or `test`, or is not one of the three modes |
 | `deployment_mode_not_serving` | Mode is `awaiting_credentials` (the credential-waiting server answers 503 on every route other than `/health`) |
 | `deployment_config_invalid` | Agency validation or security configuration fails |
 | `keyring_unavailable` | No usable encryption key, or encrypt/decrypt does not round trip |
