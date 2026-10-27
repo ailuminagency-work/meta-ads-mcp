@@ -1,0 +1,93 @@
+{
+  "note": "Synthetic vectors. Key K1 is 32 bytes of 0x11 and K2 is 32 bytes of 0x22; keyEnvironment names the harness preset used by the writer.",
+  "vectors": [
+    {
+      "id": "main-legacy-no-aad",
+      "writer": "main",
+      "keyEnvironment": "k1Only",
+      "aad": null,
+      "plaintext": "synthetic-golden-1",
+      "envelope": {
+        "ciphertext": "4gmNzz+bae9+GSUNMeHwlTP8",
+        "iv": "kdSnIoKWqOpKKsXN",
+        "tag": "5Eysc3k0XLhvTcTltFX1wA=="
+      }
+    },
+    {
+      "id": "main-meta-token-aad",
+      "writer": "main",
+      "keyEnvironment": "k1Only",
+      "aad": "mcp_token:synthetic-golden-user:personal",
+      "plaintext": "synthetic-golden-2",
+      "envelope": {
+        "ciphertext": "M99GsSPZ2l7Un4UVaWEm54Kt",
+        "iv": "6mOjnNKj+IFdAkMV",
+        "tag": "ZBpBt/7LDn1UJCV3iTFbtA=="
+      }
+    },
+    {
+      "id": "main-apify-aad",
+      "writer": "main",
+      "keyEnvironment": "k1Only",
+      "aad": "apify_token:synthetic-golden-user:default",
+      "plaintext": "synthetic-golden-3",
+      "envelope": {
+        "ciphertext": "4qZi2O+zSMUEwW5qijkvicUs",
+        "iv": "oQvfMTB7SLM3Fs1N",
+        "tag": "OFLvVrgcGxR7TRvK/rdNkg=="
+      }
+    },
+    {
+      "id": "staging-primary-aad",
+      "writer": "staging",
+      "keyEnvironment": "k1Only",
+      "aad": "mcp_token:synthetic-golden-user:personal",
+      "plaintext": "synthetic-golden-4",
+      "envelope": {
+        "ciphertext": "xPrB7jekYntZ8/X7B14zOQPF",
+        "iv": "sPiOLdGrsj/Hfws0",
+        "tag": "B9IXo1SNHe0gT6HcRjP10Q==",
+        "keyVersion": "primary"
+      }
+    },
+    {
+      "id": "staging-next-aad",
+      "writer": "staging",
+      "keyEnvironment": "k1PlusNext",
+      "aad": "mcp_token:synthetic-golden-user:personal",
+      "plaintext": "synthetic-golden-5",
+      "envelope": {
+        "ciphertext": "hCGACG0lVhKS9Dz71GFZkL3o",
+        "iv": "Gm6jyLM+aSDORiMT",
+        "tag": "XSOa6l0GlJVJyJXuZtApWg==",
+        "keyVersion": "next"
+      }
+    },
+    {
+      "id": "line-primary-aad",
+      "writer": "line",
+      "keyEnvironment": "k1Only",
+      "aad": "mcp_token:synthetic-golden-user:personal",
+      "plaintext": "synthetic-golden-6",
+      "envelope": {
+        "ciphertext": "AN8G3VOd3CNJz6ME614YOnXo",
+        "iv": "j2tPyf1d1pN8wxJV",
+        "tag": "o9NMtik6Z49DBAq5YXZCNg==",
+        "keyVersion": "primary"
+      }
+    },
+    {
+      "id": "line-next-aad",
+      "writer": "line",
+      "keyEnvironment": "k1PlusNext",
+      "aad": "gemini_key:synthetic-golden-user:default",
+      "plaintext": "synthetic-golden-7",
+      "envelope": {
+        "ciphertext": "Ni5/lSvfoyinkYm8UENu4cIS",
+        "iv": "ZLQdBTLAWLNFjGZW",
+        "tag": "gRGgrul9EQIY+QilVcwdGw==",
+        "keyVersion": "next"
+      }
+    }
+  ]
+}

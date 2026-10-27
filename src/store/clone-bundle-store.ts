@@ -1,4 +1,5 @@
 import { Firestore } from "@google-cloud/firestore";
+import { hashPii } from "../auth/token-store.js";
 import { getFirestore, isFirestoreEnabled } from "./firestore.js";
 import { logger } from "../utils/logger.js";
 
@@ -83,7 +84,7 @@ class FirestoreStore {
         if (!isStaleInFlight) {
           return { status: "duplicate", existing };
         }
-        logger.warn({ cacheKey: key, startedAt: existing.startedAt }, "Reclaiming stale clone bundle lock");
+        logger.warn({ cacheKey: hashPii(key), startedAt: existing.startedAt }, "Reclaiming stale clone bundle lock");
       }
       const fresh: CloneBundleRecord = {
         cacheKey: key,

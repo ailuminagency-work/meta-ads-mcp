@@ -17,9 +17,17 @@ export interface KeyringStatus {
   fingerprints: Record<string, string>;
 }
 
+/**
+ * Key ids come from provider configuration and from stored documents, so an id
+ * that is long, odd-shaped or hex-key-shaped is never echoed into an error.
+ */
+export function redactKeyId(keyId: string): string {
+  return KEY_ID_PATTERN.test(keyId) && !/^[0-9a-fA-F]{32,}$/.test(keyId) ? keyId : "[redacted]";
+}
+
 function validateKeyId(keyId: string): string {
   if (!KEY_ID_PATTERN.test(keyId)) {
-    throw new Error(`Invalid encryption key id: ${keyId}`);
+    throw new Error("Invalid encryption key id");
   }
   return keyId;
 }
@@ -34,7 +42,7 @@ function parseKey(raw: unknown, label: string): Buffer {
 function makeKeyring(activeKeyId: string, entries: Map<string, Buffer>): EncryptionKeyring {
   validateKeyId(activeKeyId);
   if (!entries.has(activeKeyId)) {
-    throw new Error(`Active encryption key is not present in the keyring: ${activeKeyId}`);
+    throw new Error(`Active encryption key is not present in the keyring: ${redactKeyId(activeKeyId)}`);
   }
   if (entries.size === 0) {
     throw new Error("Encryption keyring must contain at least one key");
@@ -62,7 +70,7 @@ function parseJsonKeyring(raw: string): EncryptionKeyring {
 
   const entries = new Map<string, Buffer>();
   for (const [keyId, rawKey] of Object.entries(rawKeys as Record<string, unknown>)) {
-    entries.set(validateKeyId(keyId), parseKey(rawKey, `Encryption key ${keyId}`));
+    entries.set(validateKeyId(keyId), parseKey(rawKey, `Encryption key ${redactKeyId(keyId)}`));
   }
   return makeKeyring(activeKeyId, entries);
 }
@@ -90,7 +98,7 @@ export function parseKeyringEnv(env: NodeJS.ProcessEnv = process.env): Encryptio
   if (previous) entries.set(validateKeyId(previousId), parseKey(previous, "TOKEN_ENCRYPTION_KEY_PREVIOUS"));
   if (next) {
     const id = validateKeyId(nextId);
-    if (entries.has(id)) throw new Error(`Duplicate encryption key id: ${id}`);
+    if (entries.has(id)) throw new Error(`Duplicate encryption key id: ${redactKeyId(id)}`);
     entries.set(id, parseKey(next, "TOKEN_ENCRYPTION_KEY_NEXT"));
   }
 
