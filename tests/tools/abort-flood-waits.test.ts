@@ -123,7 +123,8 @@ describe("dropped calls blocked in a wait in front of Graph", () => {
     expect(graphRequests, "a call during the throttle reached Graph").toBe(0);
     expect(running, "handlers still running").toEqual({ total: 0, subjects: 0 });
     expect(sleeping, "sleep timers left by dropped calls").toBeLessThanOrEqual(2);
-    if (gc) expect(retained, "heap retained by dropped calls (run with NODE_OPTIONS=--expose-gc)").toBeLessThan(60 * 1024 * 1024);
+    // 150 sleepers abandoned on freeze 4 pinned about 16 MiB here (more through the HTTP transport); cancelled ones pin none.
+    if (gc) expect(retained, "heap retained by dropped calls (run with NODE_OPTIONS=--expose-gc)").toBeLessThan(10 * 1024 * 1024);
   }, 120_000);
 
   it("a ten minute Meta block is a prompt tool error, not a call held for ten minutes", async () => {
