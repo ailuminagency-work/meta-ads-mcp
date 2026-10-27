@@ -1017,6 +1017,7 @@ export async function startHttpTransport(
       maxRunningPerSubject: toolRuntimeConfig.maxRunningPerSubject,
       perSubjectPerMinute: admissionConfig.perSubjectPerWindow,
       requestTimeoutSeconds: (admissionConfig.requestTimeoutMs ?? 0) / 1000,
+      heapPressurePercent: admissionConfig.heapPressurePercent,
     },
     "MCP admission limits",
   );
