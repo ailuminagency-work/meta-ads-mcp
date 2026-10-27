@@ -40,8 +40,9 @@ export function isAllowed(input: AllowlistInput): boolean {
 
   if (email && emails.includes(email)) return true;
   if (email) {
-    const domain = email.split("@")[1];
-    if (domain && domains.includes(domain)) return true;
+    // Exactly one "@": "a@corp.example@evil.test" must not count as corp.example.
+    const at = email.indexOf("@");
+    if (at > 0 && at === email.lastIndexOf("@") && domains.includes(email.slice(at + 1))) return true;
   }
   if (fbUserId && fbIds.includes(fbUserId)) return true;
 

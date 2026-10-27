@@ -179,3 +179,36 @@ describe("POST /token PKCE and replay", () => {
     );
   });
 });
+
+
+describe("POST /token PKCE verifier format (RFC 7636 section 4.1)", () => {
+  async function attempt(verifier: string, redirectUri = REDIRECT) {
+    const clientId = await registerClient();
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const code = await authorize(clientId, challenge);
+    const result = await redeem({ client_id: clientId, code, code_verifier: verifier, redirect_uri: redirectUri });
+    const replay = await redeem({ client_id: clientId, code, code_verifier: verifier, redirect_uri: redirectUri });
+    return { result, replay };
+  }
+
+  it.each([
+    ["a one character verifier", "a"],
+    ["a verifier one character short of 43", "a".repeat(42)],
+    ["a verifier one character over 128", "a".repeat(129)],
+    ["a verifier with characters outside the unreserved set", "\u00e9".repeat(50)],
+    ["a verifier with a space", `${"a".repeat(42)} `],
+  ])("refuses %s even when it hashes to the challenge, and burns the code", async (_label, verifier) => {
+    const { result, replay } = await attempt(verifier);
+    expect(result.status).toBe(400);
+    expect(result.body.error).toBe("invalid_grant");
+    expect(replay.status).toBe(400);
+  });
+
+  it.each([
+    ["the shortest allowed verifier", "a".repeat(43)],
+    ["the longest allowed verifier", "Ab0._~-".repeat(18).slice(0, 128)],
+  ])("accepts %s", async (_label, verifier) => {
+    const { result } = await attempt(verifier);
+    expect(result.status).toBe(200);
+  });
+});

@@ -77,8 +77,11 @@ function redeemedCodeKey(code: string): string {
   return CODE_REDEEMED_PREFIX + crypto.createHash("sha256").update(code).digest("hex");
 }
 
+// RFC 7636 section 4.1: 43 to 128 unreserved characters.
+const PKCE_VERIFIER_FORMAT = /^[A-Za-z0-9._~-]{43,128}$/;
+
 function pkceVerifierMatches(verifier: string | undefined, challenge: string | undefined): boolean {
-  if (!verifier || !challenge) return false;
+  if (!verifier || !challenge || !PKCE_VERIFIER_FORMAT.test(verifier)) return false;
   const computed = Buffer.from(crypto.createHash("sha256").update(verifier).digest("base64url"));
   const expected = Buffer.from(challenge);
   return computed.length === expected.length && crypto.timingSafeEqual(computed, expected);
