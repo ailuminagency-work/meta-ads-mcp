@@ -46,7 +46,7 @@ import {
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { oauthProvider } from "../auth/oauth-provider.js";
-import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
+import { assertApiKeyStrength, isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { hashPii, requestContext } from "../auth/token-store.js";
 import { tokenManager } from "../auth/token-manager.js";
 import { clearSession, configureSessionJtiStore, getSession, readSession } from "../auth/session.js";
@@ -54,6 +54,7 @@ import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
 import { clientIpKey } from "../utils/client-ip-key.js";
+import { FailureLimiter } from "../utils/failure-limiter.js";
 import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
 import {
   authorizeExactPathOnly,
@@ -410,12 +411,28 @@ function sendMcpAuthRequired(
   });
 }
 
+const API_KEY_MAX_FAILURES = 20;
+const API_KEY_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+
 function createCombinedAuthMiddleware(
   oauthMiddleware: express.RequestHandler,
 ): express.RequestHandler {
+  const failures = new FailureLimiter({ maxFailures: API_KEY_MAX_FAILURES, windowMs: API_KEY_FAILURE_WINDOW_MS });
   return (req, res, next) => {
     if (!isApiKeyConfigured()) {
       oauthMiddleware(req, res, next);
+      return;
+    }
+
+    const client = clientIpKey(req.ip ?? req.socket.remoteAddress);
+    if (failures.isBlocked(client)) {
+      logger.warn({ ip: client, path: req.path }, "Too many failed /mcp credentials");
+      res.setHeader("Retry-After", String(Math.ceil(API_KEY_FAILURE_WINDOW_MS / 1000)));
+      res.status(429).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Too many failed attempts, please try again later" },
+        id: null,
+      });
       return;
     }
 
@@ -426,6 +443,7 @@ function createCombinedAuthMiddleware(
         next();
         return;
       }
+      failures.recordFailure(client);
       res.status(401).json({
         jsonrpc: "2.0",
         error: { code: -32000, message: "Invalid API key" },
@@ -441,6 +459,14 @@ function createCombinedAuthMiddleware(
       return;
     }
 
+    // A bearer that is not the key may be a valid OAuth token, so it only
+    // counts as a failure when the OAuth check refuses it as well. A request
+    // with no credential at all is just the client asking how to authenticate.
+    if (req.headers.authorization) {
+      res.once("finish", () => {
+        if (res.statusCode === 401) failures.recordFailure(client);
+      });
+    }
     oauthMiddleware(req, res, next);
   };
 }
@@ -544,6 +570,7 @@ export async function startHttpTransport(
   const app = express();
   const isProduction = process.env.NODE_ENV === "production";
   const config = resolveSecurityConfig();
+  assertApiKeyStrength();
 
   app.disable("x-powered-by");
   app.set("trust proxy", 1);

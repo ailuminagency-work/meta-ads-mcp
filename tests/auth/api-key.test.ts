@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { isApiKeyConfigured, validateApiKey } from "../../src/auth/api-key.js";
+import { assertApiKeyStrength, isApiKeyConfigured, validateApiKey } from "../../src/auth/api-key.js";
 
 describe("API Key Authentication", () => {
   const originalEnv = process.env.MCP_API_KEY;
@@ -26,6 +26,19 @@ describe("API Key Authentication", () => {
     it("returns true when MCP_API_KEY is set", () => {
       process.env.MCP_API_KEY = "test-key-123";
       expect(isApiKeyConfigured()).toBe(true);
+    });
+  });
+
+  describe("assertApiKeyStrength", () => {
+    it("accepts an unset key and a key of 32 or more characters", () => {
+      expect(() => assertApiKeyStrength({})).not.toThrow();
+      expect(() => assertApiKeyStrength({ MCP_API_KEY: "" })).not.toThrow();
+      expect(() => assertApiKeyStrength({ MCP_API_KEY: "k".repeat(32) })).not.toThrow();
+    });
+
+    it("refuses a shorter key", () => {
+      expect(() => assertApiKeyStrength({ MCP_API_KEY: "tiny" })).toThrow(/MCP_API_KEY must be at least 32 characters/);
+      expect(() => assertApiKeyStrength({ MCP_API_KEY: "k".repeat(31) })).toThrow(/at least 32/);
     });
   });
 

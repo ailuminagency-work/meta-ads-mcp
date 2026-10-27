@@ -8,6 +8,16 @@ export function isApiKeyConfigured(): boolean {
   return !!process.env.MCP_API_KEY;
 }
 
+export const MIN_API_KEY_LENGTH = 32;
+
+/** Startup check: a short key can be guessed, so it is refused rather than used. */
+export function assertApiKeyStrength(env: NodeJS.ProcessEnv = process.env): void {
+  const key = env.MCP_API_KEY;
+  if (key && key.length < MIN_API_KEY_LENGTH) {
+    throw new Error(`MCP_API_KEY must be at least ${MIN_API_KEY_LENGTH} characters (generate one with: openssl rand -hex 32)`);
+  }
+}
+
 /**
  * Validate a candidate API key against the configured MCP_API_KEY.
  *
