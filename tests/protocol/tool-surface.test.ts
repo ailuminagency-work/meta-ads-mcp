@@ -244,20 +244,16 @@ describe("strict platform mode, read-only agency", () => {
   });
 
   it("exposes exactly the documented set of non-read-only control tools and no provider write", () => {
+    // The preparation tools that only stage a write (prepare_action, prepare_publication, plan_paused_ads, plan_ad_tracking_change, ads_update_ad_url_tags) are hidden: a read-only agency deployment cannot approve or run what they stage.
     const nonReadOnly = tools.filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name).sort();
     expect(nonReadOnly).toEqual(
       [
-        "ads_update_ad_url_tags",
         "meta_discover_ad_assets",
         "meta_discover_signal_assets",
         "meta_lookup_ad_targeting",
         "meta_observe_account_owner",
         "meta_observe_ads_compatibility",
-        "meta_plan_ad_tracking_change",
-        "meta_plan_paused_ads",
-        "meta_prepare_action",
         "meta_prepare_app_promotion_access",
-        "meta_prepare_publication",
       ].sort(),
     );
     for (const absent of ["ads_create_campaign", "ads_delete_campaign", "ads_update_campaign", "ads_activate_entity", "ads_upload_ad_image"]) {

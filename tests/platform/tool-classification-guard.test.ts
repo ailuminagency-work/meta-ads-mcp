@@ -4,7 +4,7 @@ import { createServer } from "../../src/server.js";
 import { PRODUCT_CONTRACTS } from "../../src/platform/products/contracts.js";
 import { LEGACY_MIGRATED_READ_TOOLS, LEGACY_MIGRATED_WORKFLOW_TOOLS, LEGACY_MIGRATED_WRITE_TOOLS } from "../../src/platform/legacy-implementation.js";
 import {
-  BASELINE_WRITE_TOOLS, CONTROL_PREPARATION_TOOLS, PRODUCT_MUTATING_TOOLS, READ_ONLY_AGENCY_EXCLUDED_READ_TOOLS, READ_ONLY_AGENCY_TOOLS, STRICT_ANNOTATION_DRIFT,
+  BASELINE_WRITE_TOOLS, PRODUCT_MUTATING_TOOLS, READ_ONLY_AGENCY_KEPT_PREPARATION_TOOLS, READ_ONLY_AGENCY_EXCLUDED_READ_TOOLS, READ_ONLY_AGENCY_TOOLS, STRICT_ANNOTATION_DRIFT,
   classificationProblems, type ClassificationInputs, type RegisteredToolFact,
 } from "./tool-classification.fixture.js";
 
@@ -47,10 +47,10 @@ describe("every registered tool carries a reviewed mutation classification", () 
     expect(READ_ONLY_AGENCY_EXCLUDED_READ_TOOLS.every(name => !enabled.includes(name))).toBe(true);
   });
 
-  it("exposes only read-annotated tools plus the reviewed preparation set in a read-only strict agency deployment", () => {
+  it("exposes only read-annotated tools plus the six evidence and enrollment tools in a read-only strict agency deployment", () => {
     const enabled = registered({ ...STRICT_ENV, ...AGENCY_READ_ONLY }).filter(t => t.enabled);
     const notRead = enabled.filter(t => t.readOnlyHint !== true).map(t => t.name).sort();
-    expect(notRead).toEqual([...CONTROL_PREPARATION_TOOLS].sort());
+    expect(notRead).toEqual([...READ_ONLY_AGENCY_KEPT_PREPARATION_TOOLS].sort());
     const names = enabled.map(t => t.name);
     for (const name of [...BASELINE_WRITE_TOOLS, ...Object.keys(PRODUCT_MUTATING_TOOLS)]) {
       if (STRICT_ANNOTATION_DRIFT[name] === true) continue;

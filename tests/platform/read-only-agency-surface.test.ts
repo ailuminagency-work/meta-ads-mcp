@@ -80,12 +80,12 @@ interface MarketingCase {
   gets: string[];
   /** Store writes when it succeeds. */
   writes: string[];
-  /** Whether a deployment with platform writes disabled refuses it, and with which reason; undefined means it still runs. */
-  deniedWhenWritesDisabled?: string;
+  /** True when a read-only agency deployment hides the tool and refuses a direct call; otherwise it still runs. */
+  hiddenWhenWritesDisabled?: boolean;
 }
 const MARKETING_CASES: MarketingCase[] = [
-  { tool: "meta_plan_ad_tracking_change", args: trackingArgs, gets: ["/401", "/501", "/me/accounts"], writes: ["trackingChangeJobs", "controlAudit"], deniedWhenWritesDisabled: "DISABLED_BY_LUMIN_POLICY" },
-  { tool: "meta_plan_paused_ads", args: () => ({ client_id: "client", account_id: "101", ad_set_id: "301", ads: [{ name: "One", creative_id: "501" }] }), gets: [], writes: ["pausedAdBatchJobs", "controlAudit"] },
+  { tool: "meta_plan_ad_tracking_change", args: trackingArgs, gets: ["/401", "/501", "/me/accounts"], writes: ["trackingChangeJobs", "controlAudit"], hiddenWhenWritesDisabled: true },
+  { tool: "meta_plan_paused_ads", args: () => ({ client_id: "client", account_id: "101", ad_set_id: "301", ads: [{ name: "One", creative_id: "501" }] }), gets: [], writes: ["pausedAdBatchJobs", "controlAudit"], hiddenWhenWritesDisabled: true },
   { tool: "meta_observe_ads_compatibility", args: compatibilityArgs, gets: ["/act_101", "/601", "/401", "/me/accounts"], writes: ["compatibilityObservations", "connections", "controlAudit"] },
   { tool: "meta_observe_account_owner", args: connectionId => ({ client_id: "client", account_key: "account", connection_id: connectionId }), gets: ["/act_101"], writes: ["accountOwnershipObservations", "assets", "controlAudit"] },
   { tool: "meta_lookup_ad_targeting", args: connectionId => ({ client_id: "client", root_key: "account", kind: "CITY", query: "Madrid", connection_id: connectionId }), gets: ["/search"], writes: ["targetingLookups", "controlAudit"] },
@@ -101,9 +101,10 @@ describe.each(MODES)("strict agency deployment, platform writes %s", mode => {
       const result = await s.call(spec.tool, spec.args(world.connectionId));
       const requests = world.requests.slice(before.requests), writes = world.writes.slice(before.writes);
       expect(requests.filter(r => r.method !== "GET")).toEqual([]);
-      if (mode === "readonly" && spec.deniedWhenWritesDisabled) {
+      if (mode === "readonly" && spec.hiddenWhenWritesDisabled) {
+        expect((await s.client.listTools()).tools.map(t => t.name)).not.toContain(spec.tool);
         expect(result.isError).toBe(true);
-        expect(result.body).toMatchObject({ status: "HOLD", reason: spec.deniedWhenWritesDisabled });
+        expect(result.text).toContain("disabled");
         expect(writes).toEqual([]);
         expect(requests).toEqual([]);
         return;
@@ -151,9 +152,8 @@ describe.each(MODES)("strict agency deployment, platform writes %s", mode => {
       const publication = await s.call("meta_prepare_publication", { client_id: pagesClientId, steps: [{ tool: "pages_create_feed", asset_id: "123", input: pagesInput }] });
       expect(requests).toEqual([]);
       if (mode === "readonly") {
-        expect(action.isError).toBe(true);
-        expect(action.body).toMatchObject({ status: "HOLD", reason: "DISABLED_BY_LUMIN_POLICY" });
-        expect(publication.body).toMatchObject({ status: "PARTIAL_PREPARATION", steps: [{ tool: "pages_create_feed", status: "HOLD" }] });
+        expect((await s.client.listTools()).tools.map(t => t.name)).not.toEqual(expect.arrayContaining(["meta_prepare_action"]));
+        for (const refused of [action, publication]) { expect(refused.isError).toBe(true); expect(refused.text).toContain("disabled"); }
         expect(writes).toEqual([]);
         expect(await repo.list("approvalRequests", "tenant-fixture")).toEqual([]);
       } else {
@@ -202,14 +202,13 @@ describe("outside an agency deployment", () => {
 });
 
 describe("tools/list in a strict read-only agency deployment", () => {
-  it("advertises exactly the ten preparation and observation tools without readOnlyHint, none of which can write to Meta", async () => {
+  it("advertises exactly the six evidence and enrollment tools without readOnlyHint, none of which can write to Meta", async () => {
     stubDeployment("readonly");
     const s = await session("100");
     try {
       const listed = (await s.client.listTools()).tools;
       expect(listed.filter(t => t.annotations?.readOnlyHint !== true).map(t => t.name).sort()).toEqual([
-        "meta_discover_ad_assets", "meta_discover_signal_assets", "meta_lookup_ad_targeting", "meta_observe_account_owner", "meta_observe_ads_compatibility",
-        "meta_plan_ad_tracking_change", "meta_plan_paused_ads", "meta_prepare_action", "meta_prepare_app_promotion_access", "meta_prepare_publication",
+        "meta_discover_ad_assets", "meta_discover_signal_assets", "meta_lookup_ad_targeting", "meta_observe_account_owner", "meta_observe_ads_compatibility", "meta_prepare_app_promotion_access",
       ]);
     } finally { await s.close(); }
   });

@@ -58,8 +58,8 @@ export function createServer(): McpServer {
   if (process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true") {
     const tools = (server as unknown as { _registeredTools: Record<string, { annotations?: { readOnlyHint?: boolean }; disable(): void }> })._registeredTools;
     for (const [name, tool] of Object.entries(tools)) {
-      if(platformEnabled()&&name==="ads_update_ad_url_tags")continue;
-      if(name==="meta_discover_signal_assets"||name==="meta_prepare_app_promotion_access"||name==="meta_plan_ad_tracking_change"||name==="meta_plan_paused_ads"||name==="meta_prepare_action"||name==="meta_prepare_publication"||name==="meta_discover_ad_assets"||name==="meta_lookup_ad_targeting"||name==="meta_observe_ads_compatibility"||name==="meta_observe_account_owner")continue;
+      // Preparation tools that only stage a proposal for a later write stay hidden while writes are off; discovery and observation tools below only read and store evidence.
+      if(name==="meta_discover_signal_assets"||name==="meta_prepare_app_promotion_access"||name==="meta_discover_ad_assets"||name==="meta_lookup_ad_targeting"||name==="meta_observe_ads_compatibility"||name==="meta_observe_account_owner")continue;
       if (tool.annotations?.readOnlyHint !== true || name === "ads_analyze_video" || name.startsWith("ads_library_")) tool.disable();
     }
   }

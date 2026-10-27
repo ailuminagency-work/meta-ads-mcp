@@ -472,6 +472,15 @@ export const CONTROL_PREPARATION_TOOLS: readonly string[] = Object.freeze([
   "meta_prepare_app_promotion_access",
   "meta_prepare_publication",
 ]);
+/** The preparation tools a read-only agency deployment keeps: they only read and store evidence or an enrollment proposal. The rest only stage a write nobody can approve there, so they are hidden and refuse. */
+export const READ_ONLY_AGENCY_KEPT_PREPARATION_TOOLS: readonly string[] = Object.freeze([
+  "meta_discover_ad_assets",
+  "meta_discover_signal_assets",
+  "meta_lookup_ad_targeting",
+  "meta_observe_account_owner",
+  "meta_observe_ads_compatibility",
+  "meta_prepare_app_promotion_access",
+]);
 /** Research job state and paid third-party compute. Disabled in read-only agency. */
 export const CONTROL_RESEARCH_JOB_TOOLS: readonly string[] = Object.freeze([
   "meta_research_abort_job",
