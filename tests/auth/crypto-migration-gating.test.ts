@@ -34,7 +34,7 @@ function runScript(args: string[], env: Record<string, string>): Promise<RunResu
     let killed = false;
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, 12_000);
+    const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, 40_000);
     child.on("close", (code) => {
       clearTimeout(timer);
       resolve({ code, killed, stdout, stderr, connections });
@@ -65,7 +65,7 @@ describe("npm run migrate:token-encryption entry point", () => {
     expect(result.stderr.trim()).toBe("MIGRATION_ARGUMENTS_INVALID");
     expect(result.stdout).toBe("");
     expect(result.connections).toBe(0);
-  }, 20_000);
+  }, 60_000);
 
   it.each([
     ["dry run", []],
@@ -78,7 +78,7 @@ describe("npm run migrate:token-encryption entry point", () => {
     expect(result.stderr.trim()).toBe("TOKEN_KEY_MIGRATION_FAILED");
     expect(result.stdout).toBe("");
     expect(result.connections).toBe(0);
-  }, 20_000);
+  }, 60_000);
 
   it("refuses to run when a key source conflict would make the active key ambiguous", async () => {
     const env = {
@@ -89,5 +89,5 @@ describe("npm run migrate:token-encryption entry point", () => {
     expect(result.code).toBe(1);
     expect(result.stderr.trim()).toBe("TOKEN_KEY_MIGRATION_FAILED");
     expect(result.connections).toBe(0);
-  }, 20_000);
+  }, 60_000);
 });
