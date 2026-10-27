@@ -4,6 +4,7 @@ import { tokenManager, maskToken } from "../auth/token-manager.js";
 import { getCurrentFbUserId } from "../auth/token-store.js";
 import {
   deleteToken as repoDeleteToken,
+  isValidTokenName,
   listTokens as repoListTokens,
   saveToken as repoSaveToken,
   setDefaultToken as repoSetDefault,
@@ -11,6 +12,16 @@ import {
 import { validateToken as validateMetaToken } from "../auth/meta-oauth.js";
 import { logger } from "../utils/logger.js";
 import { READ, TOKEN, DELETE, WRITE_WARNING } from "./_register.js";
+
+const INVALID_TOKEN_NAME_RESULT = {
+  content: [
+    {
+      type: "text" as const,
+      text: "Invalid token name: use 1-64 characters from a-z, A-Z, 0-9, _ and -.",
+    },
+  ],
+  isError: true,
+};
 
 export function registerTokenTools(server: McpServer): void {
   server.registerTool(
@@ -105,6 +116,7 @@ export function registerTokenTools(server: McpServer): void {
       const fbUserId = getCurrentFbUserId();
 
       if (fbUserId) {
+        if (!isValidTokenName(bm_name)) return INVALID_TOKEN_NAME_RESULT;
         const ok = await repoSetDefault(fbUserId, bm_name);
         if (!ok) {
           const tokens = await repoListTokens(fbUserId);
@@ -254,6 +266,7 @@ export function registerTokenTools(server: McpServer): void {
           isError: true,
         };
       }
+      if (!isValidTokenName(bm_name)) return INVALID_TOKEN_NAME_RESULT;
       const ok = await repoDeleteToken(fbUserId, bm_name);
       if (!ok) {
         return {

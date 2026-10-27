@@ -23,6 +23,7 @@ import {
 import {
   deleteToken,
   getDefaultTokenName,
+  isValidTokenName,
   listTokens,
   saveToken,
   setDefaultToken,
@@ -454,6 +455,10 @@ export function mountAuthRoutes(
         res.status(400).json({ error: "Missing name" });
         return;
       }
+      if (!isValidTokenName(name)) {
+        res.status(400).json({ error: "Invalid token name (1-64 chars: a-z, A-Z, 0-9, _, -)." });
+        return;
+      }
       const ok = await setDefaultToken(session.fbUserId, name);
       if (!ok) {
         res.status(404).json({ error: "Token not found" });
@@ -543,6 +548,10 @@ export function mountAuthRoutes(
       const name = typeof req.body?.name === "string" ? req.body.name : null;
       if (!name) {
         res.status(400).json({ error: "Missing name" });
+        return;
+      }
+      if (!isValidTokenName(name)) {
+        res.status(400).json({ error: "Invalid token name (1-64 chars: a-z, A-Z, 0-9, _, -)." });
         return;
       }
       const ok = await deleteToken(session.fbUserId, name);

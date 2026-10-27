@@ -13,6 +13,29 @@ import {
 import { hashPii } from "../auth/token-store.js";
 import { logger } from "../utils/logger.js";
 
+/**
+ * Token names become Firestore document ids and are bound into the ciphertext
+ * AAD, and they arrive from forms and tool arguments. Anything outside this
+ * set (path separators, dots, whitespace, control characters) is refused
+ * before any Firestore reference is built.
+ */
+export const TOKEN_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+export class InvalidTokenNameError extends Error {
+  constructor() {
+    super("Invalid token name: use 1-64 characters from a-z, A-Z, 0-9, _ and -.");
+    this.name = "InvalidTokenNameError";
+  }
+}
+
+export function isValidTokenName(name: unknown): name is string {
+  return typeof name === "string" && TOKEN_NAME_PATTERN.test(name);
+}
+
+function assertValidTokenName(name: unknown): asserts name is string {
+  if (!isValidTokenName(name)) throw new InvalidTokenNameError();
+}
+
 const REFRESH_THRESHOLD_SECONDS = 7 * 24 * 60 * 60;
 
 /**
@@ -232,6 +255,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
   }
 
   private tokenDocRef(fbUserId: string, name: string) {
+    assertValidTokenName(name);
     return this.userDocRef(fbUserId).collection("meta_tokens").doc(name);
   }
 
@@ -265,6 +289,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
   }
 
   async saveToken(input: SaveTokenInput): Promise<void> {
+    assertValidTokenName(input.name);
     const now = Math.floor(Date.now() / 1000);
     const encryptedToken = encryptToken(
       input.accessToken,
@@ -358,6 +383,7 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     name?: string,
     serverUrl?: URL,
   ): Promise<string> {
+    if (name !== undefined) assertValidTokenName(name);
     const tokenName = name ?? (await this.getDefaultTokenName(fbUserId));
     if (!tokenName) {
       throw new Error(`No Meta token registered for user ${hashPii(fbUserId)}`);
@@ -416,6 +442,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async saveToken(input: SaveTokenInput): Promise<void> {
+    assertValidTokenName(input.name);
     const now = Math.floor(Date.now() / 1000);
     const bucket = this.getUserTokens(input.fbUserId);
 
@@ -452,6 +479,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async setDefaultToken(fbUserId: string, name: string): Promise<boolean> {
+    assertValidTokenName(name);
     const bucket = this.tokens.get(fbUserId);
     if (!bucket || !bucket.has(name)) return false;
     const now = Math.floor(Date.now() / 1000);
@@ -462,6 +490,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   }
 
   async deleteToken(fbUserId: string, name: string): Promise<boolean> {
+    assertValidTokenName(name);
     const bucket = this.tokens.get(fbUserId);
     if (!bucket) return false;
     if (!bucket.has(name)) return false;
@@ -487,6 +516,7 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
     name?: string,
     serverUrl?: URL,
   ): Promise<string> {
+    if (name !== undefined) assertValidTokenName(name);
     const tokenName = name ?? (await this.getDefaultTokenName(fbUserId));
     if (!tokenName) {
       throw new Error(`No Meta token registered for user ${hashPii(fbUserId)}`);

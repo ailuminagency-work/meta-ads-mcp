@@ -92,6 +92,7 @@ import {
   InMemoryMetaTokenRepo,
   getDecryptedToken,
   getDefaultTokenName,
+  isValidTokenName,
   listTokens,
   setDefaultToken,
 } from "../store/meta-token-repo.js";
@@ -889,6 +890,10 @@ export async function startHttpTransport(
             ? req.body.token
             : null;
         if (requestedToken) {
+          if (!isValidTokenName(requestedToken)) {
+            res.status(400).type("html").send("<p>Nombre de token no válido. Vuelve a iniciar la autorización desde tu cliente MCP.</p>");
+            return;
+          }
           await setDefaultToken(session.fbUserId, requestedToken);
           activeName = requestedToken;
         } else {
