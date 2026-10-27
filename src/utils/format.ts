@@ -1,3 +1,5 @@
+import { currencyOffset, fromMinorUnits } from "../meta/currency.js";
+
 /**
  * Normalize a Meta ad account ID to always include the 'act_' prefix.
  *
@@ -43,14 +45,23 @@ export function validateMetaId(id: string, kind = "id"): string {
 }
 
 /**
- * Format a budget value from cents to a human-readable string.
+ * Format a Meta amount (the ad account currency's minor units) for display.
+ * The currency must be the account's own; when it is missing or has no
+ * recorded offset the raw minor units are shown and labelled, never scaled
+ * as if they were USD cents.
  */
 export function formatBudget(
-  cents: number | string,
-  currency = "USD",
+  minorUnits: number | string,
+  currency?: string,
 ): string {
-  const amount = typeof cents === "string" ? parseInt(cents, 10) : cents;
-  return `${(amount / 100).toFixed(2)} ${currency}`;
+  const raw = typeof minorUnits === "string" ? minorUnits.trim() : minorUnits;
+  if (typeof raw === "number" ? !Number.isSafeInteger(raw) : !/^-?\d{1,18}$/.test(raw)) {
+    return `${String(minorUnits)} (unreadable amount)`;
+  }
+  if (currencyOffset(currency) === undefined) {
+    return `${raw} (minor units; ${currency ? `offset for ${currency} unknown` : "currency unknown"})`;
+  }
+  return `${fromMinorUnits(raw, currency as string)} ${currency}`;
 }
 
 /**

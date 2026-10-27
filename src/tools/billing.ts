@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId, validateMetaId, formatBudget } from "../utils/format.js";
+import { MAX_MINOR_UNIT_AMOUNT, MINOR_UNIT_NOTE, minorUnitAmount } from "../meta/currency.js";
 import { READ, UPDATE, WRITE_WARNING } from "./_register.js";
 
 interface BillingInfo {
@@ -60,6 +61,11 @@ interface SpendInfo {
   min_daily_budget?: number;
 }
 
+interface SpendCapState {
+  spend_cap?: string;
+  currency?: string;
+}
+
 interface Invoice {
   id: string;
   invoice_id?: string;
@@ -106,6 +112,11 @@ const INVOICE_FIELDS = [
 
 const INVOICE_TYPE = z.enum(["CM", "DM", "INV", "PRO_FORMA"]);
 
+// Meta reports "0" for an account with no spend cap.
+function hasSpendCap(value: string | undefined): boolean {
+  return value !== undefined && /^\d+$/.test(value) && parseInt(value, 10) > 0;
+}
+
 const ACCOUNT_STATUS_MAP: Record<number, string> = {
   1: "ACTIVE",
   2: "DISABLED",
@@ -139,7 +150,7 @@ export function registerBillingTools(server: McpServer): void {
         { fields: BILLING_FIELDS },
       );
 
-      const currency = info.currency ?? "USD";
+      const currency = info.currency;
       const statusText = info.account_status !== undefined
         ? ACCOUNT_STATUS_MAP[info.account_status] ?? `UNKNOWN (${info.account_status})`
         : "N/A";
@@ -148,12 +159,12 @@ export function registerBillingTools(server: McpServer): void {
         `Account: ${info.name ?? info.id}`,
         `Business: ${info.business_name ?? "N/A"}`,
         `Status: ${statusText}`,
-        `Currency: ${currency}`,
+        `Currency: ${currency ?? "N/A"}`,
         `Timezone: ${info.timezone_name ?? "N/A"}`,
         ``,
         `Spending:`,
         `  Amount Spent: ${info.amount_spent ? formatBudget(info.amount_spent, currency) : "N/A"}`,
-        `  Spend Cap: ${info.spend_cap ? formatBudget(info.spend_cap, currency) : "No limit"}`,
+        `  Spend Cap: ${hasSpendCap(info.spend_cap) ? formatBudget(info.spend_cap!, currency) : "No limit"}`,
         `  Balance: ${info.balance ? formatBudget(info.balance, currency) : "N/A"}`,
       ];
 
@@ -193,9 +204,9 @@ export function registerBillingTools(server: McpServer): void {
         { fields: SPEND_FIELDS },
       );
 
-      const currency = info.currency ?? "USD";
+      const currency = info.currency;
 
-      const spendCap = info.spend_cap ? parseInt(info.spend_cap, 10) : null;
+      const spendCap = hasSpendCap(info.spend_cap) ? parseInt(info.spend_cap!, 10) : null;
       const amountSpent = info.amount_spent ? parseInt(info.amount_spent, 10) : null;
       const remaining =
         spendCap !== null && amountSpent !== null ? spendCap - amountSpent : null;
@@ -232,35 +243,55 @@ export function registerBillingTools(server: McpServer): void {
   server.registerTool(
     "ads_update_spend_cap",
     {
-      description: `${WRITE_WARNING}Update the spending limit (spend cap) for an ad account. Set to 0 or omit to remove the cap.`,
+      description: `${WRITE_WARNING}Lower the spending limit (spend cap) of an ad account, or set a first cap on an account that has none. This tool can never remove or raise a cap: removing it or raising an existing cap needs the strict financial gate (a human-approved budget plan) and is refused here. The new value is compared with the cap Meta currently reports before anything is written.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
-        spend_cap: z
-          .number()
-          .min(0)
-          .describe("New spend cap in cents (e.g., 100000 = $1,000.00). Use 0 to remove."),
+        spend_cap: minorUnitAmount(
+          `New spend cap ${MINOR_UNIT_NOTE}. Must be at least 1 and below the current cap; there is no value that removes the cap.`,
+        ),
       },
       annotations: { ...UPDATE },
     },
     async ({ account_id, spend_cap }) => {
       const id = normalizeAccountId(account_id);
-
-      const body: Record<string, string | number | boolean> = {};
-      if (spend_cap > 0) {
-        body.spend_cap = spend_cap;
-      } else {
-        body.spend_cap = 0;
+      if (!Number.isSafeInteger(spend_cap) || spend_cap < 1 || spend_cap > MAX_MINOR_UNIT_AMOUNT) {
+        throw new Error(
+          `spend_cap must be a whole number of minor units between 1 and ${MAX_MINOR_UNIT_AMOUNT}. Removing an account spend cap is not available through this tool: it requires the strict financial gate.`,
+        );
       }
 
-      await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);
+      const current = await metaApiClient.get<SpendCapState>(`/${id}`, { fields: "spend_cap,currency" });
+      const currency = current.currency;
+      if (typeof current.spend_cap !== "string" || !/^\d+$/.test(current.spend_cap)) {
+        throw new Error(
+          "The account's current spend cap could not be read, so this change cannot be proven to lower it. Nothing was written; changing a cap Meta did not report requires the strict financial gate.",
+        );
+      }
+      const currentCap = parseInt(current.spend_cap, 10);
+      if (currentCap > 0 && spend_cap > currentCap) {
+        throw new Error(
+          `Refusing to raise the spend cap from ${formatBudget(currentCap, currency)} to ${formatBudget(spend_cap, currency)}. Raising or removing a spend cap requires the strict financial gate and is not available through this tool. Nothing was written.`,
+        );
+      }
+      if (spend_cap === currentCap) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Spend cap for account ${account_id} is unchanged at ${formatBudget(currentCap, currency)}. Nothing was written.`,
+            },
+          ],
+        };
+      }
 
-      const displayAmount = spend_cap > 0 ? formatBudget(spend_cap) : "No limit (removed)";
+      await metaApiClient.postForm<{ success: boolean }>(`/${id}`, { spend_cap });
 
+      const previous = currentCap > 0 ? formatBudget(currentCap, currency) : "No limit";
       return {
         content: [
           {
             type: "text",
-            text: `Spend cap updated for account ${account_id}.\nNew spend cap: ${displayAmount}`,
+            text: `Spend cap updated for account ${account_id}.\nPrevious spend cap: ${previous}\nNew spend cap: ${formatBudget(spend_cap, currency)}`,
           },
         ],
       };
