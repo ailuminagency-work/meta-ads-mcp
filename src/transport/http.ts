@@ -950,7 +950,10 @@ export async function startHttpTransport(
   oauthProvider.configure({ defaultResource: new URL("/mcp", serverUrl), requireRedirectUri: true });
 
   if (!config.multiTenantEnabled) {
-    app.use(["/authorize", "/register", "/token", "/revoke"], oauthEndpointsUnavailable);
+    app.use(
+      ["/authorize", "/register", "/token", "/revoke", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource"],
+      oauthEndpointsUnavailable,
+    );
   }
   app.use("/authorize", authorizeExactPathOnly);
   app.use("/authorize", echoStateOnAuthorizeErrors());

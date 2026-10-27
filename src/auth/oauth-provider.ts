@@ -24,6 +24,7 @@ import { allowlistHasEmailRules, isAllowed, isDenied } from "./email-allowlist.j
 import { getUser } from "../store/meta-token-repo.js";
 import {
   InMemoryAuthCodesStore,
+  isAuthorizationCodeShape,
   type AuthCodesStore,
 } from "../store/persistent-auth-codes.js";
 import { InMemoryClientsStore } from "../store/persistent-clients-store.js";
@@ -171,6 +172,9 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     authorizationCode: string,
   ): Promise<string> {
+    if (!isAuthorizationCodeShape(authorizationCode)) {
+      throw new InvalidGrantError("Invalid authorization code");
+    }
     const entry = await this.authCodesImpl.get(authorizationCode);
     if (!entry) {
       throw new InvalidGrantError("Invalid authorization code");
@@ -194,6 +198,11 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     redirectUri?: string,
     resource?: URL,
   ): Promise<OAuthTokens> {
+    // Anything that is not shaped like a code this server issues is answered
+    // like an unknown code and never reaches the store.
+    if (!isAuthorizationCodeShape(authorizationCode)) {
+      throw new InvalidGrantError("Invalid authorization code");
+    }
     // Atomic get-and-delete: under concurrent exchange requests, only the
     // first caller sees the entry. RFC 6749 §10.5: codes must be single-use.
     const entry = await this.authCodesImpl.consume(authorizationCode);

@@ -94,6 +94,8 @@ describe.each(stores)("POST /register with %s", (_name, create) => {
     ["another path on claude.ai", "https://claude.ai/anything/the/attacker/likes"],
     ["a Custom GPT callback on chatgpt.com", "https://chatgpt.com/aip/g-SYNTHETIC-GPT/oauth/callback"],
     ["the ChatGPT connector callback before the operator opts in", "https://chatgpt.com/connector_platform_oauth_redirect"],
+    ["an unlisted vscode application host", "vscode://attacker.publisher/cb"],
+    ["an unlisted cursor application host", "cursor://attacker.publisher/cb"],
     ["lookalike of claude.com", "https://claude.com.evil.example/x"],
     ["plain http on claude.com", "http://claude.com/x"],
     ["unlisted custom scheme", "myapp://callback"],

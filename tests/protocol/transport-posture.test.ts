@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { MCP_RESOURCE, SERVER_URL, bootServer, completeOAuthFlow, mcpPost, type Harness } from "./harness.js";
+import { SERVER_URL, bootServer, completeOAuthFlow, mcpPost, type Harness } from "./harness.js";
 
 let booted: Harness | undefined;
 
@@ -48,10 +48,15 @@ describe("transport posture in production mode", () => {
 
     expect((await fetch(booted.origin + "/health", { redirect: "manual" })).status).toBe(200);
 
-    const secure = await fetch(booted.origin + "/.well-known/oauth-protected-resource/mcp", { headers: { "x-forwarded-proto": "https" } });
+    const secure = await fetch(booted.origin + "/health", { headers: { "x-forwarded-proto": "https" } });
     expect(secure.status).toBe(200);
     expect(secure.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
-    expect(await secure.json()).toMatchObject({ resource: MCP_RESOURCE });
+    expect(await secure.json()).toMatchObject({ status: "ok" });
+
+    // This server has no Meta login, so it publishes no OAuth discovery document; the 404 still carries HSTS.
+    const discovery = await fetch(booted.origin + "/.well-known/oauth-protected-resource/mcp", { headers: { "x-forwarded-proto": "https" } });
+    expect(discovery.status).toBe(404);
+    expect(discovery.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
   });
 });
 
