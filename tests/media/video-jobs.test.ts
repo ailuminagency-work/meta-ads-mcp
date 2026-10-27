@@ -256,8 +256,10 @@ describe("createVideoJobRunner", () => {
       const second = runner.run({ tenantId: "a" }, async () => "should not run");
       const third = runner.run({ tenantId: "a" }, async () => "should not run");
 
-      await expect(second).rejects.toBeInstanceOf(VideoJobRateLimitError);
-      await expect(third).rejects.toBeInstanceOf(VideoJobRateLimitError);
+      await Promise.all([
+        expect(second).rejects.toBeInstanceOf(VideoJobRateLimitError),
+        expect(third).rejects.toBeInstanceOf(VideoJobRateLimitError),
+      ]);
       gate.resolve();
       await first;
       expect(runner.stats()).toMatchObject({ running: 0, queued: 0 });
