@@ -33,13 +33,21 @@ export function canonicalJson(value: unknown): string {
 function digest(v: unknown): string { return createHash("sha256").update(canonicalJson(v)).digest("hex"); }
 export function canonicalPlanHash(ctx: OperationContext, plan: OperationPlan): string { return digest({ actor: ctx.principal.operatorId, tenant: ctx.principal.tenantId, client: ctx.clientId, tool: ctx.tool, provider: ctx.provider, plan }); }
 export function revisionHash(snapshot: AuthorizationSnapshot): string { return digest({...(snapshot.businessOwnerEvidence?.attestations.length?{businessOwnerEvidence:{attestations:snapshot.businessOwnerEvidence.attestations.map(r=>[r.id,r.revision]).sort(),issuers:snapshot.businessOwnerEvidence.issuers.map(m=>[m.operatorId,m.revision]).sort(),connections:snapshot.businessOwnerEvidence.connections.map(c=>[c.id,c.revision]).sort(),credentials:snapshot.businessOwnerEvidence.credentials.map(c=>[c.id,digest(c)]).sort()}}:{}),...(snapshot.manualEligibilityEvidence?.attestations.length?{manualEligibility:{attestations:snapshot.manualEligibilityEvidence.attestations.map(r=>[r.id,r.revision]).sort(),issuers:snapshot.manualEligibilityEvidence.issuers.map(m=>[m.operatorId,m.revision]).sort()}}:{}),tenant: snapshot.tenant.policyRevision, registry: snapshot.tenant.registryRevision, ...(snapshot.financialEvidence&&(snapshot.financialEvidence.attestations.length||snapshot.financialEvidence.observations.length)?{financialEvidence:{attestations:snapshot.financialEvidence.attestations.map(r=>[r.id,r.revision]).sort(),observations:snapshot.financialEvidence.observations.map(r=>[r.id,r.revision]).sort()}}:{}), member: snapshot.member.revision, client: snapshot.client.revision, connection: [snapshot.connection.id, snapshot.connection.revision], assets: snapshot.assets.map(a => [a.key,a.revision]).sort(), grants: snapshot.grants.map(g => [g.id,g.revision]).sort()}); }
-export function classifyPlan(plan: OperationPlan): OperationClass[] {
+const MONEY_KEY = /budget|spend_cap|spend_target|spend_limit|(?:^|[^a-z])bid_/;
+/** Whether a request key can set what Meta spends: matched after trimming, case folding and removing spaces, zero-width characters and bracket syntax, so a disguised spelling is still caught. */
+export function isMoneyKey(key: string): boolean { return MONEY_KEY.test(key.normalize("NFKC").replace(/[\s\u200b-\u200f\u2060\ufeff]/g, "").toLowerCase()); }
+const ACTIVATION_EXPECTATION_KEYS: readonly string[] = ["expected_campaign_daily_budget", "expected_adset_daily_budget", "expected_bid_strategy", "expected_bid_amount"];
+/** Every money-looking key a plan would send, at any depth and inside JSON-encoded strings, exactly as written. */
+export function planMoneyKeys(plan: OperationPlan): string[] { return analysePlan(plan).moneyKeys; }
+export function classifyPlan(plan: OperationPlan): OperationClass[] { return analysePlan(plan).classes; }
+function analysePlan(plan: OperationPlan): { classes: OperationClass[]; moneyKeys: string[] } {
   const classes = new Set(plan.classes);
+  const moneyKeys: string[] = [];
   const pausedCreation = plan.createOrCopy && classes.has("WRITE_AD_CONFIGURATION");
   if(pausedCreation && plan.parameters.status !== "PAUSED") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
   const expectationOnly = plan.capability === "marketing.activate.ad" && plan.classes.length===1 && plan.classes[0]==="ACTIVATE_SPEND" && (plan.parameters.endpointContract as {tool?:unknown}|undefined)?.tool==="marketing_activate_ad";
   let nodes = 0;
-  const mentionsActive = (value: unknown, depth = 0): boolean => typeof value === "string" ? value.trim().toUpperCase() === "ACTIVE" : depth < 6 && !!value && typeof value === "object" && Object.values(value).some(v => mentionsActive(v, depth + 1));
+  const mentionsActive = (value: unknown, depth = 0): boolean => typeof value === "string" ? value.trim().toUpperCase() === "ACTIVE" : depth < 30 && !!value && typeof value === "object" && Object.values(value).some(v => mentionsActive(v, depth + 1));
   function inspect(value: unknown, depth: number): void {
     if(++nodes > 10000 || depth > 30) throw new PlatformDenied("PLAN_TOO_COMPLEX");
     if(pausedCreation && typeof value === "string" && value.trim().toUpperCase() === "INHERITED_FROM_SOURCE") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
@@ -53,7 +61,7 @@ export function classifyPlan(plan: OperationPlan): OperationClass[] {
         if(plan.createOrCopy) throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
         classes.add("ACTIVATE_SPEND");
       }
-      if((k.includes("budget") || k === "bid_amount" || k === "spend_cap" || k === "account_spend_limit") && !(expectationOnly && depth===1 && value===plan.parameters.input && ["expected_campaign_daily_budget","expected_adset_daily_budget"].includes(k))) classes.add("WRITE_BUDGET");
+      if(isMoneyKey(key) && !(expectationOnly && depth===1 && value===plan.parameters.input && ACTIVATION_EXPECTATION_KEYS.includes(k))) { classes.add("WRITE_BUDGET"); moneyKeys.push(key); }
       if(k.includes("credit_line") || k.includes("payment_method") || k === "funding_id") classes.add("BILLING");
       if(k === "status" && typeof v === "string" && ["DELETED", "ARCHIVED"].includes(v.trim().toUpperCase())) classes.add("DELETE");
       inspect(v, depth + 1);
@@ -61,7 +69,7 @@ export function classifyPlan(plan: OperationPlan): OperationClass[] {
   }
   inspect(plan.parameters, 0); canonicalJson(plan);
   if(!classes.size) throw new PlatformDenied("OPERATION_CLASS_REQUIRED");
-  return [...classes].sort();
+  return { classes: [...classes].sort(), moneyKeys };
 }
 export function normalizeSafeDiff(parameters: Record<string, unknown>): SafeChange[] {
   const result: SafeChange[] = [];
