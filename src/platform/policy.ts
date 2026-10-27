@@ -4,7 +4,7 @@ import {assertBusinessOwnerScope} from "./business-owner-scope.js";
 import {attachmentEnabled} from "./attachment-flags.js";
 import {publishingVideoEnabled,isPublishingVideoDraftTool} from "./publishing-video-flags.js";
 import {pageVideoEnabled} from "./video-flags.js";
-import {assertAccountOwnershipEvidence,classifyAccountOwnership} from "./ownership-evidence.js";
+import {assertAccountOwnershipEvidence,assertAgencyAdvertisingAuthorization,classifyAccountOwnership} from "./ownership-evidence.js";
 import { createHash } from "node:crypto";
 import type { AuthorizationSnapshot, OperationClass, OperationContext, OperationPlan, SafeChange } from "./models.js";
 import { PlatformDenied } from "./models.js";
@@ -125,9 +125,10 @@ export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snaps
     if(classification==="UNVERIFIED")return deny("ACCOUNT_OWNERSHIP_UNVERIFIED");
     if(classification==="AGENCY_OWNED"&&snapshot.client.id!==account[0].clientId)return deny("AGENCY_ACCOUNT_CLIENT_SCOPE_MISMATCH");
     try{assertAccountOwnershipEvidence(snapshot,account[0]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"OWNER_EVIDENCE_REQUIRED");}
+    if(ctx.tool!=="marketing_create_async_report"){try{assertAgencyAdvertisingAuthorization(snapshot,account[0],classes.filter(c=>["WRITE_AD_CONFIGURATION","WRITE_BUDGET","ACTIVATE_SPEND"].includes(c)) as ("WRITE_AD_CONFIGURATION"|"WRITE_BUDGET"|"ACTIVATE_SPEND")[]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"ADVERTISING_AUTHORIZATION_REQUIRED");}}
     const requiredActions=classes.filter(c=>c!=="READ");
     if(requiredActions.length){
-      const eligible=snapshot.grants.filter(g=>g.assetKey===account[0].key&&g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.connectionId===snapshot.connection.id&&g.revokedAt===null&&g.expiresAt>Date.now()&&requiredActions.every(action=>g.actions.includes(action)));
+      const eligible=snapshot.grants.filter(g=>g.assetKey===account[0].key&&g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.connectionId===snapshot.connection.id&&g.revokedAt===null&&g.verifiedAt>0&&g.verifiedAt<=Date.now()&&g.expiresAt>Date.now()&&requiredActions.every(action=>g.actions.includes(action)));
       if(eligible.length!==1)return deny("SCOPED_AD_ACCOUNT_AUTHORIZATION_REQUIRED");
     }
   }
