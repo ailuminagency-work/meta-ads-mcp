@@ -131,14 +131,17 @@ export class FakeFirestore {
 
   collection(name: string): FakeCollection { return new FakeCollection(this, name); }
 
-  collectionGroup(name: string): { get: () => Promise<{ docs: FakeSnapshot[] }> } {
-    return {
+  collectionGroup(name: string): { limit: (count: number) => ReturnType<FakeFirestore["collectionGroup"]>; get: () => Promise<{ docs: FakeSnapshot[] }> } {
+    const build = (max: number): ReturnType<FakeFirestore["collectionGroup"]> => ({
+      limit: (count: number) => build(count),
       get: async () => ({
         docs: [...this.docs.entries()]
           .filter(([path]) => path.split("/").length % 2 === 0 && path.split("/").at(-2) === name)
+          .slice(0, max)
           .map(([path, stored]) => new FakeSnapshot(new FakeDocRef(this, path), stored)),
       }),
-    };
+    });
+    return build(Infinity);
   }
 
   batch(): FakeBatch { return new FakeBatch(this); }
