@@ -24,7 +24,7 @@ Checked in the Railway variables view by name and presence. Booleans and counts 
 | --- | --- | --- | --- |
 | `DEPLOYMENT_MODE` | `awaiting_credentials` | `agency` | No default in production; startup fails if unset |
 | `NODE_ENV` | `production` | `production` | Agency mode requires it |
-| `AGENCY_WRITES_ENABLED` | `false` | `false` | Global write switch; anything other than exactly `true` keeps non-read tools disabled |
+| `AGENCY_WRITES_ENABLED` | `false` | `false` | Global write switch; anything other than exactly `true` keeps non-read tools disabled. `true` is refused at startup unless `LUMIN_PLATFORM_ENABLED` is exactly `true` too (without the policy engine the baseline write tools would run with no approval, no PAUSED-only rule and no budget ceiling), and a server built from such an environment stays read-only |
 | `LUMIN_PLATFORM_ENABLED` | `false` | per the stage plan | Platform policy engine |
 | `LUMIN_PLATFORM_WRITES_ENABLED` | `false` | `false` | Needs `AGENCY_WRITES_ENABLED=true` as well |
 | Every other write-capable flag (`STRICT_WRITE_FLAGS` in `src/transport/deployment-config.ts`: activation, deletion, paused-ad batch, tracking change, creative replacement, CBO, video creative, app purchase, studies, messenger utility, messaging attachments, page and publishing video, platform and CRM signals) | `false` or absent | `false` or absent | In agency mode startup now refuses `true` unless `AGENCY_WRITES_ENABLED` is exactly `true`, and refuses any value that is not exactly `true` or `false` (so `TRUE`, `1` and `yes` fail rather than silently mean false) |

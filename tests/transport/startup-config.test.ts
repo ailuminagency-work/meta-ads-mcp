@@ -75,7 +75,7 @@ describe("agency write flags must sit behind the global write switch", () => {
 
   it.each(STRICT_WRITE_FLAGS)("allows %s when the global switch is explicitly true", (name) => {
     expect(() =>
-      validateAgencyEnvironment({ ...validAgency, AGENCY_WRITES_ENABLED: "true", [name]: "true" }),
+      validateAgencyEnvironment({ ...validAgency, AGENCY_WRITES_ENABLED: "true", LUMIN_PLATFORM_ENABLED: "true", [name]: "true" }),
     ).not.toThrow();
   });
 

@@ -92,7 +92,17 @@ function validateWriteFlags(env: NodeJS.ProcessEnv): void {
       throw new Error(`${name} must be an explicit boolean (true or false)`);
     }
   }
-  if (env.AGENCY_WRITES_ENABLED === "true") return;
+  const distinctApprover = present(env, "LUMIN_APPROVAL_REQUIRE_DISTINCT_APPROVER");
+  if (distinctApprover !== undefined && !/^(?:true|false)$/i.test(distinctApprover)) {
+    throw new Error("LUMIN_APPROVAL_REQUIRE_DISTINCT_APPROVER must be true or false");
+  }
+  if (env.AGENCY_WRITES_ENABLED === "true") {
+    // Without the policy engine the baseline write tools run with no human approval, no PAUSED-only rule and no budget ceiling.
+    if (env.LUMIN_PLATFORM_ENABLED !== "true") {
+      throw new Error("AGENCY_WRITES_ENABLED=true requires LUMIN_PLATFORM_ENABLED=true; set AGENCY_WRITES_ENABLED=false or enable the policy engine");
+    }
+    return;
+  }
   const enabled = STRICT_WRITE_FLAGS.filter((name) => env[name] === "true");
   if (enabled.length > 0) {
     throw new Error(

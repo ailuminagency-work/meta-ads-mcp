@@ -55,7 +55,9 @@ export function createServer(): McpServer {
   registerAllTools(server);
   finishLegacyRegistration();
   if (platformEnabled()) registerPlatformTools(server,new Set(LEGACY_MANIFEST.map(t=>t.name)));
-  if (process.env.DEPLOYMENT_MODE === "agency" && process.env.AGENCY_WRITES_ENABLED !== "true") {
+  // Startup already refuses writes without the policy engine; this keeps a server built from a drifted environment read-only instead of exposing the unguarded baseline writes.
+  const agencyWritesAllowed = process.env.AGENCY_WRITES_ENABLED === "true" && platformEnabled();
+  if (process.env.DEPLOYMENT_MODE === "agency" && !agencyWritesAllowed) {
     const tools = (server as unknown as { _registeredTools: Record<string, { annotations?: { readOnlyHint?: boolean }; disable(): void }> })._registeredTools;
     for (const [name, tool] of Object.entries(tools)) {
       // Preparation tools that only stage a proposal for a later write stay hidden while writes are off; discovery and observation tools below only read and store evidence.
