@@ -227,6 +227,25 @@ describe("refresh re-evaluates the login allowlist", () => {
   });
 });
 
+describe("a refresh race against a store with real write latency", () => {
+  it("does not mistake the loser of the race for a thief", async () => {
+    selected.db = createFirestoreDouble({ writeLatencyMs: 25 }).db;
+    oauthProvider.configure({ refreshJtiStore: new FirestoreJtiStore("mcp_refresh_jti") });
+    const first = await login(OPERATOR);
+
+    const settled = await Promise.allSettled([
+      oauthProvider.exchangeRefreshToken(client, first.refresh_token!),
+      oauthProvider.exchangeRefreshToken(client, first.refresh_token!),
+    ]);
+    expect(settled.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const winner = settled.find((r) => r.status === "fulfilled") as PromiseFulfilledResult<{
+      refresh_token?: string;
+    }>;
+
+    await expect(oauthProvider.exchangeRefreshToken(client, winner.value.refresh_token!)).resolves.toBeDefined();
+  });
+});
+
 describe.each([
   ["in-memory jti store", () => new InMemoryJtiStore()],
   ["Firestore jti store", () => new FirestoreJtiStore("mcp_refresh_jti")],

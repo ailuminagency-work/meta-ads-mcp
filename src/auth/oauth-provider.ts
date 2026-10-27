@@ -275,20 +275,21 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     // Firestore (and breaking the rotation guarantee in-memory under
     // sufficient async interleaving). Even if generateTokens fails after
     // this, the worst case is the user has to re-authorize.
-    if (!(await this.refreshJtiStoreImpl.consume(jti))) {
+    const rotated = await this.refreshJtiStoreImpl.consume(jti, {
+      tombstone: {
+        id: ROTATED_PREFIX + jti,
+        entry: {
+          expiresAt: Math.floor(Date.now() / 1000) + REFRESH_REUSE_GRACE_SECONDS,
+          meta: { kind: "rotated" },
+        },
+      },
+    });
+    if (!rotated) {
       await this.handleRefreshReplay(jti, familyId, client.client_id, subject);
       throw new InvalidGrantError(
         "Refresh token has been revoked or already used",
       );
     }
-    await this.refreshJtiStoreImpl
-      .put(ROTATED_PREFIX + jti, {
-        expiresAt: Math.floor(Date.now() / 1000) + REFRESH_REUSE_GRACE_SECONDS,
-        meta: { kind: "rotated" },
-      })
-      .catch((error: unknown) => {
-        logger.warn({ err: error }, "Could not record refresh rotation; a retry will revoke the chain");
-      });
 
     return this.generateTokens({
       clientId: client.client_id,
@@ -304,19 +305,24 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     clientId: string,
     subject: string | undefined,
   ): Promise<void> {
-    if (await this.refreshJtiStoreImpl.has(ROTATED_PREFIX + jti)) return;
-    // The token is validly signed and unexpired yet no longer redeemable, and it
-    // was not rotated moments ago: whoever holds it may have copied it. Every
-    // token in the chain, including the one the legitimate client now holds, is
-    // refused from here on so the next sign-in re-establishes who owns it.
-    await this.refreshJtiStoreImpl.put(FAMILY_REVOKED_PREFIX + familyId, {
-      expiresAt: Math.floor(Date.now() / 1000) + REFRESH_TTL_SECONDS,
-      meta: { kind: "family_revoked", clientId },
-    });
-    logger.warn(
-      { clientId, subject: hashPii(subject), family: hashPii(familyId) },
-      "Rotated refresh token was presented again; its token chain has been revoked",
-    );
+    try {
+      if (await this.refreshJtiStoreImpl.has(ROTATED_PREFIX + jti)) return;
+      // The token is validly signed and unexpired yet no longer redeemable, and
+      // it was not rotated moments ago: whoever holds it may have copied it.
+      // Every token in the chain, including the one the legitimate client now
+      // holds, is refused from here on so the next sign-in re-establishes who
+      // owns it.
+      await this.refreshJtiStoreImpl.put(FAMILY_REVOKED_PREFIX + familyId, {
+        expiresAt: Math.floor(Date.now() / 1000) + REFRESH_TTL_SECONDS,
+        meta: { kind: "family_revoked", clientId },
+      });
+      logger.warn(
+        { clientId, subject: hashPii(subject), family: hashPii(familyId) },
+        "Rotated refresh token was presented again; its token chain has been revoked",
+      );
+    } catch (error) {
+      logger.error({ err: error, clientId }, "Could not record a refresh token reuse");
+    }
   }
 
   private async isSubjectAuthorized(fbUserId: string): Promise<boolean> {

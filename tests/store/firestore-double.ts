@@ -17,8 +17,10 @@ export interface FirestoreDouble {
  * sub-collections, equality queries, batches and serialized transactions.
  * `update` on a missing document throws, as the real client does.
  */
-export function createFirestoreDouble(): FirestoreDouble {
+export function createFirestoreDouble(options: { writeLatencyMs?: number } = {}): FirestoreDouble {
   const data = new Map<string, Data>();
+  const delay = () =>
+    options.writeLatencyMs ? new Promise<void>((resolve) => setTimeout(resolve, options.writeLatencyMs)) : undefined;
   let transactionTail: Promise<unknown> = Promise.resolve();
 
   const lastSegment = (path: string) => path.split("/").at(-1)!;
@@ -53,7 +55,10 @@ export function createFirestoreDouble(): FirestoreDouble {
       path,
       collection: (name: string) => collectionRef(`${path}/${name}`),
       get: async () => snapshot(path),
-      set: async (value: Data, options?: WriteOptions) => writeSet(path, value, options),
+      set: async (value: Data, writeOptions?: WriteOptions) => {
+        await delay();
+        writeSet(path, value, writeOptions);
+      },
       update: async (fields: Data) => writeUpdate(path, fields),
       delete: async () => {
         data.delete(path);
