@@ -81,7 +81,7 @@ const HOSTS: Record<Provider, string> = {
   META_THREADS: "https://graph.threads.com", META_BUSINESS: "https://graph.facebook.com",
 };
 export class ProductApiError extends Error {
-  constructor(readonly provider: Provider, readonly status: number, readonly code: number | null, readonly requestId: string | null) { super(`PROVIDER_REQUEST_FAILED:${provider}:HTTP_${status}:CODE_${code ?? "UNKNOWN"}`); }
+  constructor(readonly provider: Provider, readonly status: number, readonly code: number | null, readonly requestId: string | null, readonly transient = false) { super(`PROVIDER_REQUEST_FAILED:${provider}:HTTP_${status}:CODE_${code ?? "UNKNOWN"}`); }
 }
 const SECRET_KEYS = /^(access_token|refresh_token|appsecret_proof|client_secret|app_secret|encryptedToken|encrypted_token|credential|credentials|authorization)$/i;
 export function sanitizeProviderResponse(value: unknown, depth = 0): unknown {
@@ -392,11 +392,11 @@ export class MetaGraphClient {
       const text = await readBodyWithLimit(response,2_000_000);
       let body: unknown;
       try { body = JSON.parse(text); } catch { throw new ProductApiError(this.provider,response.status,null,null); }
-      const error = body && typeof body === "object" && "error" in body ? body.error as {code?:unknown} : null;
+      const error = body && typeof body === "object" && "error" in body ? body.error as {code?:unknown;is_transient?:unknown} : null;
       const code = error && typeof error.code === "number" ? error.code : null;
       productRateController.observe(bucket,response,code);
       const requestId = response.headers.get("x-fb-trace-id")?.slice(0,128) ?? null;
-      if (!response.ok || error) throw new ProductApiError(this.provider,response.status,code,requestId);
+      if (!response.ok || error) throw new ProductApiError(this.provider,response.status,code,requestId,error?.is_transient === true);
       if (contract.method === "GET") await revalidateExecutionPermit(permit);
       if(MESSENGER_TYPED_TOOLS.includes(contract.tool)||MESSAGING_IMAGE_TOOLS.includes(contract.tool))return normalizeMessengerTypedReceipt(contract.tool,projectProviderResponse(body,contract),parameters);
       if(contract.tool==="catalog_list_assigned_users")return normalizeCatalogAssignedUsers(projectProviderResponse(body,contract));

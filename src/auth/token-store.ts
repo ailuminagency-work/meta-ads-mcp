@@ -18,6 +18,22 @@ export interface RequestContext {
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 
 /**
+ * The abort signal of the MCP request being served. It lives beside requestContext
+ * rather than in it because some paths open a nested requestContext.run with a
+ * different credential, which would drop a field of the outer context.
+ */
+const requestAbort = new AsyncLocalStorage<AbortSignal>();
+
+export function runWithRequestSignal<T>(signal: AbortSignal | undefined, fn: () => T): T {
+  return signal ? requestAbort.run(signal, fn) : fn();
+}
+
+/** Aborted when the client of this tool call has gone; undefined outside a tool call or when the transport gave none. */
+export function getRequestSignal(): AbortSignal | undefined {
+  return requestAbort.getStore();
+}
+
+/**
  * Get the current request's access token.
  *
  * Priority:

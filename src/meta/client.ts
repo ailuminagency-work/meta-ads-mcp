@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
-import { getAccessToken, hashToken } from "../auth/token-store.js";
+import { getAccessToken, getRequestSignal, hashToken } from "../auth/token-store.js";
+import { abortableSleep, raceAbort, RequestAbortedError, throwIfAborted } from "../utils/abortable.js";
 import { logger } from "../utils/logger.js";
 import { RateLimiter, type RequestContext } from "./rate-limiter.js";
 import { CircuitBreaker, type CircuitContext } from "./circuit-breaker.js";
@@ -240,6 +241,9 @@ export class MetaApiClient {
     skipTokenParam = false,
     scope?: RequestScope,
   ): Promise<T> {
+    // The caller of this tool call may be gone: nothing below starts, waits or retries after that.
+    const requestSignal = getRequestSignal();
+    throwIfAborted(requestSignal);
     await assertLegacyReadEgress(method,path,url);
     const token = platformEnabled()
       ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),async selected=>selected)
@@ -261,11 +265,11 @@ export class MetaApiClient {
       (method === "POST" || method === "DELETE") &&
       accountId !== undefined;
     if (isWrite) {
-      await this.writePacer.acquire(tokenHash, accountId);
+      await raceAbort(this.writePacer.acquire(tokenHash, accountId), requestSignal);
     }
 
     // Reactive self-throttle based on last-known usage headers.
-    await this.rateLimiter.waitIfNeeded(context);
+    await raceAbort(this.rateLimiter.waitIfNeeded(context), requestSignal);
 
     // The proof travels wherever the token does not: in the url for every call
     // but the multipart one, whose body already carries it. Only the url that is
@@ -282,12 +286,19 @@ export class MetaApiClient {
         throw new Error("INVARIANT_VIOLATED: a non-idempotent request must not be retried");
       }
       try {
+        throwIfAborted(requestSignal);
         await assertLegacyReadEgress(method,path,url);
         const controller = new AbortController();
         const timeoutId = setTimeout(
           () => controller.abort(),
           this.timeout,
         );
+        const onRequestAbort = () => controller.abort();
+        requestSignal?.addEventListener("abort", onRequestAbort, { once: true });
+        const disarm = () => {
+          clearTimeout(timeoutId);
+          requestSignal?.removeEventListener("abort", onRequestAbort);
+        };
 
         const performFetch = async (selectedToken:string):Promise<Response> => {
           if(platformEnabled()) {
@@ -306,7 +317,7 @@ export class MetaApiClient {
         try { response=platformEnabled()
           ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),performFetch)
           : await performFetch(token);
-        } catch(error){clearTimeout(timeoutId);throw error;}
+        } catch(error){disarm();throw error;}
 
         // Update rate-limiter + pacer from response headers — regardless of
         // whether the response was OK. Throttle signals travel on error
@@ -318,7 +329,7 @@ export class MetaApiClient {
 
         let body:unknown;
         try { body=JSON.parse(await readBounded(response,controller.signal,platformEnabled()?STRICT_MAX_RESPONSE_BYTES:this.maxResponseBytes)); }
-        finally { clearTimeout(timeoutId); }
+        finally { disarm(); }
 
         if (typeof body === "object" && body !== null && Object.hasOwn(body, "error") && !isMetaApiError(body)) {
           if (platformEnabled()) throw new PlatformDenied("LEGACY_PROVIDER_ERROR_SCHEMA_INVALID");
@@ -352,7 +363,7 @@ export class MetaApiClient {
 
           if (classification.retryable && canRetryTransport && attempt < this.maxRetries) {
             lastError = classification.mcpError;
-            await this.backoff(attempt);
+            await this.backoff(attempt, requestSignal);
             continue;
           }
 
@@ -363,7 +374,7 @@ export class MetaApiClient {
           // Non-Graph error bodies are just as untrusted as Graph error text.
           lastError = new ProviderHttpError(`Meta provider HTTP ${response.status}`);
           if (response.status >= 500 && canRetryTransport && attempt < this.maxRetries) {
-            await this.backoff(attempt);
+            await this.backoff(attempt, requestSignal);
             continue;
           }
           throw lastError;
@@ -381,13 +392,15 @@ export class MetaApiClient {
         }
         return projected;
       } catch (error) {
+        if (error instanceof RequestAbortedError) throw error;
+        if (requestSignal?.aborted) throw new RequestAbortedError();
         if(error instanceof PlatformDenied)throw error;
         if(platformEnabled()&&(error instanceof BodyTooLargeError||error instanceof SyntaxError))throw new PlatformDenied("LEGACY_PROVIDER_RESPONSE_INVALID_OR_TOO_LARGE");
         if(error instanceof BodyTooLargeError)throw new ProviderHttpError("META_PROVIDER_RESPONSE_TOO_LARGE");
         if (error instanceof Error && error.name === "AbortError") {
           lastError = new Error(`Request timeout after ${this.timeout}ms`);
           if (canRetryTransport && attempt < this.maxRetries) {
-            await this.backoff(attempt);
+            await this.backoff(attempt, requestSignal);
             continue;
           }
           throw lastError;
@@ -400,7 +413,7 @@ export class MetaApiClient {
 
         lastError = new Error(platformEnabled() ? "STRICT_PROVIDER_TRANSPORT_FAILED" : "META_PROVIDER_TRANSPORT_FAILED");
         if (canRetryTransport && attempt < this.maxRetries) {
-          await this.backoff(attempt);
+          await this.backoff(attempt, requestSignal);
           continue;
         }
         throw lastError;
@@ -431,10 +444,10 @@ export class MetaApiClient {
     return metaAppSecretProof(token, this.appSecret);
   }
 
-  private async backoff(attempt: number): Promise<void> {
+  private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
     const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
     const jitter = delay * (Math.random() * 0.4 - 0.2); // ±20%
-    await new Promise((resolve) => setTimeout(resolve, delay + jitter));
+    await abortableSleep(delay + jitter, signal);
   }
 
   private maybeUpdatePacerTierFromHeaders(
