@@ -70,6 +70,15 @@ const ADSET_BUDGET_SHARING_EXPLAINER =
   "Ad set budget sharing lets Meta move up to 20% of each ad set's daily budget to other ad sets in the same campaign when that is likely to perform better. It only works when the budget lives on the ad sets (Meta rejects it next to a campaign daily_budget or lifetime_budget, error 4834002), only with daily ad set budgets, and every ad set in the campaign must use the same bid strategy (Meta rejects enabling it without one, error 4834005). Meta recommends true.";
 
 export function registerCampaignTools(server: McpServer): void {
+  // Strict mode holds every special ad category (only NONE is created) and pins this tool's input keys to the
+  // legacy manifest, so the country list is only offered where a special category can actually be sent.
+  const specialCategoryCountryShape = (
+    platformEnabled() ? {} : { special_ad_category_country: specialAdCategoryCountrySchema.optional() }
+  ) as { special_ad_category_country: z.ZodOptional<typeof specialAdCategoryCountrySchema> };
+  const specialCategoryCountryNote = platformEnabled()
+    ? ""
+    : " When special_ad_categories contains anything other than NONE, special_ad_category_country is required.";
+
   // ─── Get Campaigns ───────────────────────────────────────────
   server.registerTool(
     "ads_get_campaigns",
@@ -165,7 +174,7 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "ads_create_campaign",
     {
-      description: `${WRITE_WARNING}Create a new Meta advertising campaign. Uses outcome-based (ODAX) objectives. Campaigns are created in PAUSED status by default. Budget belongs at exactly one level: pass daily_budget or lifetime_budget here for a campaign budget, or omit both and set budgets on each ad set. For ad-set budgets Meta requires an explicit is_adset_budget_sharing_enabled; this tool sends false unless you pass true. Budget amounts are whole numbers of the ad account currency's minor units, not always cents. When special_ad_categories contains anything other than NONE, special_ad_category_country is required.`,
+      description: `${WRITE_WARNING}Create a new Meta advertising campaign. Uses outcome-based (ODAX) objectives. Campaigns are created in PAUSED status by default. Budget belongs at exactly one level: pass daily_budget or lifetime_budget here for a campaign budget, or omit both and set budgets on each ad set. For ad-set budgets Meta requires an explicit is_adset_budget_sharing_enabled; this tool sends false unless you pass true. Budget amounts are whole numbers of the ad account currency's minor units, not always cents.${specialCategoryCountryNote}`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         name: z.string().min(1).max(400).describe("Campaign name"),
@@ -177,7 +186,7 @@ export function registerCampaignTools(server: McpServer): void {
           .array(specialAdCategoryEnum)
           .default(["NONE"])
           .describe("Special ad categories (NONE, EMPLOYMENT, HOUSING, CREDIT, FINANCIAL_PRODUCTS_SERVICES, ISSUES_ELECTIONS_POLITICS, ONLINE_GAMBLING_AND_GAMING)"),
-        ...(platformEnabled() ? {} : { special_ad_category_country: specialAdCategoryCountrySchema.optional() }),
+        ...specialCategoryCountryShape,
         daily_budget: minorUnitAmount(
           `Campaign daily budget ${MINOR_UNIT_NOTE}. Omit to set budgets on the ad sets instead.`,
         ).optional(),

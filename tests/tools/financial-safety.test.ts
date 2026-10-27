@@ -177,8 +177,13 @@ describe("ads_create_campaign serialises array parameters as JSON arrays", () =>
   it("keeps the strict-mode input keys identical to the pinned legacy manifest", async () => {
     vi.stubEnv("LUMIN_PLATFORM_ENABLED", "true");
     const { LEGACY_MANIFEST } = await import("../../src/platform/legacy-manifest.js");
-    const keys = Object.keys(tool(registerCampaignTools, "ads_create_campaign").shape).sort();
-    expect(keys).toEqual([...LEGACY_MANIFEST.find((e) => e.name === "ads_create_campaign")!.inputKeys].sort());
+    const strict = tool(registerCampaignTools, "ads_create_campaign");
+    expect(Object.keys(strict.shape).sort()).toEqual([...LEGACY_MANIFEST.find((e) => e.name === "ads_create_campaign")!.inputKeys].sort());
+    expect(strict.description).not.toContain("special_ad_category_country");
+    vi.stubEnv("LUMIN_PLATFORM_ENABLED", "false");
+    const baseline = tool(registerCampaignTools, "ads_create_campaign");
+    expect(Object.keys(baseline.shape)).toContain("special_ad_category_country");
+    expect(baseline.description).toContain("special_ad_category_country");
   });
 });
 
