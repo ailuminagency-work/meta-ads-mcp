@@ -11,7 +11,7 @@
 #   install     npm ci                                  (only with --install)
 #   lint        npm run lint
 #   typecheck   npm run typecheck
-#   test        full vitest suite (CI=1)
+#   test        full vitest suite (CI=1, FFMPEG_REQUIRED=1); fails if ffmpeg or ffprobe is absent or any test was skipped or todo
 #   build       npm run build
 #   audit       npm audit --audit-level=high --omit=dev (same gate as CI)
 #   files       no prohibited file is tracked at HEAD; .gitignore keeps the required entries
@@ -133,7 +133,26 @@ step_tree() {
 step_install() { npm ci; }
 step_lint() { npm run lint --silent; }
 step_typecheck() { npm run typecheck --silent; }
-step_test() { CI=1 npm test --silent; }
+# The hostile-media suite skips itself when ffmpeg is missing, and a skipped
+# suite is a pass to npm. FFMPEG_REQUIRED=1 turns a missing binary into a
+# failure, and the JSON result is checked so that no test was skipped or todo.
+step_test() {
+  local bin json="$LOG_DIR/vitest-results.json"
+  for bin in ffmpeg ffprobe; do
+    command -v "$bin" >/dev/null 2>&1 || { echo "$bin is not on PATH: the hostile-media suite would be skipped, which is not a certification"; return 1; }
+  done
+  rm -f "$json"
+  CI=1 FFMPEG_REQUIRED=1 npm test --silent -- --reporter=default --reporter=json --outputFile.json="$json" || return $?
+  [ -s "$json" ] || { echo "vitest wrote no result file: nothing proves that no test was skipped"; return 1; }
+  node -e '
+    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const skipped = (r.numPendingTests || 0) + (r.numTodoTests || 0);
+    console.log(`tests: total=${r.numTotalTests} passed=${r.numPassedTests} failed=${r.numFailedTests} skipped=${r.numPendingTests || 0} todo=${r.numTodoTests || 0}`);
+    if (!r.success || r.numFailedTests > 0) { console.error("vitest reports failed tests"); process.exit(1); }
+    if (!(r.numTotalTests > 0)) { console.error("vitest reports no tests"); process.exit(1); }
+    if (skipped > 0) { console.error(`${skipped} test(s) were skipped or marked todo: a certification requires every test to run`); process.exit(1); }
+  ' "$json"
+}
 step_build() { npm run build --silent; }
 
 step_audit() {
@@ -208,7 +227,7 @@ step_gitleaks() {
 }
 
 step_guard_quick() { bash .github/pre-deploy-guard/scripts/quick-checks.sh; }
-step_guard_full() { CI=1 bash .github/pre-deploy-guard/scripts/run-checks.sh; }
+step_guard_full() { CI=1 FFMPEG_REQUIRED=1 bash .github/pre-deploy-guard/scripts/run-checks.sh; }
 
 step_head() {
   local now

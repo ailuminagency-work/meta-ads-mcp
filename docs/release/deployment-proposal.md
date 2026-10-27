@@ -24,7 +24,7 @@ Checked in the Railway variables view by name and presence. Booleans and counts 
 | --- | --- | --- | --- |
 | `DEPLOYMENT_MODE` | `awaiting_credentials` | `agency` | No default in production; startup fails if unset |
 | `NODE_ENV` | `production` | `production` | Agency mode requires it |
-| `AGENCY_WRITES_ENABLED` | `false` | `false` | Global write switch; anything other than exactly `true` keeps non-read tools disabled |
+| `AGENCY_WRITES_ENABLED` | `false` | `false` | Global write switch; anything other than exactly `true` keeps non-read tools disabled. `true` is refused at startup unless `LUMIN_PLATFORM_ENABLED` is exactly `true` too (without the policy engine the baseline write tools would run with no approval, no PAUSED-only rule and no budget ceiling), and a server built from such an environment stays read-only |
 | `LUMIN_PLATFORM_ENABLED` | `false` | per the stage plan | Platform policy engine |
 | `LUMIN_PLATFORM_WRITES_ENABLED` | `false` | `false` | Needs `AGENCY_WRITES_ENABLED=true` as well |
 | Every other write-capable flag (`STRICT_WRITE_FLAGS` in `src/transport/deployment-config.ts`: activation, deletion, paused-ad batch, tracking change, creative replacement, CBO, video creative, app purchase, studies, messenger utility, messaging attachments, page and publishing video, platform and CRM signals) | `false` or absent | `false` or absent | In agency mode startup now refuses `true` unless `AGENCY_WRITES_ENABLED` is exactly `true`, and refuses any value that is not exactly `true` or `false` (so `TRUE`, `1` and `yes` fail rather than silently mean false) |
@@ -66,6 +66,26 @@ Never remove or rename a key id that stored records carry. Never rotate, delete 
 | `META_API_VERSION` | `v26.0` | Supported version pin |
 | `CORS_ALLOWED_ORIGINS` | exact approved origins, no wildcard | |
 | `LOG_LEVEL` | `info` | The startup line is info level |
+
+### Request limits on `/mcp` and trusted-source ingress (hardening round 1)
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `MCP_MAX_IN_FLIGHT` | `16` | Authenticated `POST /mcp` requests in flight on one instance. The next one gets 429 with `Retry-After` and a JSON-RPC body; the slot is released when the response ends or the client disconnects. A set value that is not a positive integer up to 1000 stops startup |
+| `MCP_RATE_LIMIT_PER_MINUTE` | `120` | Calls per authenticated subject in a sliding minute; the same 429. A value that is not a positive integer up to 100000 stops startup |
+| (fixed) | 1 MB | Largest `/mcp` body. No tool takes inline media (the base64 fields exist only on the signed ingress routes). Nesting deeper than 64 or more than 20,000 objects and arrays is refused before parsing. A bulk request above 1 MB gets 413 |
+
+Rejections are counted and logged (`event: mcp_admission_rejected`, a hashed subject, never an identifier). One operator whose client fans out more than 16 simultaneous long-running calls on this instance will see 429s; raise the cap only with the 1 GB memory budget in mind.
+
+**Trusted-source ingress stays OFF in this release.** `LUMIN_MEDIA_INGRESS_ENABLED` and the video, attachment and publishing-video ingress flags default to false and the production variable set must not contain them as true. If an owner later enables one, the signer has to change first: the body signature `x-lumin-signature` covers the bytes and can only be checked after they are buffered, so each request must also carry `x-lumin-request-signature`, an HMAC over the profile, timestamp, delivery id and exact `Content-Length` (helpers `mediaIngressPreauthSignature`, `videoIngressPreauthSignature`, `attachmentIngressPreauthSignature`, `publishingVideoIngressPreauthSignature`). The server verifies it from the headers alone, before reading the body and before taking the single in-flight slot, and buffers no more than the signed length. Outside test and development runs a request without it is refused with 401. `LUMIN_INGRESS_ALLOW_LEGACY_BODY_SIGNATURE=true` re-admits the body-only signature and with it the memory and slot exposure the review found; leave it unset. The protocol description in `docs/trusted-media-ingress.md` still lists only the body signature and has to be updated with the signer (documentation outside this workstream's files).
+
+### CI/CD trust (owner action, UNVERIFIED from here)
+
+The workflows now follow least privilege (`tests/scripts/workflow-permissions.test.ts`): every workflow grants only `contents: read` at the top, the `id-token: write` OIDC token exists only in the `deploy` job of `deploy.yml`, which runs no repository code, the preflight jobs that run `npm ci` and the tests hold no write permission and no longer leave the job token in `.git/config`, and `packages: write` is held only by the jobs that publish. The one job that still runs repository code with a write token is `publish.yml` `npm`, because `npm publish` runs the package's `prepublishOnly` script (build and tests); splitting it needs pinned artifact actions this repository does not use yet.
+
+What the repository cannot fix is the cloud side. `scripts/setup-gcloud.sh` creates the Workload Identity provider with a condition on the repository only and binds the deploy service account to the whole repository, so any OIDC token the repository can mint, from any branch or job, can impersonate an account that holds `roles/secretmanager.admin`, `roles/run.developer`, `roles/iam.serviceAccountUser` and `roles/artifactregistry.writer`. The OWNER narrows that trust to the main branch and the `production` environment (an `assertion.ref` and environment condition on the provider and the binding), or removes the bindings if Cloud Run is no longer a target now that production runs on Railway. The live provider condition, the environment reviewers and the branch protection were not visible to this review, so the real exposure is UNVERIFIED. `deploy.yml` can still be dispatched on any ref and passes `secrets: inherit` to `publish.yml`; both are left as found.
+
+Two smaller findings are documented rather than changed. `.gitleaks.toml` allowlists every `.env*` path and the CI secret scan runs gitleaks only, so a force-added `.env.production` with real values would pass CI; the file-name guard exists only in the local guard scripts and `scripts/release-certify.sh` (its `files` step fails on any tracked `.env*` other than `.env.example`), and `.gitignore` stops accidental adds. The local scanner `scan-secrets.sh` now has the Apify token pattern that `.gitleaks.toml` already had, but it still skips a whole line that contains a word such as `fixture` or `placeholder`, so gitleaks, whose allowlist applies to the matched secret, remains the stronger gate.
 
 ### Operator actions for the merged OAuth and financial-safety changes (names only)
 
@@ -150,6 +170,7 @@ Each box is a gate, not a suggestion. An unticked box blocks the deploy; the rec
 - [ ] The write-flag rows of section 1 are `false` or absent, `AGENCY_WRITES_ENABLED` and `LUMIN_PLATFORM_WRITES_ENABLED` included, and no forbidden variable is defined.
 - [ ] Each row of the operator actions table has a recorded decision, `DEPLOYMENT_MODE` is set explicitly, and `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` is 30 or more.
 - [ ] The re-registration effect of the redirect policy is accepted, and the affected operators are told.
+- [ ] The GCP Workload Identity trust used by `deploy.yml` is narrowed to the main branch and the `production` environment, or its bindings are removed (owner action, CI/CD trust above).
 - [ ] Rollback plan section 3 is complete, including the written statement of the keyring change and which `TOKEN_ENCRYPTION_KEY_*` names existed before and after.
 - [ ] Release identity (section 0) and CI for the same SHA are green.
 

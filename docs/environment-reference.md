@@ -8,7 +8,7 @@ No values in this document are credentials. No production variables were changed
 | LUMIN_META_PRIVACY_IDENTITIES_JSON | Deployment-owned callback profile IDs with exact configured app/secret-reference bindings. Only META_APP_SECRET, THREADS_APP_SECRET or INSTAGRAM_APP_SECRET may bind their matching app IDs; no inline secrets. |
 | LUMIN_META_PRIVACY_WORKERS_JSON | Unique worker IDs, named LUMIN_PRIVACY_WORKER_KEY_* references, and exact allowed app IDs. Each referenced 32-byte hexadecimal key belongs in the platform secret store. |
 | LUMIN_PLATFORM_ENABLED | Strict platform mode. Defaults off; do not enable until registry migration and acceptance. |
-| LUMIN_PLATFORM_WRITES_ENABLED / AGENCY_WRITES_ENABLED | Both must be true for provider mutations; human approval and exact client evidence remain necessary. |
+| LUMIN_PLATFORM_WRITES_ENABLED / AGENCY_WRITES_ENABLED | Both must be true for provider mutations; human approval and exact client evidence remain necessary. In agency mode AGENCY_WRITES_ENABLED=true is refused at startup unless LUMIN_PLATFORM_ENABLED=true too, so the baseline write tools never run without the policy engine. |
 | LUMIN_PLATFORM_OAUTH_ENABLED | Product-specific protected connection routes; also requires platform flag. |
 | LUMIN_PAUSED_AD_BATCH_ENABLED | Default false. Enables encrypted bounded paused-ad proposals and protected step-by-step review. Each provider mutation still requires its own current approval. |
 | LUMIN_TRACKING_CHANGE_ENABLED / LUMIN_MARKETING_CREATIVE_REPLACEMENT_ENABLED | Both default false. Enable the protected one-ad tracking replacement workflow; creation and repoint remain separate approvals, with permanent uncertainty holds. |
@@ -77,3 +77,12 @@ The default-off `LUMIN_APP_EVENT_TYPES_ENABLED` enables only registered promoted
 Optional public-ad acquisition uses default-off `LUMIN_APIFY_PUBLIC_ADS_ENABLED`, deployment-owned metadata in `LUMIN_APIFY_PUBLIC_ADS_POLICY_JSON`, and `LUMIN_APIFY_API_KEY` in the platform secret store. Enabling a flag does not approve a vendor, authorize spend or issue a job approval. The pinned actor/build and one-request run cap require current human policy review; no provider idempotency or invoice amount is invented.
 
 `LUMIN_APIFY_OFFICIAL_ADS_ENABLED` separately enables the explicitly reviewed Apify-maintained actor adapter. `LUMIN_APIFY_OFFICIAL_ADS_POLICY_JSON` fixes its actor/build and bounded run policy; `LUMIN_APIFY_OFFICIAL_API_KEY` belongs only in the platform secret store. This mode never silently borrows a community actor's output schema. Public media observations are decoded ephemerally under separate purpose/provenance, with a short private cache and a final current job/identity checkpoint; they create no client Meta asset grants. Provider selection, secrets and paid use remain separate human decisions.
+
+### Hardening round 1 (G3 findings)
+
+| Variable | Purpose and enabling rule |
+|---|---|
+| MCP_MAX_IN_FLIGHT | Default 16. Authenticated `POST /mcp` requests allowed in flight on one instance; the next gets 429 with Retry-After. A set value must be a positive integer up to 1000 or startup fails. |
+| MCP_RATE_LIMIT_PER_MINUTE | Default 120. Calls per authenticated subject in a sliding minute, refused with 429 and Retry-After beyond it. A set value must be a positive integer up to 100000 or startup fails. |
+| LUMIN_INGRESS_ALLOW_LEGACY_BODY_SIGNATURE | Default unset. Outside test and development runs the media, video, attachment and publishing-video ingress routes require the pre-authenticated `x-lumin-request-signature` header and refuse a request that has only the body signature. Setting this to exactly `true` re-admits the body-only signature, which can only be checked after the body is buffered; leave it unset. |
+| LUMIN_APPROVAL_REQUIRE_DISTINCT_APPROVER | Agency startup accepts only unset, `true` or `false` (any letter case) and refuses anything else, so a misspelled value cannot silently read as false. When true, the operator who requested an approval cannot also issue it. |
