@@ -60,7 +60,8 @@ function analysePlan(plan: OperationPlan): { classes: OperationClass[]; moneyKey
   function inspect(value: unknown, depth: number): void {
     if(++nodes > 10000 || depth > 30) throw new PlatformDenied("PLAN_TOO_COMPLEX");
     if(pausedCreation && typeof value === "string" && value.trim().toUpperCase() === "INHERITED_FROM_SOURCE") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
-    if(typeof value === "string" && /^[\s]*[\[{]/.test(value)) { let decoded: unknown; try { decoded = JSON.parse(value); } catch { throw new PlatformDenied("OPAQUE_JSON_INVALID"); } inspect(decoded, depth + 1); return; }
+    // A string that parses as JSON is decoded and inspected. One that does not parse (`[New] Summer sale`, `{{product.name}}`) is plain text: Graph decodes these fields with a strict JSON parser too, so it carries no key.
+    if(typeof value === "string" && /^[\s]*[\[{]/.test(value)) { let decoded: unknown; try { decoded = JSON.parse(value); } catch { return; } inspect(decoded, depth + 1); return; }
     if(Array.isArray(value)) { value.forEach(v => inspect(v, depth + 1)); return; }
     if(!value || typeof value !== "object") return;
     for(const [key, v] of Object.entries(value)) {

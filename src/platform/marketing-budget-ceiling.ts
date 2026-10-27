@@ -119,7 +119,7 @@ export function planBudgets(plan: OperationPlan): PlanBudget[] {
       try {
         decoded = JSON.parse(value);
       } catch {
-        throw new PlatformDenied("OPAQUE_JSON_INVALID");
+        return; // Not JSON, so plain text to Graph as well (`[New] Summer sale`); policy.ts reads it the same way.
       }
       visit(decoded, depth + 1);
       return;
