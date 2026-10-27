@@ -12,6 +12,41 @@ const executionTypeEnum = z.enum([
   "ROTATE", "NOTIFICATION",
 ]);
 
+const ALLOWED_EXECUTION_TYPES: ReadonlySet<string> = new Set(["PAUSE", "ROTATE", "NOTIFICATION"]);
+const SPEND_EXECUTION_TYPES: ReadonlySet<string> = new Set(["UNPAUSE", "CHANGE_BUDGET", "CHANGE_BID"]);
+const SPEND_OPTION_FIELD = /budget|bid|spend/i;
+const SPEND_OPTION_OPERATORS: ReadonlySet<string> = new Set(["INCREASE_BY", "DECREASE_BY"]);
+
+const AUTONOMOUS_SPEND_REFUSAL =
+  "Autonomous spend-changing rules are not permitted in this release: UNPAUSE, CHANGE_BUDGET and CHANGE_BID rules, and execution_options that change a budget, bid or spend, can start delivery or raise spend repeatedly on Meta's schedule with no human approval and no ceiling. Build objects through the approved paused-build path instead. PAUSE, ROTATE and NOTIFICATION rules are still allowed.";
+
+interface ExecutionSpecInput {
+  execution_type: unknown;
+  execution_options?: Array<{ field: string; value: string | number; operator?: string }>;
+}
+
+/**
+ * Fail-closed allowlist, applied before any request: the schema's enum is only the first line, so the handler
+ * re-checks the exact value (a spelling variant of a refused type is refused as such, anything else unknown is
+ * refused) and rebuilds the spec from the known keys so nothing else rides along to Meta.
+ */
+function checkedExecutionSpec(spec: ExecutionSpecInput): Record<string, unknown> {
+  const type = spec.execution_type;
+  if (typeof type !== "string" || !ALLOWED_EXECUTION_TYPES.has(type)) {
+    if (typeof type === "string" && SPEND_EXECUTION_TYPES.has(type.trim().toUpperCase())) {
+      throw new Error(AUTONOMOUS_SPEND_REFUSAL);
+    }
+    throw new Error(
+      `Unsupported execution_type ${JSON.stringify(typeof type === "string" ? type.slice(0, 40) : typeof type)}. Allowed: PAUSE, ROTATE, NOTIFICATION.`,
+    );
+  }
+  const options = spec.execution_options;
+  if (options?.some((o) => SPEND_OPTION_FIELD.test(o.field) || SPEND_OPTION_OPERATORS.has(String(o.operator ?? "").trim().toUpperCase()))) {
+    throw new Error(AUTONOMOUS_SPEND_REFUSAL);
+  }
+  return { execution_type: type, ...(options ? { execution_options: options } : {}) };
+}
+
 const scheduleTypeEnum = z.enum([
   "CUSTOM", "SEMI_HOURLY", "HOURLY", "DAILY", "WEEKLY",
 ]);
@@ -63,7 +98,7 @@ export function registerRuleTools(server: McpServer): void {
   server.registerTool(
     "ads_create_ad_rule",
     {
-      description: `${WRITE_WARNING}Create an automated rule. Examples: pause adsets when CPL > $20, notify when CTR < 1%, increase budget when ROAS > 3x.`,
+      description: `${WRITE_WARNING}Create an automated rule. Allowed actions: PAUSE, ROTATE and NOTIFICATION (examples: pause ad sets when CPL > $20, notify when CTR < 1%). UNPAUSE, CHANGE_BUDGET and CHANGE_BID are refused: autonomous spend-changing rules are not permitted in this release.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         name: z.string().min(1).describe("Rule name"),
@@ -94,7 +129,7 @@ export function registerRuleTools(server: McpServer): void {
                 }),
               )
               .optional()
-              .describe("Options for CHANGE_BUDGET/CHANGE_BID execution types"),
+              .describe("Options for ROTATE/NOTIFICATION execution types. Options that change a budget, bid or spend are refused."),
           })
           .describe("What to do when triggered"),
         schedule_spec: z
@@ -106,12 +141,13 @@ export function registerRuleTools(server: McpServer): void {
       annotations: { ...CREATE },
     },
     async ({ account_id, name, evaluation_spec, execution_spec, schedule_spec }) => {
+      const checkedExecution = checkedExecutionSpec(execution_spec);
       const id = normalizeAccountId(account_id);
 
       const body: Record<string, string | number | boolean> = {
         name,
         evaluation_spec: JSON.stringify(evaluation_spec),
-        execution_spec: JSON.stringify(execution_spec),
+        execution_spec: JSON.stringify(checkedExecution),
       };
 
       if (schedule_spec) {
@@ -188,7 +224,7 @@ export function registerRuleTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_rule",
     {
-      description: `${WRITE_WARNING}Update an existing automated rule's name, status, or specs.`,
+      description: `${WRITE_WARNING}Update an existing automated rule's name, status, or specs. UNPAUSE, CHANGE_BUDGET and CHANGE_BID are refused as the new execution_type: autonomous spend-changing rules are not permitted in this release.`,
       inputSchema: {
         rule_id: z.string().describe("Rule ID to update"),
         name: z.string().optional().describe("New name"),
@@ -223,12 +259,13 @@ export function registerRuleTools(server: McpServer): void {
       annotations: { ...UPDATE },
     },
     async ({ rule_id, name, status, evaluation_spec, execution_spec }) => {
+      const checkedExecution = execution_spec ? checkedExecutionSpec(execution_spec) : undefined;
       const id = validateMetaId(rule_id, "rule");
       const body: Record<string, string | number | boolean> = {};
       if (name) body.name = name;
       if (status) body.status = status;
       if (evaluation_spec) body.evaluation_spec = JSON.stringify(evaluation_spec);
-      if (execution_spec) body.execution_spec = JSON.stringify(execution_spec);
+      if (checkedExecution) body.execution_spec = JSON.stringify(checkedExecution);
 
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);
 
