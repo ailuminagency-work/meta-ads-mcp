@@ -66,7 +66,7 @@ export function registerWhatsAppFlowTools(server: McpServer): void {
       if (flow_id) {
         const flow = await metaApiClient.get<WhatsAppFlow>(
           `/${validateMetaId(flow_id, "flow_id")}`,
-          { fields: fields && fields.length > 0 ? fields.join(",") : FLOW_DETAIL_FIELDS },
+          { fields: buildFieldsParam(fields, [FLOW_DETAIL_FIELDS]) },
         );
         return {
           content: [
