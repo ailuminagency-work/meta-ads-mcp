@@ -50,6 +50,7 @@ const SPEND_LIKE_KEY = /budget|spend_cap|spend_target|bid_/;
 const KNOWN_SPEND_LIKE_KEYS: ReadonlySet<string> = new Set([
   "bid_strategy",
   "bid_amount",
+  "budget_mode",
   "is_adset_budget_sharing_enabled",
   "marketing_budget_mode",
 ]);

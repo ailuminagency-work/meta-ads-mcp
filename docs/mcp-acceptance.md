@@ -106,7 +106,7 @@ Test names are quoted from the files under `tests/protocol/`; `A` = `oauth-accep
 | # | Requirement | Status | Evidence |
 |---|---|---|---|
 | C-46 | Browser preflight from claude.ai to `/mcp` is allowed with `Authorization` and `Content-Type`; other origins get no CORS headers | PASS | A "handles browser preflight for claude.ai and withholds CORS from origins outside the allowlist" |
-| C-47 | chatgpt.com preflight is allowed | PASS only when `CORS_ALLOWED_ORIGINS` includes it; the default allowlist is `https://claude.ai` | P "echoes exactly the configured origins and nothing else"; D4b |
+| C-47 | chatgpt.com preflight is allowed | PASS only when `CORS_ALLOWED_ORIGINS` includes it; the default allowlist is `https://claude.ai` and `https://claude.com` | P "echoes exactly the configured origins and nothing else"; D4b |
 | C-48 | Browser clients can send `MCP-Protocol-Version` and read `WWW-Authenticate` / `Mcp-Session-Id` | FAIL (allowed headers are `Content-Type, Authorization, X-API-Key, X-Meta-Token, Mcp-Session-Id`; nothing is exposed) | D4; script CORS rows report WARN. Matters only to a client running in a browser; whether the Claude and ChatGPT connectors call from the vendors' servers instead is UNVERIFIED |
 | C-49 | Production: plain HTTP redirected to the https origin (`/health` exempt), HSTS over https | PASS (non-multi-tenant production boot) | P "redirects plain-HTTP requests to the https origin, exempts /health and sends HSTS over https" |
 | C-50 | Same, in the agency production configuration | UNVERIFIED | Multi-tenant production refuses to start without Firestore, so it cannot be booted in-process |
@@ -155,6 +155,8 @@ Behaviour that differs from, or is not stated by, the documentation:
 5. `README.md` presents `X-API-Key` plus `X-Meta-Token` as the server-to-server path without saying that agency mode refuses both (C-51, C-52).
 
 ## 4. Deviations to triage
+
+**Status after the round-1 fixes** (probe re-run on the integration tip after the independent review): D1, D1b, D2, D6, D8 and D10 are resolved in code (registration policy, `state` echoed on error redirects, a wrong PKCE verifier burns the code, malformed JSON gets a JSON-RPC parse error, loopback redirects may vary the port); D11 is resolved (a foreign `Origin` gets 403). D3 (405 without `Allow`), D4/D4b (CORS allow/expose headers; chatgpt.com not allowed by default), D5 (RFC 9207 `iss`, Client ID Metadata Documents), D7 (refresh tokens are revoked on replay; access tokens stay valid for up to one hour) and D9 (`/token` does not bind an unknown `resource`) remain open and low. Rows in sections 2 and 3 marked FAIL for the resolved items describe the frozen candidate f190dca; re-run the probe to refresh them. The text below is the original triage.
 
 Output of `LOG_LEVEL=fatal npx tsx tests/protocol/known-deviations.probe.ts` (trimmed). None is patched here; `src/` was not touched. Severity is the author's judgement for a read-only agency service in front of Claude and ChatGPT.
 
