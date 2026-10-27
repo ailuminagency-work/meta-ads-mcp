@@ -1,4 +1,6 @@
 import type express from "express";
+import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
+import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { logger } from "../utils/logger.js";
 
 export const DEFAULT_CORS_ALLOWED_ORIGINS: readonly string[] = ["https://claude.ai", "https://claude.com"];
@@ -53,4 +55,33 @@ export const mcpBodyErrorHandler: express.ErrorRequestHandler = (error, _req, re
     error: parseFailure ? { code: -32700, message: "Parse error" } : { code: -32600, message: "Invalid request" },
     id: null,
   });
+};
+
+/**
+ * The SDK's OAuth router is mounted by prefix and its inner route also answers
+ * "/authorize//". The login, consent and CSRF handlers in front of it match
+ * the exact path only, so every other shape of the path is refused here rather
+ * than allowed to reach the code-issuing handler around them.
+ */
+export const authorizeExactPathOnly: express.RequestHandler = (req, res, next) => {
+  if (req.path === "/") {
+    next();
+    return;
+  }
+  res.sendStatus(404);
+};
+
+/** Without a Meta login there is no operator who could approve a grant, so these endpoints do not exist. */
+export const oauthEndpointsUnavailable: express.RequestHandler = (_req, res) => {
+  res.status(404).json({
+    error: "oauth_unavailable",
+    error_description: "This deployment authenticates /mcp with an API key; it does not issue OAuth tokens.",
+  });
+};
+
+/** Stands in for the provider where no OAuth token can be legitimate. */
+export const rejectEveryToken: OAuthTokenVerifier = {
+  async verifyAccessToken() {
+    throw new InvalidTokenError("This deployment does not accept OAuth access tokens");
+  },
 };

@@ -57,11 +57,10 @@ describe("authorization error redirects echo the client's state (RFC 6749 4.1.2.
     expect(target.searchParams.get("code")).toBeNull();
   });
 
-  it("does so on the single-tenant GET /authorize path as well", async () => {
+  it("no longer serves the single-tenant GET /authorize path: without a Meta login nobody can approve", async () => {
     server = await startAuthServer({ META_APP_ID: "", META_APP_SECRET: "" });
-    const client = await registerClient(server.origin);
     const params = authorizeParams({
-      clientId: client.client_id,
+      clientId: "unregistered-client",
       challenge: pkce().challenge,
       method: "plain",
       state: "caller-state-456",
@@ -69,10 +68,8 @@ describe("authorization error redirects echo the client's state (RFC 6749 4.1.2.
 
     const response = await fetch(`${server.origin}/authorize?${params}`, { redirect: "manual" });
 
-    expect(response.status).toBe(302);
-    const target = new URL(response.headers.get("location")!);
-    expect(target.searchParams.get("error")).toBe("invalid_request");
-    expect(target.searchParams.get("state")).toBe("caller-state-456");
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
   });
 });
 

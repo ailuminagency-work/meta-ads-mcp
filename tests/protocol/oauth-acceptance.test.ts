@@ -645,8 +645,10 @@ describe("bearer enforcement on /mcp (RFC 6750 / RFC 9728)", () => {
     h.upstream.reset();
     const reply = await mcpPost(h.origin, anonymous, INITIALIZE_BODY);
     expect(reply.status).toBe(401);
-    expect(reply.json?.error.message).toBe("A connected agency user is required. Reconnect via /authorize.");
+    expect(reply.headers.get("www-authenticate")).toContain('error="invalid_token"');
+    expect(reply.headers.get("www-authenticate")).toContain("Access token is not bound to an operator");
     expect(reply.headers.get("www-authenticate")).toContain(`resource_metadata="${PRM_URL}"`);
+    expect(reply.text).not.toContain("tools");
     expect(h.upstream.graphCalls()).toHaveLength(0);
   });
 });

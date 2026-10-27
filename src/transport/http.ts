@@ -55,7 +55,14 @@ import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
 import { clientIpKey } from "../utils/client-ip-key.js";
 import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
-import { DEFAULT_CORS_ALLOWED_ORIGINS, mcpBodyErrorHandler, mcpOriginGuard } from "./mcp-guards.js";
+import {
+  authorizeExactPathOnly,
+  DEFAULT_CORS_ALLOWED_ORIGINS,
+  mcpBodyErrorHandler,
+  mcpOriginGuard,
+  oauthEndpointsUnavailable,
+  rejectEveryToken,
+} from "./mcp-guards.js";
 import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
@@ -917,6 +924,10 @@ export async function startHttpTransport(
 
   oauthProvider.configure({ defaultResource: new URL("/mcp", serverUrl), requireRedirectUri: true });
 
+  if (!config.multiTenantEnabled) {
+    app.use(["/authorize", "/register", "/token", "/revoke"], oauthEndpointsUnavailable);
+  }
+  app.use("/authorize", authorizeExactPathOnly);
   app.use("/authorize", echoStateOnAuthorizeErrors());
   app.use(
     mcpAuthRouter({
@@ -927,7 +938,7 @@ export async function startHttpTransport(
   );
 
   const oauthBearerAuth = requireBearerAuth({
-    verifier: oauthProvider,
+    verifier: config.multiTenantEnabled ? oauthProvider : rejectEveryToken,
     resourceMetadataUrl: getMcpProtectedResourceMetadataUrl(serverUrl),
     expectedResource: new URL("/mcp", serverUrl),
   });
