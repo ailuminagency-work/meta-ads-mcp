@@ -14,6 +14,7 @@ import type {
   MetaApiResponse,
 } from "../meta/types/index.js";
 import { READ } from "./_register.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 export function registerAccountTools(server: McpServer): void {
   // ─── Get Ad Accounts ─────────────────────────────────────────
@@ -56,17 +57,17 @@ export function registerAccountTools(server: McpServer): void {
 
       const text = accounts.length === 0
         ? "No ad accounts found for this user."
-        : accounts
-            .map(
+        : fenceBlock(
+            accounts.map(
               (a) =>
-                `• ${a.name ?? "N/A"} (${a.account_id ?? a.id ?? "N/A"}) — Status: ${a.account_status === undefined ? "NOT_RETURNED" : a.account_status === 1 ? "ACTIVE" : `META_STATUS_${a.account_status}`} — Currency: ${a.currency ?? "N/A"} — Spent: ${a.amount_spent ?? "N/A"}`,
-            )
-            .join("\n");
+                `• ${untrustedText(a.name) || "N/A"} (${untrustedText(a.account_id ?? a.id, 40) || "N/A"}) — Status: ${a.account_status === undefined ? "NOT_RETURNED" : a.account_status === 1 ? "ACTIVE" : `META_STATUS_${untrustedText(a.account_status, 20)}`} — Currency: ${untrustedText(a.currency, 10) || "N/A"} — Spent: ${untrustedText(a.amount_spent, 30) || "N/A"}`,
+            ),
+          );
 
       return {
         content: [
           { type: "text", text: `Found ${accounts.length} ad account(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(accounts, null, 2) },
+          { type: "text", text: fencedJsonBlock(accounts) },
         ],
       };
     },
@@ -97,9 +98,17 @@ export function registerAccountTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Account: ${account.name} (${account.account_id})\nStatus: ${account.account_status === 1 ? "ACTIVE" : "DISABLED"}\nCurrency: ${account.currency}\nTimezone: ${account.timezone_name}\nSpent: ${account.amount_spent ?? "N/A"}\nBalance: ${account.balance ?? "N/A"}\nSpend Cap: ${account.spend_cap ?? "None"}`,
+            text: fenceBlock([
+              `Account: ${untrustedText(account.name) || "N/A"} (${untrustedText(account.account_id, 40)})`,
+              `Status: ${account.account_status === 1 ? "ACTIVE" : "DISABLED"}`,
+              `Currency: ${untrustedText(account.currency, 10)}`,
+              `Timezone: ${untrustedText(account.timezone_name, 60)}`,
+              `Spent: ${untrustedText(account.amount_spent, 30) || "N/A"}`,
+              `Balance: ${untrustedText(account.balance, 30) || "N/A"}`,
+              `Spend Cap: ${untrustedText(account.spend_cap, 30) || "None"}`,
+            ]),
           },
-          { type: "text", text: JSON.stringify(account, null, 2) },
+          { type: "text", text: fencedJsonBlock(account) },
         ],
       };
     },
@@ -153,16 +162,16 @@ export function registerAccountTools(server: McpServer): void {
       const text =
         pages.length === 0
           ? "No pages found."
-          : pages
-              .map(
-                (p) => `• ${p.name} (ID: ${p.id}) — Category: ${p.category ?? "N/A"}`,
-              )
-              .join("\n");
+          : fenceBlock(
+              pages.map(
+                (p) => `• ${untrustedText(p.name) || "Unnamed"} (ID: ${untrustedText(p.id, 40)}) — Category: ${untrustedText(p.category, 100) || "N/A"}`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${pages.length} page(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(pages, null, 2) },
+          { type: "text", text: fencedJsonBlock(pages) },
         ],
       };
     },

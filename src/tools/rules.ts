@@ -6,6 +6,7 @@ import { buildFieldsParam } from "../utils/validation.js";
 import { RULE_DEFAULT_FIELDS } from "../meta/types/rule.js";
 import type { AdRule, AdRuleHistory, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, fencedJsonBlock, untrustedJson, untrustedText } from "../media/content-blocks.js";
 
 const executionTypeEnum = z.enum([
   "PAUSE", "UNPAUSE", "CHANGE_BUDGET", "CHANGE_BID",
@@ -98,17 +99,17 @@ export function registerRuleTools(server: McpServer): void {
       const text =
         rules.length === 0
           ? "No automated rules found."
-          : rules
-              .map(
+          : fenceBlock(
+              rules.map(
                 (r) =>
-                  `• ${r.name} (${r.id}) — Status: ${r.status} — Action: ${r.execution_spec?.execution_type ?? "N/A"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(r.name) || "Unnamed"} (${untrustedText(r.id, 40)}) — Status: ${untrustedText(r.status, 40)} — Action: ${untrustedText(r.execution_spec?.execution_type, 60) || "N/A"}`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${rules.length} rule(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(rules, null, 2) },
+          { type: "text", text: fencedJsonBlock(rules) },
         ],
       };
     },
@@ -215,9 +216,13 @@ export function registerRuleTools(server: McpServer): void {
       const content: Array<{ type: "text"; text: string }> = [
         {
           type: "text",
-          text: `Rule: ${rule.name} (${rule.id})\nStatus: ${rule.status}\nAction: ${rule.execution_spec?.execution_type ?? "N/A"}`,
+          text: fenceBlock([
+            `Rule: ${untrustedText(rule.name) || "Unnamed"} (${untrustedText(rule.id, 40)})`,
+            `Status: ${untrustedText(rule.status, 40)}`,
+            `Action: ${untrustedText(rule.execution_spec?.execution_type, 60) || "N/A"}`,
+          ]),
         },
-        { type: "text", text: JSON.stringify(rule, null, 2) },
+        { type: "text", text: fencedJsonBlock(rule) },
       ];
 
       if (include_history) {
@@ -228,10 +233,10 @@ export function registerRuleTools(server: McpServer): void {
         const history = historyResponse.data ?? [];
 
         if (history.length > 0) {
-          const historyText = truncateResponse(JSON.stringify(history, null, 2));
+          const historyText = fenceBlock([truncateResponse(untrustedJson(history))]);
           content.push({
             type: "text",
-            text: `\nExecution History (${history.length} entries):\n${historyText}`,
+            text: `Execution History (${history.length} entries):\n${historyText}`,
           });
         }
       }

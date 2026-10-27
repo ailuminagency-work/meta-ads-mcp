@@ -13,6 +13,7 @@ import type {
   MetaApiResponse,
 } from "../meta/types/index.js";
 import { READ, CREATE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, fencedJsonBlock, untrustedText } from "../media/content-blocks.js";
 
 export function registerPixelTools(server: McpServer): void {
   // ─── Get Pixels ───────────────────────────────────────────────
@@ -39,17 +40,17 @@ export function registerPixelTools(server: McpServer): void {
       const text =
         pixels.length === 0
           ? "No pixels found."
-          : pixels
-              .map(
+          : fenceBlock(
+              pixels.map(
                 (p) =>
-                  `• ${p.name} (${p.id}) — Last fired: ${p.last_fired_time ?? "Never"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(p.name) || "Unnamed"} (${untrustedText(p.id, 40)}) — Last fired: ${untrustedText(p.last_fired_time, 40) || "Never"}`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${pixels.length} pixel(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(pixels, null, 2) },
+          { type: "text", text: fencedJsonBlock(pixels) },
         ],
       };
     },
@@ -77,19 +78,19 @@ export function registerPixelTools(server: McpServer): void {
       );
 
       const lines: string[] = [
-        `Pixel: ${pixel.name} (${pixel.id})`,
-        `Last fired: ${pixel.last_fired_time ?? "Never"}`,
-        `Created: ${pixel.creation_time ?? "N/A"}`,
+        `Pixel: ${untrustedText(pixel.name) || "Unnamed"} (${untrustedText(pixel.id, 40)})`,
+        `Last fired: ${untrustedText(pixel.last_fired_time, 40) || "Never"}`,
+        `Created: ${untrustedText(pixel.creation_time, 40) || "N/A"}`,
       ];
 
       if (pixel.code) {
-        lines.push(`\nInstallation code available (included in JSON below).`);
+        lines.push("", "Installation code available (included in JSON below).");
       }
 
       return {
         content: [
-          { type: "text", text: lines.join("\n") },
-          { type: "text", text: JSON.stringify(pixel, null, 2) },
+          { type: "text", text: fenceBlock(lines) },
+          { type: "text", text: fencedJsonBlock(pixel) },
         ],
       };
     },
@@ -132,17 +133,17 @@ export function registerPixelTools(server: McpServer): void {
         };
       }
 
-      const text = stats
-        .map(
+      const text = fenceBlock(
+        stats.map(
           (s) =>
-            `• ${s.event}: ${s.count} events${s.value ? ` (value: ${s.value})` : ""}`,
-        )
-        .join("\n");
+            `• ${untrustedText(s.event, 100)}: ${untrustedText(s.count, 20)} events${s.value ? ` (value: ${untrustedText(s.value, 30)})` : ""}`,
+        ),
+      );
 
       return {
         content: [
           { type: "text", text: `Pixel Events (${aggregation}):\n\n${text}` },
-          { type: "text", text: JSON.stringify(stats, null, 2) },
+          { type: "text", text: fencedJsonBlock(stats) },
         ],
       };
     },
@@ -173,17 +174,17 @@ export function registerPixelTools(server: McpServer): void {
       const text =
         conversions.length === 0
           ? "No custom conversions found."
-          : conversions
-              .map(
+          : fenceBlock(
+              conversions.map(
                 (c) =>
-                  `• ${c.name} (${c.id}) — Event: ${c.custom_event_type ?? "N/A"} — Value: ${c.default_conversion_value ?? "N/A"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(c.name) || "Unnamed"} (${untrustedText(c.id, 40)}) — Event: ${untrustedText(c.custom_event_type, 60) || "N/A"} — Value: ${untrustedText(c.default_conversion_value, 30) || "N/A"}`,
+              ),
+            );
 
       return {
         content: [
           { type: "text", text: `Found ${conversions.length} custom conversion(s):\n\n${text}` },
-          { type: "text", text: JSON.stringify(conversions, null, 2) },
+          { type: "text", text: fencedJsonBlock(conversions) },
         ],
       };
     },
