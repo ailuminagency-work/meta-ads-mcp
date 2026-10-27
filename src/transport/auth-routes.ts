@@ -486,7 +486,7 @@ export function mountAuthRoutes(
           ? req.body.access_token.trim()
           : "";
 
-      if (!name || !/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+      if (!isValidTokenName(name)) {
         renderError(res, 400, "Invalid token name (1-64 chars: a-z, A-Z, 0-9, _, -).");
         return;
       }

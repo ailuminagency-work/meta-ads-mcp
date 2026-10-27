@@ -39,7 +39,7 @@ async function prepare() {
   return { origin: server.origin, jar, client };
 }
 
-const HOSTILE = ["../../100000000000002/meta_tokens/personal", "a/b", "..", ".", "a.b", "my token", "x".repeat(65), "per\u0000sonal", "personal\n"];
+const HOSTILE = ["../../100000000000002/meta_tokens/personal", "a/b", "..", ".", "a.b", "my token", "x".repeat(65), "per\u0000sonal", "personal\n", "__a__", "__name__", "____"];
 
 const post = (origin: string, path: string, jar: Awaited<ReturnType<typeof prepare>>["jar"], body: URLSearchParams) =>
   fetch(origin + path, { method: "POST", headers: formHeaders(jar), body, redirect: "manual" });
@@ -75,6 +75,16 @@ describe("token names submitted to the account pages", () => {
     expect(await getDefaultTokenName(OPERATOR_ID)).toBe("secondary");
     expect((await post(origin, "/auth/delete-token", jar, new URLSearchParams({ name: "secondary" }))).status).toBe(302);
     expect((await listTokens(OPERATOR_ID)).map((t) => t.name)).toEqual(["personal"]);
+  });
+});
+
+describe("registering a system token", () => {
+  it.each([...HOSTILE, "__x__"].filter((name) => name.trim() === name))("refuses the name %j with a 400 before any Meta call and stores nothing", async (name) => {
+    const { origin, jar } = await prepare();
+    const response = await post(origin, "/auth/register-system-token", jar, new URLSearchParams({ name, access_token: "synthetic-system-token-value" }));
+    expect(response.status).toBe(400);
+    expect(await response.text()).toMatch(/Invalid token name/);
+    await expectUntouched();
   });
 });
 

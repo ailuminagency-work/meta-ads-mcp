@@ -45,8 +45,10 @@ const HOSTILE = [
   "",
   "__x__",
   "personal/../x",
+  "__a__",
+  "__name__",
+  "____",
 ];
-const HOSTILE_OK_PATTERN = new Set(["__x__"]);
 
 let db: FakeFirestore;
 beforeEach(() => {
@@ -60,11 +62,11 @@ afterEach(() => {
 });
 
 describe("token name format", () => {
-  it.each(["personal", "client_acme", "client-beta", "A1", "byads", "no-bm", "x".repeat(64), "_", "-", "0"])("accepts %s", (name) => {
+  it.each(["personal", "client_acme", "client-beta", "A1", "byads", "no-bm", "x".repeat(64), "_", "-", "0", "_a_", "__a", "a__", "__", "___", "-__a__-", "__a__b"])("accepts %s", (name) => {
     expect(isValidTokenName(name)).toBe(true);
   });
 
-  it.each(HOSTILE.filter((name) => !HOSTILE_OK_PATTERN.has(name)))("rejects %j", (name) => {
+  it.each(HOSTILE)("rejects %j", (name) => {
     expect(isValidTokenName(name)).toBe(false);
   });
 
@@ -77,7 +79,7 @@ describe.each([
   ["firestore", () => new FirestoreMetaTokenRepo()],
   ["in-memory", () => new InMemoryMetaTokenRepo()],
 ] as const)("%s repository refuses hostile token names before touching storage", (label, make) => {
-  const cases = HOSTILE.filter((name) => !HOSTILE_OK_PATTERN.has(name));
+  const cases = HOSTILE;
 
   it.each(cases)("saveToken %j", async (name) => {
     const repo = make();

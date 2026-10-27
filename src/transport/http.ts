@@ -312,7 +312,7 @@ ${PAGE_STYLES}
       <summary>Registrar System User token (no caduca)</summary>
       <form method="POST" action="/auth/register-system-token">
         ${returnHidden}
-        <input type="text" name="name" placeholder="Nombre (ej. byads, client_acme)" required maxlength="64" pattern="[a-zA-Z0-9_-]{1,64}" />
+        <input type="text" name="name" placeholder="Nombre (ej. byads, client_acme)" required maxlength="64" pattern="(?!__.*__$)[a-zA-Z0-9_-]{1,64}" />
         <input type="password" name="access_token" placeholder="Pega el System User access token" required minlength="10" autocomplete="off" />
         <button type="submit">Validar y guardar</button>
       </form>
