@@ -13,3 +13,71 @@ Facebook v26.0 Marketing consent supports only12 core READ and3 minimal paused-c
 Enrollment alone never enables writes. Trusted fresh asset manage-role/access/ownership/billing evidence, grants, write flags and exact human approval are checked separately. Human approval is an authenticated browser decision protected by role/client/Origin/signed CSRF/expiry and transactional one-use checks; no MCP tool can issue its own approval. Tokens, callback codes and internal credential-bearing exchange URLs must remain absent from application/proxy logs; infrastructure log acceptance remains a deployment gate.
 
 Local tests cover replay, swapped clients/nonces, profile and privilege expansion, partial grants, expiration, revocation, transaction failure and authenticated form routing using fake providers. Current Meta App Review, access tier, external-client consent, provider success and production wiring require separate live evidence.
+
+## MCP client OAuth hardening
+
+This section covers the OAuth server that MCP clients (Claude, ChatGPT, Claude Code, Cursor, VS Code) use against this service: dynamic client registration, /authorize, /token and /mcp. It does not change the product-specific onboarding above.
+
+### Variables
+
+| Variable | Default | Effect |
+|---|---|---|
+| OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS | empty | Comma-separated exact DNS host names added to the https redirect allowlist. Entries with a scheme, port, path, wildcard or IP address are ignored with a warning. |
+| AUTH_DENIED_FB_USER_IDS | empty | Comma-separated Facebook user ids refused everywhere, even when AUTH_ALLOWED_* would admit them. |
+| CORS_ALLOWED_ORIGINS | https://claude.ai, https://claude.com | Browser origins accepted on /mcp. Setting it replaces the defaults. |
+
+The rate limits below are constants in code. There is no variable to change them.
+
+### Client registration
+
+POST /register accepts a redirect URI only when it is one of:
+
+- https on claude.ai, claude.com, chatgpt.com or a host named in OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS. The host must match exactly: no port, no user information, no trailing dot, no percent-encoded spelling, no subdomain.
+- http on a loopback address (127.0.0.1, localhost, [::1]) with any port and path, for CLI clients that listen on an ephemeral port.
+- A cursor://, vscode:// or vscode-insiders:// URI that names an application host.
+
+Fragments, wildcards, backslashes, whitespace, control characters, other schemes, plain http to a non-loopback host, more than 10 URIs and URIs over 2048 characters are refused. One refused URI refuses the whole registration with HTTP 400 and the error invalid_redirect_uri. The same check runs when a stored client is read, so a client registered before this policy existed with a URI that is no longer allowed is treated as unknown (invalid_client) until its host is added or it registers again.
+
+Anthropic documents https://claude.ai/api/mcp/auth_callback as Claude's callback and says it may move to https://claude.com/api/mcp/auth_callback, so both hosts are on by default. Some clients register more than the hosts above; add them before they need to register, for example OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS=vscode.dev,insiders.vscode.dev for VS Code builds that also register https://vscode.dev/redirect, and platform.openai.com for ChatGPT's app review flow. Which client builds register which URIs has not been verified against the real clients.
+
+### Authorization codes and tokens
+
+- /token requires the redirect_uri used at /authorize and a PKCE code_verifier (S256). The code is consumed before the verifier is checked, so any failed redemption (wrong verifier, client, redirect_uri or resource) burns the code.
+- Access tokens last one hour and refresh tokens 30 days. Refresh tokens rotate on every use.
+- Login, GET and POST /authorize, code exchange, refresh and every access-token verification check AUTH_DENIED_FB_USER_IDS, so a denied user loses access on the next request once the process has the new value. Refresh and code exchange also re-run the allowlist, using the email stored at login; a user removed from AUTH_ALLOWED_* keeps a live access token until it expires (up to one hour) but cannot refresh it. Denial returns invalid_grant and burns the refresh token.
+- A rotated refresh token presented again after a 60 second grace window revokes every refresh token of that chain; inside the window the replay is only refused, so a client retry does not lose its session. An authorization code redeemed a second time outside the same window revokes the refresh tokens issued from it. Access tokens already issued from either chain stay valid until they expire; the deny list is the immediate cut-off.
+- The markers live in the existing mcp_refresh_jti collection with an expiresAt field. A Firestore TTL policy on that field is expected; it has not been verified.
+- Error redirects from /authorize carry the client's state parameter.
+
+### /mcp requests
+
+A request that carries an Origin header not listed in CORS_ALLOWED_ORIGINS is refused with HTTP 403 and a JSON-RPC error before authentication. A request without an Origin header (non-browser MCP clients) and OPTIONS preflights are not affected. If a client turns out to send an Origin, add it to CORS_ALLOWED_ORIGINS before deploying. The Host header is not validated. A malformed JSON body on /mcp is answered with a JSON-RPC -32700 error after authentication.
+
+### Rate limits and CSRF
+
+Limits are counted per client address per 15 minutes, with IPv6 addresses grouped by their /64 and IPv4-mapped addresses counted as IPv4:
+
+| Route | Requests |
+|---|---|
+| /authorize | 120 |
+| /auth/meta | 60 |
+| /auth/meta/callback | 60 |
+| /token | 60 |
+| /register | 20 |
+| /auth/register-apify-token | 10 |
+| /auth/register-gemini-key | 10 |
+
+Exceeding a limit returns HTTP 429. The server trusts one proxy hop (trust proxy = 1); if more proxies sit in front of it, every client shares one address, which has not been checked on the deployment platform.
+
+POST /authorize, /auth/logout, /auth/select-token, /auth/register-system-token and /auth/delete-token refuse a cross-site request: Sec-Fetch-Site is checked first, then Origin, and a request carrying neither header is allowed, as for the Apify and Gemini key routes.
+
+### Logs
+
+The OAuth routes, the OAuth provider and the /mcp token middleware write Facebook user ids and emails to logs only as a 12 character hash (field fbUserId for ids). They do not log authorization codes or tokens.
+
+### Operator checklist before a deploy
+
+1. Decide on OAUTH_EXTRA_ALLOWED_REDIRECT_HOSTS for the clients in use (vscode.dev, platform.openai.com).
+2. Confirm CORS_ALLOWED_ORIGINS covers every browser client that calls /mcp.
+3. Confirm the TTL policy on mcp_refresh_jti.expiresAt.
+4. Record the deny list procedure: edit AUTH_DENIED_FB_USER_IDS and redeploy. There is no admin endpoint for per-user revocation.
