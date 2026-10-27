@@ -54,6 +54,84 @@ describe("local secret scanner covers the Apify token shape (G3-12)", () => {
   });
 });
 
+// Built at run time so this file never contains a token-shaped literal itself.
+const metaToken = () => ["EAA", "Qz7k".repeat(6)].join("");
+
+describe("line allowlist is a trailing marker or the matched text, never the whole line (G3R-05)", () => {
+  it.each(["// PLACEHOLDER", "// fixture", "# EXAMPLE", "// placeholder", "/* YOUR_TOKEN */", "# <your-token>"])(
+    "still flags a real token on a line that merely says %s",
+    (comment) => {
+      const { code, out } = scan("src/config.ts", `const t = "${metaToken()}"; ${comment}`);
+      expect(code).toBe(1);
+      expect(out).toContain("meta-access-token");
+    },
+  );
+
+  it.each(["// gitleaks:allow", "# gitleaks:allow", "/* gitleaks:allow */", "-- gitleaks:allow", "<!-- gitleaks:allow -->", "//gitleaks:allow  "])(
+    "skips a line that ends with the documented marker %j",
+    (marker) => {
+      expect(scan("src/config.ts", `const t = "${metaToken()}"; ${marker}`).code).toBe(0);
+    },
+  );
+
+  it("does not accept the marker anywhere else on the line", () => {
+    expect(scan("src/config.ts", `const note = "gitleaks:allow"; const t = "${metaToken()}";`).code).toBe(1);
+    expect(scan("src/config.ts", `const t = "${metaToken()}"; // gitleaks:allow because the token is rotated`).code).toBe(1);
+    expect(scan("src/config.ts", `const t = "${metaToken()}"; // gitleaks:allowed`).code).toBe(1);
+  });
+
+  it("skips a match whose own text is a known placeholder", () => {
+    expect(scan("src/config.ts", `const t = "${["EAA", "EXAMPLE".repeat(4)].join("")}";`).code).toBe(0);
+    expect(scan("src/config.ts", `const t = "${["EAA", "placeholder".repeat(3)].join("")}";`).code).toBe(0);
+    expect(scan("docs/ops.md", "token EAAabcdefghij1234567890ABCDEFG").code).toBe(0);
+  });
+});
+
+describe("path skips are repository-root files, not directory names (G3R-05)", () => {
+  it.each([
+    "src/secrets.lock",
+    "deploy/.env.example",
+    "docs/package-lock.json",
+    "packages/app/yarn.lock",
+    "x/pnpm-lock.yaml",
+    "src/x/scan-secrets.sh",
+    "config/.gitleaks.toml",
+    "tests/evil/scan-secrets.sh",
+    "vendor.lock",
+  ])("scans %s", (file) => {
+    const { code, out } = scan(file, `token = "${metaToken()}"`);
+    expect(code).toBe(1);
+    expect(out).toContain(`${file}:1: meta-access-token`);
+  });
+
+  it.each([".env.example"])("scans the root %s: a real value in a template is a finding", (file) => {
+    expect(scan(file, `META_ACCESS_TOKEN=${metaToken()}`).code).toBe(1);
+  });
+
+  it.each(["package-lock.json", "yarn.lock", "pnpm-lock.yaml", ".gitleaks.toml", ".github/pre-deploy-guard/scripts/scan-secrets.sh"])(
+    "still skips the repository's own %s",
+    (file) => {
+      expect(scan(file, `token = "${metaToken()}"`).code).toBe(0);
+    },
+  );
+
+  it("reports the repository's real .env.example clean as plain content", () => {
+    const content = readFileSync(path.resolve(__dirname, "../../.env.example"), "utf8");
+    const cwd = mkdtempSync(path.join(tmpdir(), "scan-secrets-"));
+    dirs.push(cwd);
+    const input = path.join(cwd, "env.example");
+    writeFileSync(input, content);
+    const fd = openSync(input, "r");
+    try {
+      const result = spawnSync("bash", [scanner], { stdio: [fd, "pipe", "pipe"], cwd, encoding: "utf8" });
+      expect(`${result.stdout}${result.stderr}`).toBe("");
+      expect(result.status).toBe(0);
+    } finally {
+      closeSync(fd);
+    }
+  });
+});
+
 describe("runtime image sizes the libuv threadpool (G3-14)", () => {
   const text = readFileSync(dockerfile, "utf8");
 
