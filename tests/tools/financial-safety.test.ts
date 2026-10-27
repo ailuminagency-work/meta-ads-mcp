@@ -5,6 +5,8 @@ import { registerCampaignTools } from "../../src/tools/campaigns.js";
 import { registerAdSetTools } from "../../src/tools/adsets.js";
 import { registerBudgetTools } from "../../src/tools/budget.js";
 import { registerBillingTools } from "../../src/tools/billing.js";
+import { registerEntityTools } from "../../src/tools/entities.js";
+import { validateMetaId } from "../../src/utils/format.js";
 import { registerAllTools } from "../../src/tools/index.js";
 import { installLegacyGuard } from "../../src/platform/legacy-guard.js";
 import { createMockMcpServer, setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
@@ -304,5 +306,34 @@ describe("ads_update_spend_cap cannot remove or raise a cap", () => {
       await expect(Promise.resolve().then(() => registrations.get("ads_update_spend_cap")!.handler(input))).rejects.toThrow();
     }
     expect(f).not.toHaveBeenCalled();
+  });
+});
+
+describe("no generic tool can reach an ad account's spend cap through an entity id", () => {
+  const stubOk = () => vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+
+  it.each(["campaign", "ad_set", "ad"])("ads_update_entity refuses an act_ account id as a %s", async (entityType) => {
+    stubOk();
+    const handler = tool(registerEntityTools, "ads_update_entity").handler;
+    await expect(handler({ entity_type: entityType, entity_id: "act_123", updates: { spend_cap: 0 } })).rejects.toThrow(/Invalid Meta/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["campaign", "ad_set", "ad"])("ads_activate_entity refuses an act_ account id as a %s", async (entityType) => {
+    stubOk();
+    const handler = tool(registerEntityTools, "ads_activate_entity").handler;
+    await expect(handler({ entity_type: entityType, entity_id: "act_123", status: "ACTIVE" })).rejects.toThrow(/Invalid Meta/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("validateMetaId keeps account ids for account-level kinds but not for ad entities", () => {
+    for (const kind of ["campaign", "adset", "ad", "creative"]) {
+      expect(() => validateMetaId("act_123", kind), kind).toThrow(/Invalid Meta/);
+      expect(() => validateMetaId("123_456", kind), kind).toThrow(/Invalid Meta/);
+      expect(validateMetaId("123456", kind)).toBe("123456");
+    }
+    expect(validateMetaId("act_123", "object")).toBe("act_123");
+    expect(validateMetaId("act_123")).toBe("act_123");
+    expect(validateMetaId("123_456", "post")).toBe("123_456");
   });
 });

@@ -17,6 +17,10 @@ export function normalizeAccountId(id: string): string {
   return id.startsWith("act_") ? id : `act_${id}`;
 }
 
+// A campaign, ad set, ad or creative id is always plain numeric. Accepting an act_ id here would let a
+// generic update/toggle tool POST account-level fields such as spend_cap to the ad account itself.
+const AD_ENTITY_KINDS: ReadonlySet<string> = new Set(["campaign", "adset", "ad", "creative"]);
+
 /**
  * Validate a Meta resource ID before it is interpolated into a Graph API
  * path. Accepts the three formats Meta uses for path segments:
@@ -36,7 +40,8 @@ export function normalizeAccountId(id: string): string {
  * than letting a malformed id leak into a path segment or bucket name.
  */
 export function validateMetaId(id: string, kind = "id"): string {
-  if (typeof id !== "string" || !/^(act_\d{1,30}|\d{1,30}(_\d{1,30})?)$/.test(id)) {
+  const pattern = AD_ENTITY_KINDS.has(kind) ? /^\d{1,30}$/ : /^(act_\d{1,30}|\d{1,30}(_\d{1,30})?)$/;
+  if (typeof id !== "string" || !pattern.test(id)) {
     throw new Error(
       `Invalid Meta ${kind}: must be numeric, "act_<numeric>" (account), or "<numeric>_<numeric>" (post/comment) — the three formats are mutually exclusive. Got: ${JSON.stringify(id).slice(0, 80)}`,
     );
