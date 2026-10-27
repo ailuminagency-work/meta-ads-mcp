@@ -156,7 +156,7 @@ describe("dynamic client registration (RFC 7591)", () => {
     expect(statuses.slice(20)).toEqual([429, 429]);
   });
 
-  it("honours only the exact registered loopback redirect (no silent port widening on GET /authorize)", async () => {
+  it("lets a registered loopback redirect use any port (RFC 8252 7.3) but never another path", async () => {
     const registration = await registerClient(h.origin, {
       client_name: "Native loopback client",
       redirect_uris: ["http://127.0.0.1:53682/callback"],
@@ -169,8 +169,12 @@ describe("dynamic client registration (RFC 7591)", () => {
     expect(exact.headers.get("location")).toMatch(/^\/auth\/meta\?return=/);
 
     const otherPort = await new Browser(h.origin).get("/authorize?" + authorizeQuery({ clientId, redirectUri: "http://127.0.0.1:61000/callback", challenge }));
-    expect(otherPort.status).toBe(400);
-    expect(otherPort.headers.get("location")).toBeNull();
+    expect(otherPort.status).toBe(302);
+    expect(otherPort.headers.get("location")).toMatch(/^\/auth\/meta\?return=/);
+
+    const otherPath = await new Browser(h.origin).get("/authorize?" + authorizeQuery({ clientId, redirectUri: "http://127.0.0.1:61000/elsewhere", challenge }));
+    expect(otherPath.status).toBe(400);
+    expect(otherPath.headers.get("location")).toBeNull();
   });
 });
 
@@ -720,7 +724,9 @@ describe("Streamable HTTP semantics (stateless POST endpoint)", () => {
       expect(denied.headers.get("access-control-allow-origin"), origin).toBeNull();
     }
     const post = await fetch(h.origin + "/mcp", { method: "POST", headers: { origin: "https://attacker.example", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: "{}" });
-    expect(post.status).toBe(401);
+    expect(post.status).toBe(403);
     expect(post.headers.get("access-control-allow-origin")).toBeNull();
+    const noOrigin = await fetch(h.origin + "/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: "{}" });
+    expect(noOrigin.status).toBe(401);
   });
 });
