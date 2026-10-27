@@ -67,6 +67,18 @@ Never remove or rename a key id that stored records carry. Never rotate, delete 
 | `CORS_ALLOWED_ORIGINS` | exact approved origins, no wildcard | |
 | `LOG_LEVEL` | `info` | The startup line is info level |
 
+### Request limits on `/mcp` and trusted-source ingress (hardening round 1)
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `MCP_MAX_IN_FLIGHT` | `16` | Authenticated `POST /mcp` requests in flight on one instance. The next one gets 429 with `Retry-After` and a JSON-RPC body; the slot is released when the response ends or the client disconnects. A set value that is not a positive integer up to 1000 stops startup |
+| `MCP_RATE_LIMIT_PER_MINUTE` | `120` | Calls per authenticated subject in a sliding minute; the same 429. A value that is not a positive integer up to 100000 stops startup |
+| (fixed) | 1 MB | Largest `/mcp` body. No tool takes inline media (the base64 fields exist only on the signed ingress routes). Nesting deeper than 64 or more than 20,000 objects and arrays is refused before parsing. A bulk request above 1 MB gets 413 |
+
+Rejections are counted and logged (`event: mcp_admission_rejected`, a hashed subject, never an identifier). One operator whose client fans out more than 16 simultaneous long-running calls on this instance will see 429s; raise the cap only with the 1 GB memory budget in mind.
+
+**Trusted-source ingress stays OFF in this release.** `LUMIN_MEDIA_INGRESS_ENABLED` and the video, attachment and publishing-video ingress flags default to false and the production variable set must not contain them as true. If an owner later enables one, the signer has to change first: the body signature `x-lumin-signature` covers the bytes and can only be checked after they are buffered, so each request must also carry `x-lumin-request-signature`, an HMAC over the profile, timestamp, delivery id and exact `Content-Length` (helpers `mediaIngressPreauthSignature`, `videoIngressPreauthSignature`, `attachmentIngressPreauthSignature`, `publishingVideoIngressPreauthSignature`). The server verifies it from the headers alone, before reading the body and before taking the single in-flight slot, and buffers no more than the signed length. Outside test and development runs a request without it is refused with 401. `LUMIN_INGRESS_ALLOW_LEGACY_BODY_SIGNATURE=true` re-admits the body-only signature and with it the memory and slot exposure the review found; leave it unset. The protocol description in `docs/trusted-media-ingress.md` still lists only the body signature and has to be updated with the signer (documentation outside this workstream's files).
+
 ### Operator actions for the merged OAuth and financial-safety changes (names only)
 
 These settings come from the OAuth and financial-safety workstreams that are merged into the release line. They are described here from those workstreams' reports; re-read their own documentation after the merge, because their exact formats are UNVERIFIED on the branch that holds this document. The OWNER decides and records each one before G4. Values never enter the record.
