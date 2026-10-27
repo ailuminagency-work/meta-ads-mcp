@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearSession,
   getSession,
+  readSession,
   resetSecretCacheForTests,
   setSession,
   type SessionPayload,
@@ -196,5 +197,45 @@ describe("session", () => {
     expect(
       await getSession({ cookies: { mcp_session: cookie } } as never),
     ).toBeNull();
+  });
+
+  describe("access is re-checked on every request", () => {
+    async function cookieFor(payload: SessionPayload): Promise<{ cookies: Record<string, string> }> {
+      const res = makeRes();
+      await setSession(res as never, payload);
+      return { cookies: { mcp_session: res.cookieCalls[0].value } };
+    }
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("ends the session when the operator is added to AUTH_DENIED_FB_USER_IDS", async () => {
+      vi.stubEnv("AUTH_ALLOWED_FB_USER_IDS", "100000000000001");
+      const req = await cookieFor({ fbUserId: "100000000000001", email: null, name: null });
+      expect(await getSession(req as never)).toMatchObject({ fbUserId: "100000000000001" });
+
+      vi.stubEnv("AUTH_DENIED_FB_USER_IDS", "100000000000001");
+      expect(await getSession(req as never)).toBeNull();
+      expect(await readSession(req as never)).toMatchObject({ fbUserId: "100000000000001" });
+    });
+
+    it("ends the session when the operator is removed from the allowlist", async () => {
+      vi.stubEnv("AUTH_ALLOWED_FB_USER_IDS", "100000000000001,100000000000002");
+      const req = await cookieFor({ fbUserId: "100000000000001", email: null, name: null });
+      expect(await getSession(req as never)).not.toBeNull();
+
+      vi.stubEnv("AUTH_ALLOWED_FB_USER_IDS", "100000000000002");
+      expect(await getSession(req as never)).toBeNull();
+    });
+
+    it("applies the email and domain rules to the email stored in the cookie", async () => {
+      vi.stubEnv("AUTH_ALLOWED_DOMAINS", "agency.example");
+      const req = await cookieFor({ fbUserId: "100000000000001", email: "op@agency.example", name: null });
+      expect(await getSession(req as never)).not.toBeNull();
+
+      vi.stubEnv("AUTH_ALLOWED_DOMAINS", "other.example");
+      expect(await getSession(req as never)).toBeNull();
+    });
   });
 });

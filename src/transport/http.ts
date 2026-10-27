@@ -49,7 +49,7 @@ import { oauthProvider } from "../auth/oauth-provider.js";
 import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { hashPii, requestContext } from "../auth/token-store.js";
 import { tokenManager } from "../auth/token-manager.js";
-import { clearSession, configureSessionJtiStore, getSession } from "../auth/session.js";
+import { clearSession, configureSessionJtiStore, getSession, readSession } from "../auth/session.js";
 import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
@@ -806,7 +806,7 @@ export async function startHttpTransport(
       }
       const { redirectOrigin, clientName } = validation;
 
-      const session = await getSession(req);
+      const session = await readSession(req);
       if (!session) {
         const returnTo = req.originalUrl;
         res.redirect(302, `/auth/meta?return=${encodeURIComponent(returnTo)}`);
@@ -878,7 +878,7 @@ export async function startHttpTransport(
       requireSameOriginPost("/authorize"),
       express.urlencoded({ extended: false }),
       async (req, res, next) => {
-        const session = await getSession(req);
+        const session = await readSession(req);
         if (!session) {
           const recoverTo = safeReturnTo(req.body?.return);
           const link =
