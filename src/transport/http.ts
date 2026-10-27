@@ -471,7 +471,7 @@ export function buildMetaTokenMiddleware(
       } catch (err) {
         logger.warn(
           {
-            fbUserId,
+            subject: hashPii(fbUserId),
             error: err instanceof Error ? err.message : String(err),
           },
           "Failed to resolve user Meta token",

@@ -11,6 +11,7 @@ import {
   type MetaProfile,
 } from "../auth/meta-oauth.js";
 import { logger } from "../utils/logger.js";
+import { hashPii } from "../auth/token-store.js";
 
 const REFRESH_THRESHOLD_SECONDS = 7 * 24 * 60 * 60;
 
@@ -147,7 +148,7 @@ async function maybeRefresh(
   const config = serverUrl ? loadMetaOAuthConfig(serverUrl) : null;
   if (!config) {
     logger.warn(
-      { fbUserId, tokenName },
+      { subject: hashPii(fbUserId), tokenName },
       "Cannot refresh long-lived token: META_APP_ID/SECRET not configured",
     );
     return plaintext;
@@ -167,7 +168,7 @@ async function maybeRefresh(
     });
     logger.info(
       {
-        fbUserId,
+        subject: hashPii(fbUserId),
         tokenName,
         expiresAt: refreshed.expiresAt,
         event: "meta_token_refreshed",
@@ -181,7 +182,7 @@ async function maybeRefresh(
     if (alreadyExpired) {
       logger.warn(
         {
-          fbUserId,
+          subject: hashPii(fbUserId),
           tokenName,
           error: errorMessage,
           event: "meta_token_refresh_failed_expired",
@@ -194,7 +195,7 @@ async function maybeRefresh(
     }
     logger.warn(
       {
-        fbUserId,
+        subject: hashPii(fbUserId),
         tokenName,
         error: errorMessage,
         event: "meta_token_refresh_failed",
@@ -338,13 +339,13 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
   ): Promise<string> {
     const tokenName = name ?? (await this.getDefaultTokenName(fbUserId));
     if (!tokenName) {
-      throw new Error(`No Meta token registered for user ${fbUserId}`);
+      throw new Error(`No Meta token registered for user ${hashPii(fbUserId)}`);
     }
 
     const ref = this.tokenDocRef(fbUserId, tokenName);
     const snap = await ref.get();
     if (!snap.exists) {
-      throw new Error(`Meta token "${tokenName}" not found for user ${fbUserId}`);
+      throw new Error(`Meta token "${tokenName}" not found for user ${hashPii(fbUserId)}`);
     }
 
     const data = snap.data() as MetaTokenDoc;
@@ -478,12 +479,12 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   ): Promise<string> {
     const tokenName = name ?? (await this.getDefaultTokenName(fbUserId));
     if (!tokenName) {
-      throw new Error(`No Meta token registered for user ${fbUserId}`);
+      throw new Error(`No Meta token registered for user ${hashPii(fbUserId)}`);
     }
     const bucket = this.tokens.get(fbUserId);
     const doc = bucket?.get(tokenName);
     if (!doc) {
-      throw new Error(`Meta token "${tokenName}" not found for user ${fbUserId}`);
+      throw new Error(`Meta token "${tokenName}" not found for user ${hashPii(fbUserId)}`);
     }
 
     return maybeRefresh(doc, fbUserId, tokenName, serverUrl, async (next) => {

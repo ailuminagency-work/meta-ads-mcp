@@ -194,3 +194,50 @@ export async function postToken(origin: string, body: Record<string, string>): P
     body: new URLSearchParams(body),
   });
 }
+
+/**
+ * Drives /auth/meta and /auth/meta/callback exactly as a browser would. The
+ * caller mocks the Meta calls the callback makes; nothing here reaches Meta.
+ */
+export async function browserLogin(
+  origin: string,
+  returnTo: string,
+  jar: CookieJar = new CookieJar(),
+): Promise<{ jar: CookieJar; callback: Response }> {
+  const start = await fetch(`${origin}/auth/meta?return=${encodeURIComponent(returnTo)}`, {
+    headers: { cookie: jar.header() },
+    redirect: "manual",
+  });
+  if (start.status !== 302) throw new Error(`login start answered ${start.status}`);
+  jar.absorb(start);
+  const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
+  const callback = await fetch(
+    `${origin}/auth/meta/callback?${new URLSearchParams({ code: "synthetic-provider-code", state })}`,
+    { headers: { cookie: jar.header() }, redirect: "manual" },
+  );
+  jar.absorb(callback);
+  return { jar, callback };
+}
+
+export async function approveConsent(
+  origin: string,
+  jar: CookieJar,
+  params: URLSearchParams,
+  tokenName?: string,
+): Promise<Response> {
+  const body = new URLSearchParams(params);
+  if (tokenName) body.set("token", tokenName);
+  return fetch(`${origin}/authorize`, {
+    method: "POST",
+    headers: formHeaders(jar),
+    body,
+    redirect: "manual",
+  });
+}
+
+export function codeFrom(response: Response): string {
+  const location = response.headers.get("location");
+  const code = location ? new URL(location).searchParams.get("code") : null;
+  if (!code) throw new Error(`no authorization code in response ${response.status}`);
+  return code;
+}

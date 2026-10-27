@@ -148,7 +148,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     }
 
     logger.info(
-      { clientId: client.client_id, fbUserId: pending?.fbUserId ?? null },
+      { clientId: client.client_id, subject: hashPii(pending?.fbUserId) },
       "Authorization code issued",
     );
     res.redirect(302, redirectUrl.toString());
@@ -458,7 +458,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     });
 
     logger.info(
-      { clientId: input.clientId, fbUserId: input.fbUserId ?? null },
+      { clientId: input.clientId, subject: hashPii(input.fbUserId) },
       "Tokens issued",
     );
 
