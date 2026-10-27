@@ -48,12 +48,43 @@ function aadFor(fbUserId: string, tokenName: string): string {
   return `mcp_token:${fbUserId}:${tokenName}`;
 }
 
+const LEGACY_NO_AAD_ENV = "TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD";
+let legacyNoAadLogged = false;
+
 /**
- * Decrypt a token, transparently handling docs encrypted with AAD (new)
- * or without (legacy). On AAD-tag mismatch we retry without AAD; if that
- * also fails the underlying error propagates. Once every doc has been
- * re-encrypted with AAD (e.g. via natural rotation or a one-shot
- * migration script), the legacy fallback can be removed.
+ * Whether a token that fails identity-bound (AAD) decryption may be retried
+ * without AAD. Records written before AAD existed need the retry, so the
+ * default is on; but the retry is also what lets someone with Firestore write
+ * access move a legacy ciphertext from one user to another. Turn it off once
+ * the legacy token census reports no AAD-less records. Anything other than
+ * "true" or "false" is a configuration error and fails closed.
+ */
+export function legacyNoAadDecryptAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[LEGACY_NO_AAD_ENV]?.trim().toLowerCase();
+  if (raw === undefined || raw === "" || raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${LEGACY_NO_AAD_ENV} must be "true" or "false"`);
+}
+
+/** Call once at startup. Logs a single count-free warning while the fallback is on. */
+export function logLegacyNoAadPolicyAtStartup(env: NodeJS.ProcessEnv = process.env): void {
+  if (!legacyNoAadDecryptAllowed(env) || legacyNoAadLogged) return;
+  legacyNoAadLogged = true;
+  logger.warn(
+    { event: "legacy_no_aad_decrypt_enabled", setting: LEGACY_NO_AAD_ENV },
+    "Legacy token decryption without identity binding is enabled; set TOKEN_DECRYPT_ALLOW_LEGACY_NO_AAD=false once the legacy token census reports no AAD-less records",
+  );
+}
+
+export function resetLegacyNoAadLogForTests(): void {
+  legacyNoAadLogged = false;
+}
+
+/**
+ * Decrypt a token bound to its owner and name (AAD). A record written before
+ * AAD existed is retried without AAD only while the explicit legacy policy
+ * allows it (see legacyNoAadDecryptAllowed); the migration re-encrypts such
+ * records with AAD, after which the policy can be switched off.
  */
 function decryptCompat(
   payload: EncryptedPayload,
@@ -62,7 +93,8 @@ function decryptCompat(
 ): string {
   try {
     return decryptToken(payload, aadFor(fbUserId, tokenName));
-  } catch {
+  } catch (error) {
+    if (!legacyNoAadDecryptAllowed()) throw error;
     return decryptToken(payload);
   }
 }

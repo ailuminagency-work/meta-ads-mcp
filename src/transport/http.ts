@@ -94,6 +94,7 @@ import {
   getDefaultTokenName,
   isValidTokenName,
   listTokens,
+  logLegacyNoAadPolicyAtStartup,
   setDefaultToken,
 } from "../store/meta-token-repo.js";
 import { isFirestoreEnabled } from "../store/firestore.js";
@@ -689,6 +690,7 @@ export async function startHttpTransport(
       });
       configureSessionJtiStore(new FirestoreJtiStore("mcp_session_jti"));
       configureMetaTokenRepo(new FirestoreMetaTokenRepo());
+      logLegacyNoAadPolicyAtStartup();
     }
   }
 
