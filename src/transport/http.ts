@@ -55,6 +55,7 @@ import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
 import { clientIpKey } from "../utils/client-ip-key.js";
 import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
+import { mcpBodyErrorHandler, mcpOriginGuard } from "./mcp-guards.js";
 import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
@@ -926,6 +927,7 @@ export async function startHttpTransport(
   const auth = createCombinedAuthMiddleware(oauthBearerAuth);
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
+  app.use("/mcp", mcpOriginGuard(corsAllowedOrigins));
   app.post("/mcp", auth, metaTokenMw, mcpJsonParser(), async (req, res) => {
     try {
       const transport = new StreamableHTTPServerTransport({
@@ -976,6 +978,7 @@ export async function startHttpTransport(
       id: null,
     });
   });
+  app.use("/mcp", mcpBodyErrorHandler);
 
   const authModes: string[] = [];
   if (isApiKeyConfigured()) authModes.push("API Key");
