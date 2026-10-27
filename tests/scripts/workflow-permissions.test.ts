@@ -136,6 +136,29 @@ describe("workflow permissions are least privilege (G3-06)", () => {
     }
   });
 
+  it("runs deploy.yml only when it was dispatched from main", () => {
+    const deploy = workflows.find((workflow) => workflow.file === "deploy.yml")!;
+    for (const name of ["preflight", "deploy"]) {
+      const job = deploy.jobs.find((candidate) => candidate.name === name)!;
+      expect(job.text, `${name} must be restricted to main`).toMatch(/^ {4}if:\s*github\.ref\s*==\s*'refs\/heads\/main'\s*$/m);
+    }
+    for (const name of ["release", "publish"]) {
+      const job = deploy.jobs.find((candidate) => candidate.name === name)!;
+      expect(job.text).toMatch(/^ {4}needs:\s*(deploy|release)\s*$/m);
+    }
+  });
+
+  it("passes no secret to the reusable publish workflow, which uses only its own GITHUB_TOKEN", () => {
+    for (const file of readdirSync(directory).filter((name) => name.endsWith(".yml"))) {
+      expect(readFileSync(path.join(directory, file), "utf8"), file).not.toMatch(/^\s*secrets:\s*inherit\s*$/m);
+    }
+    const publish = readFileSync(path.join(directory, "publish.yml"), "utf8");
+    const used = new Set([...publish.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((match) => match[1]));
+    expect([...used]).toEqual(["GITHUB_TOKEN"]);
+    const caller = workflows.find((workflow) => workflow.file === "deploy.yml")!.jobs.find((job) => job.calls === "./.github/workflows/publish.yml")!;
+    expect(caller.text).not.toMatch(/^ {4}secrets:/m);
+  });
+
   it("keeps every third-party action pinned to a full commit SHA", () => {
     for (const file of readdirSync(directory).filter((name) => name.endsWith(".yml"))) {
       const uses = [...readFileSync(path.join(directory, file), "utf8").matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)].map((match) => match[1]);
