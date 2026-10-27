@@ -49,7 +49,8 @@ import { oauthProvider } from "../auth/oauth-provider.js";
 import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { hashPii, requestContext } from "../auth/token-store.js";
 import { tokenManager } from "../auth/token-manager.js";
-import { configureSessionJtiStore, getSession } from "../auth/session.js";
+import { clearSession, configureSessionJtiStore, getSession } from "../auth/session.js";
+import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, safeReturnTo } from "./auth-routes.js";
 import { escapeHtml } from "../utils/html.js";
@@ -318,6 +319,21 @@ ${PAGE_STYLES}
   </div>
 </body>
 </html>`;
+}
+
+async function sessionStillAllowed(
+  req: express.Request,
+  res: express.Response,
+  session: { fbUserId: string; email: string | null },
+): Promise<boolean> {
+  if (isAllowed({ email: session.email, fbUserId: session.fbUserId })) return true;
+  await clearSession(req, res);
+  logger.warn({ subject: hashPii(session.fbUserId) }, "Rejected /authorize: account is no longer allowed");
+  res.setHeader("Cache-Control", "no-store");
+  res.status(403).type("html").send(
+    "<h1>Access denied</h1><p>This Meta account is not allowed to use this server. Contact the administrator.</p>",
+  );
+  return false;
 }
 
 function createRateLimiter(maxRequests: number, windowMs: number) {
@@ -774,6 +790,7 @@ export async function startHttpTransport(
         res.redirect(302, `/auth/meta?return=${encodeURIComponent(returnTo)}`);
         return;
       }
+      if (!(await sessionStillAllowed(req, res, session))) return;
 
       const [tokens, activeName, apify, gemini] = await Promise.all([
         listTokens(session.fbUserId),
@@ -848,6 +865,7 @@ export async function startHttpTransport(
           res.status(401).type("html").send(`<p>Sesión expirada. ${link}</p>`);
           return;
         }
+        if (!(await sessionStillAllowed(req, res, session))) return;
 
         let activeName: string | null = null;
         const requestedToken =

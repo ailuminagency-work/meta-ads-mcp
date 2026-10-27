@@ -14,15 +14,20 @@ import type {
   OAuthTokenRevocationRequest,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
+  AccessDeniedError,
   InvalidGrantError,
   InvalidTokenError,
+  ServerError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { logger } from "../utils/logger.js";
+import { allowlistHasEmailRules, isAllowed, isDenied } from "./email-allowlist.js";
+import { getUser } from "../store/meta-token-repo.js";
 import {
   InMemoryAuthCodesStore,
   type AuthCodesStore,
 } from "../store/persistent-auth-codes.js";
 import { InMemoryClientsStore } from "../store/persistent-clients-store.js";
+import { hashPii } from "./token-store.js";
 import {
   InMemoryJtiStore,
   type JtiStore,
@@ -35,6 +40,15 @@ import {
 // checks already in place, this is belt-and-braces.
 const ACCESS_AUDIENCE = "mcp-oauth-access";
 const REFRESH_AUDIENCE = "mcp-oauth-refresh";
+
+const REFRESH_TTL_SECONDS = 30 * 24 * 3600;
+// A client that retries or races its own refresh presents the old token again
+// within moments. That is not theft, so inside this window a replay is only
+// refused; after it, a replay revokes the whole token chain.
+const REFRESH_REUSE_GRACE_SECONDS = 60;
+const FAMILY_REVOKED_PREFIX = "rtfam:";
+const ROTATED_PREFIX = "rtrot:";
+const REVOKED_MESSAGE = "User authorization has been revoked";
 
 let cachedSecret: Uint8Array | undefined;
 
@@ -97,6 +111,9 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   ): Promise<void> {
     const code = crypto.randomBytes(32).toString("hex");
     const pending = this.pendingAuthResolver();
+    if (pending?.fbUserId && isDenied(pending.fbUserId)) {
+      throw new AccessDeniedError("This account is not permitted to authorize clients");
+    }
     const suppliedRedirectUri = res.req?.method === "POST"
       ? res.req.body?.redirect_uri
       : res.req?.query?.redirect_uri;
@@ -191,6 +208,10 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       }
     }
 
+    if (entry.fbUserId && !(await this.isSubjectAuthorized(entry.fbUserId))) {
+      throw new InvalidGrantError(REVOKED_MESSAGE);
+    }
+
     return this.generateTokens({
       clientId: client.client_id,
       resource:
@@ -235,6 +256,19 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if (!jti) {
       throw new InvalidGrantError("Refresh token missing jti");
     }
+    const familyId = typeof payload.fid === "string" ? payload.fid : jti;
+    if (await this.refreshJtiStoreImpl.has(FAMILY_REVOKED_PREFIX + familyId)) {
+      throw new InvalidGrantError("Refresh token has been revoked or already used");
+    }
+    const subject = typeof payload.fb_user_id === "string" ? payload.fb_user_id : undefined;
+    if (subject && !(await this.isSubjectAuthorized(subject))) {
+      await this.refreshJtiStoreImpl.consume(jti);
+      logger.warn(
+        { clientId: client.client_id, subject: hashPii(subject) },
+        "Refresh refused: the account is no longer authorized",
+      );
+      throw new InvalidGrantError(REVOKED_MESSAGE);
+    }
     // Atomic consume: under concurrent refresh requests with the same
     // token, only one wins. Without this, has()+delete() were two
     // separate calls, leaving a replay window across instances backed by
@@ -242,17 +276,60 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     // sufficient async interleaving). Even if generateTokens fails after
     // this, the worst case is the user has to re-authorize.
     if (!(await this.refreshJtiStoreImpl.consume(jti))) {
+      await this.handleRefreshReplay(jti, familyId, client.client_id, subject);
       throw new InvalidGrantError(
         "Refresh token has been revoked or already used",
       );
     }
+    await this.refreshJtiStoreImpl
+      .put(ROTATED_PREFIX + jti, {
+        expiresAt: Math.floor(Date.now() / 1000) + REFRESH_REUSE_GRACE_SECONDS,
+        meta: { kind: "rotated" },
+      })
+      .catch((error: unknown) => {
+        logger.warn({ err: error }, "Could not record refresh rotation; a retry will revoke the chain");
+      });
 
     return this.generateTokens({
       clientId: client.client_id,
       resource: boundResource ?? resource,
-      fbUserId:
-        typeof payload.fb_user_id === "string" ? payload.fb_user_id : undefined,
+      fbUserId: subject,
+      familyId,
     });
+  }
+
+  private async handleRefreshReplay(
+    jti: string,
+    familyId: string,
+    clientId: string,
+    subject: string | undefined,
+  ): Promise<void> {
+    if (await this.refreshJtiStoreImpl.has(ROTATED_PREFIX + jti)) return;
+    // The token is validly signed and unexpired yet no longer redeemable, and it
+    // was not rotated moments ago: whoever holds it may have copied it. Every
+    // token in the chain, including the one the legitimate client now holds, is
+    // refused from here on so the next sign-in re-establishes who owns it.
+    await this.refreshJtiStoreImpl.put(FAMILY_REVOKED_PREFIX + familyId, {
+      expiresAt: Math.floor(Date.now() / 1000) + REFRESH_TTL_SECONDS,
+      meta: { kind: "family_revoked", clientId },
+    });
+    logger.warn(
+      { clientId, subject: hashPii(subject), family: hashPii(familyId) },
+      "Rotated refresh token was presented again; its token chain has been revoked",
+    );
+  }
+
+  private async isSubjectAuthorized(fbUserId: string): Promise<boolean> {
+    if (isDenied(fbUserId)) return false;
+    if (isAllowed({ fbUserId })) return true;
+    if (!allowlistHasEmailRules()) return false;
+    try {
+      const user = await getUser(fbUserId);
+      return isAllowed({ email: user?.email ?? null, fbUserId });
+    } catch (error) {
+      logger.error({ err: error, subject: hashPii(fbUserId) }, "Could not re-check the account allowlist");
+      throw new ServerError("Unable to confirm that the account is still authorized");
+    }
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
@@ -273,6 +350,9 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if(typeof payload.fb_user_id==="string"&&await isMetaPrincipalPrivacyLocked(payload.fb_user_id))throw new InvalidTokenError("User authorization has been revoked");
     if (payload.type !== "access") {
       throw new InvalidTokenError("Token is not an access token");
+    }
+    if (typeof payload.fb_user_id === "string" && isDenied(payload.fb_user_id)) {
+      throw new InvalidTokenError(REVOKED_MESSAGE);
     }
 
     const extra: Record<string, unknown> = {};
@@ -324,6 +404,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     clientId: string;
     resource?: URL;
     fbUserId?: string;
+    familyId?: string;
   }): Promise<OAuthTokens> {
     const secret = getJwtSecret();
     const now = Math.floor(Date.now() / 1000);
@@ -335,6 +416,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     const resource = input.resource ?? this.defaultResource;
     if (resource) claims.resource = resource.href;
     if(input.fbUserId&&await isMetaPrincipalPrivacyLocked(input.fbUserId))throw new InvalidGrantError("User authorization has been revoked");
+    if (input.fbUserId && isDenied(input.fbUserId)) throw new InvalidGrantError(REVOKED_MESSAGE);
     if (input.fbUserId) claims.fb_user_id = input.fbUserId;
 
     const accessToken = await new SignJWT(claims)
@@ -348,11 +430,13 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     // Exchange-refresh deletes the jti before minting a new pair (rotation),
     // and revokeToken can wipe it on demand.
     const refreshJti = crypto.randomBytes(16).toString("hex");
-    const refreshExpiresAt = now + 30 * 24 * 3600;
+    const familyId = input.familyId ?? refreshJti;
+    const refreshExpiresAt = now + REFRESH_TTL_SECONDS;
     const refreshClaims: Record<string, unknown> = {
       sub: input.clientId,
       type: "refresh",
       jti: refreshJti,
+      fid: familyId,
     };
     if (resource) refreshClaims.resource = resource.href;
     if (input.fbUserId) refreshClaims.fb_user_id = input.fbUserId;
@@ -369,6 +453,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       meta: {
         clientId: input.clientId,
         fbUserId: input.fbUserId ?? null,
+        family: familyId,
       },
     });
 
