@@ -96,11 +96,10 @@ export async function inspectLegacyTokenCensus(
       if (outer !== inner) census.outerVersionDisagrees++;
 
       const aad = `${target.prefix}:${parts[1]}:${parts[3]}`;
-      const declared = inner ?? outer;
       let result: { keyVersion: string; bound: boolean } | undefined;
       for (const attempt of [aad, undefined]) {
         try {
-          const decrypted = decryptTokenDetailed(payload, attempt, declared, keyring);
+          const decrypted = decryptTokenDetailed(payload, attempt, undefined, keyring);
           result = { keyVersion: decrypted.keyVersion, bound: attempt !== undefined };
           break;
         } catch {

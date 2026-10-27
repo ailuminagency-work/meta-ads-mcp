@@ -58,6 +58,14 @@ describe("legacy token census", () => {
     expect(census.collections.meta_tokens.decryptable).toBe(1);
   });
 
+  it("judges decryptability like the runtime read path: a versionless envelope beside a wrong outer label is still readable", async () => {
+    useKeyEnv(ENVS.k1Only);
+    seedMeta("lying-outer", impls.main.encrypt(SECRET, `mcp_token:${USER}:lying-outer`), { keyVersion: "next" });
+    const census = await inspectLegacyTokenCensus(db as never, keyring("next"));
+    expect(census.collections.meta_tokens).toMatchObject({ records: 1, decryptable: 1, undecryptable: 0, outerVersionDisagrees: 1, byDecryptingKey: { primary: 1 } });
+    expect(census.recordsNeedingNonPrimaryKey).toBe(0);
+  });
+
   it("performs no writes and discloses no identifier, name, ciphertext or plaintext", async () => {
     useKeyEnv(ENVS.k1Only);
     const envelope = encryptToken(SECRET, `mcp_token:${USER}:named-token`, keyring("next"));

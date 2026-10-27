@@ -3,7 +3,7 @@ import { encryptCredential } from "../../src/platform/connections.js";
 import type { Connection, Credential } from "../../src/platform/models.js";
 import { FirestorePlatformRepository } from "../../src/platform/repository.js";
 import { inspectRuntimeCompatibility } from "../../src/platform/runtime-diagnostics.js";
-import { ENVS, hex, K1, K2, restoreKeyEnv, useKeyEnv } from "../fixtures/crypto/compat-harness.js";
+import { ENVS, hex, impls, K1, K2, restoreKeyEnv, useKeyEnv } from "../fixtures/crypto/compat-harness.js";
 import { FakeFirestore } from "../fixtures/crypto/fake-firestore.js";
 
 const holder = vi.hoisted(() => ({ db: undefined as unknown }));
@@ -106,11 +106,86 @@ describe("runtime compatibility diagnostic safety properties", () => {
     expect(JSON.stringify(result)).not.toContain("credential-tampered");
   });
 
-  it("does not inspect the legacy per-user token collections (documented gap)", async () => {
+  it("does not count another user's legacy records and still proves nothing about older releases", async () => {
     await seedAdmin("tenant-a");
     db.seed("users/synthetic/meta_tokens/personal", { encryptedToken: { ciphertext: "x", iv: "y", tag: "z" } });
     const result = await inspectRuntimeCompatibility(repo, principalA);
     expect(result.encryption.credential_records_inspected).toBe(0);
+    expect(result.legacy_tokens.collections.meta_tokens.records).toBe(0);
     expect(result.rollback.compatibility_proven_by_runtime).toBe(false);
+  });
+});
+
+describe("legacy token census inside the diagnostic response", () => {
+  const OPERATOR_TOKEN = "synthetic-legacy-operator-plaintext";
+  const OTHER_TOKEN = "synthetic-legacy-other-user-plaintext";
+  const aad = (collection: string, user: string, name: string) => `${collection}:${user}:${name}`;
+
+  function seedLegacy(): { forbidden: string[] } {
+    useKeyEnv(ENVS.k1Only);
+    const mainWritten = impls.main.encrypt(OPERATOR_TOKEN, aad("mcp_token", "100", "personal-name-marker"));
+    db.seed("users/100/meta_tokens/personal-name-marker", { encryptedToken: mainWritten, kind: "user", metaUserName: "Synthetic Operator Name" });
+    useKeyEnv(ENVS.k1PlusNext);
+    const nextWritten = impls.line.encrypt(OPERATOR_TOKEN, aad("mcp_token", "100", "second-name-marker"));
+    db.seed("users/100/meta_tokens/second-name-marker", { encryptedToken: nextWritten, keyVersion: nextWritten.keyVersion, kind: "user" });
+    db.seed("users/100/apify_tokens/default", { encryptedToken: impls.line.encrypt(OPERATOR_TOKEN, aad("apify_token", "100", "default")), keyVersion: "next" });
+    const foreign = impls.line.encrypt(OTHER_TOKEN, aad("mcp_token", "999", "foreign-name-marker"));
+    db.seed("users/999/meta_tokens/foreign-name-marker", { encryptedToken: foreign, keyVersion: foreign.keyVersion, kind: "user" });
+    return { forbidden: [OPERATOR_TOKEN, OTHER_TOKEN, mainWritten.ciphertext, mainWritten.iv, mainWritten.tag, nextWritten.ciphertext, nextWritten.iv, nextWritten.tag, foreign.ciphertext, "personal-name-marker", "second-name-marker", "foreign-name-marker", "Synthetic Operator Name", "users/100", "users/999", "999"] };
+  }
+
+  it("adds counts for the calling operator's own legacy records only, with zero writes", async () => {
+    await seedAdmin("tenant-a");
+    const { forbidden } = seedLegacy();
+    db.writeLog.length = 0;
+    const result = await inspectRuntimeCompatibility(repo, principalA);
+    expect(db.writeLog).toEqual([]);
+    expect(result.legacy_tokens).toMatchObject({
+      scope: "legacy-user-token-collections", subject: "one-user", readOnly: true, activeKeyId: "next", truncated: false, limitPerCollection: 50,
+      recordsNeedingNonPrimaryKey: 2,
+    });
+    expect(result.legacy_tokens.collections.meta_tokens).toMatchObject({ records: 2, decryptable: 2, undecryptable: 0, byDecryptingKey: { primary: 1, next: 1 } });
+    expect(result.legacy_tokens.collections.apify_tokens).toMatchObject({ records: 1, decryptable: 1, byDecryptingKey: { next: 1 } });
+    expect(result.legacy_tokens.collections.gemini_keys.records).toBe(0);
+    const text = JSON.stringify(result);
+    for (const value of forbidden) expect(text).not.toContain(value);
+    expect(text).not.toContain(`"${principalA.operatorId}"`);
+  });
+
+  it("reports an undecryptable own record as a count, never as a value", async () => {
+    await seedAdmin("tenant-a");
+    useKeyEnv(ENVS.k1PlusNext);
+    const sealed = impls.line.encrypt(OPERATOR_TOKEN, aad("mcp_token", "100", "broken"));
+    db.seed("users/100/meta_tokens/broken", { encryptedToken: { ...sealed, tag: Buffer.alloc(16).toString("base64") }, keyVersion: sealed.keyVersion });
+    db.writeLog.length = 0;
+    const result = await inspectRuntimeCompatibility(repo, principalA);
+    expect(db.writeLog).toEqual([]);
+    expect(result.legacy_tokens.collections.meta_tokens).toMatchObject({ records: 1, decryptable: 0, undecryptable: 1 });
+    expect(JSON.stringify(result)).not.toContain(OPERATOR_TOKEN);
+    expect(JSON.stringify(result)).not.toContain("broken");
+  });
+
+  it("is bounded: at most 50 records per collection are read and the result says it was truncated", async () => {
+    await seedAdmin("tenant-a");
+    useKeyEnv(ENVS.k1PlusNext);
+    for (let index = 0; index < 60; index++) db.seed(`users/100/meta_tokens/bulk-${index}`, { encryptedToken: impls.line.encrypt(OPERATOR_TOKEN, aad("mcp_token", "100", `bulk-${index}`)) });
+    const result = await inspectRuntimeCompatibility(repo, principalA);
+    expect(result.legacy_tokens).toMatchObject({ truncated: true, limitPerCollection: 50 });
+    expect(result.legacy_tokens.collections.meta_tokens.records).toBe(50);
+  });
+
+  it("is not computed for a caller who is not an administrator, and is read for an administrator", async () => {
+    seedLegacy();
+    const requested: string[] = [];
+    const original = db.collection.bind(db);
+    db.collection = ((name: string) => { requested.push(name); return original(name); }) as never;
+
+    await repo.put("members", "tenant-a", "100", { operatorId: "100", tenantId: "tenant-a", roles: ["writer"], allowedClientIds: [], revision: 1, disabledAt: null });
+    await expect(inspectRuntimeCompatibility(repo, principalA)).rejects.toMatchObject({ reason: "RUNTIME_DIAGNOSTICS_ADMIN_REQUIRED" });
+    expect(requested).not.toContain("users");
+
+    await seedAdmin("tenant-a");
+    await inspectRuntimeCompatibility(repo, principalA);
+    expect(requested).toContain("users");
   });
 });
