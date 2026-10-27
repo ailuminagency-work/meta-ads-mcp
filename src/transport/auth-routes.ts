@@ -97,6 +97,21 @@ function isSameOriginPost(req: express.Request): boolean {
   });
 }
 
+/** Route guard for state-changing form posts that carry the session cookie. */
+export function requireSameOriginPost(path: string): express.RequestHandler {
+  return (req, res, next) => {
+    if (isSameOriginPost(req)) {
+      next();
+      return;
+    }
+    logger.warn(
+      { event: "cross_origin_post_rejected", path },
+      "Rejected a cross-origin form post",
+    );
+    renderError(res, 403, "Cross-origin request rejected.");
+  };
+}
+
 export type ApifyTokenInputResult =
   | { ok: true; token: string }
   | { ok: false; reason: "empty" | "too-short" | "too-long" | "illegal-chars" };
@@ -405,7 +420,7 @@ export function mountAuthRoutes(
     }
   });
 
-  app.post("/auth/logout", async (req, res) => {
+  app.post("/auth/logout", requireSameOriginPost("/auth/logout"), async (req, res) => {
     await clearSession(req, res);
     res.setHeader(
       "Content-Security-Policy",
@@ -426,6 +441,7 @@ export function mountAuthRoutes(
 
   app.post(
     "/auth/select-token",
+    requireSameOriginPost("/auth/select-token"),
     express.urlencoded({ extended: false }),
     async (req, res) => {
       const session = await getSession(req);
@@ -450,6 +466,7 @@ export function mountAuthRoutes(
 
   app.post(
     "/auth/register-system-token",
+    requireSameOriginPost("/auth/register-system-token"),
     express.urlencoded({ extended: false }),
     async (req, res) => {
       const session = await getSession(req);
@@ -515,6 +532,7 @@ export function mountAuthRoutes(
 
   app.post(
     "/auth/delete-token",
+    requireSameOriginPost("/auth/delete-token"),
     express.urlencoded({ extended: false }),
     async (req, res) => {
       const session = await getSession(req);

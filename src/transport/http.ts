@@ -52,7 +52,8 @@ import { tokenManager } from "../auth/token-manager.js";
 import { clearSession, configureSessionJtiStore, getSession } from "../auth/session.js";
 import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
-import { mountAuthRoutes, safeReturnTo } from "./auth-routes.js";
+import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
+import { clientIpKey } from "../utils/client-ip-key.js";
 import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
@@ -336,7 +337,7 @@ async function sessionStillAllowed(
   return false;
 }
 
-function createRateLimiter(maxRequests: number, windowMs: number) {
+export function createRateLimiter(maxRequests: number, windowMs: number) {
   const requests = new Map<string, { count: number; resetAt: number }>();
 
   setInterval(() => {
@@ -347,7 +348,7 @@ function createRateLimiter(maxRequests: number, windowMs: number) {
   }, windowMs).unref();
 
   return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
-    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    const ip = clientIpKey(req.ip ?? req.socket.remoteAddress);
     const now = Date.now();
     const entry = requests.get(ip);
 
@@ -742,6 +743,11 @@ export async function startHttpTransport(
       "/auth/register-gemini-key",
       createRateLimiter(10, 15 * 60 * 1000),
     );
+    // Each of these reads Firestore and the callback also calls Meta, and none
+    // needs a session, so an anonymous caller could drive that cost.
+    app.get("/auth/meta", createRateLimiter(60, 15 * 60 * 1000));
+    app.get("/auth/meta/callback", createRateLimiter(60, 15 * 60 * 1000));
+    app.use("/authorize", createRateLimiter(120, 15 * 60 * 1000));
 
     mountAuthRoutes(app, {
       serverUrl,
@@ -853,6 +859,7 @@ export async function startHttpTransport(
 
     app.post(
       "/authorize",
+      requireSameOriginPost("/authorize"),
       express.urlencoded({ extended: false }),
       async (req, res, next) => {
         const session = await getSession(req);

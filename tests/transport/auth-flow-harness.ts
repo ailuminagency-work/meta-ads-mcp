@@ -56,6 +56,15 @@ export async function startAuthServer(env: Record<string, string | undefined> = 
   resetKeyCacheForTests();
   resetMetaTokenRepoForTests();
 
+  const loopbackFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+      return Promise.reject(new Error(`outbound request to ${url.hostname} blocked in tests`));
+    }
+    return loopbackFetch(input, init);
+  });
+
   const signals = ["SIGTERM", "SIGINT"] as const;
   const listenersBefore = signals.map((signal) => new Set(process.listeners(signal)));
   const removeShutdownHooks = () => {
@@ -80,6 +89,7 @@ export async function startAuthServer(env: Record<string, string | undefined> = 
     close: () =>
       new Promise<void>((resolve, reject) => {
         removeShutdownHooks();
+        vi.unstubAllGlobals();
         server!.closeAllConnections();
         server!.close((error) => (error ? reject(error) : resolve()));
       }),
