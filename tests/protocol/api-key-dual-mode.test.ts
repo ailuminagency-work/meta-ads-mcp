@@ -29,6 +29,7 @@ afterAll(async () => {
 
 const from = (address: string) => ({ "x-forwarded-for": address });
 const apiKeyFrom = (address: string) => ({ ...from(address), "x-api-key": KEY, "x-meta-token": META_TOKEN });
+const mcp = (address: string) => mcpPost(harness.origin, undefined, INITIALIZE_BODY, apiKeyFrom(address));
 
 async function junkUntilLocked(address: string): Promise<number[]> {
   const seen: number[] = [];
@@ -96,17 +97,20 @@ describe("dual mode (Meta OAuth plus MCP_API_KEY): the lockout belongs to the AP
     expect(reply.headers.get("www-authenticate")).toContain("resource_metadata=");
   });
 
-  it("refuses the valid API key from a locked address that never presented it, and serves one that did", async () => {
+  it("refuses the valid API key from a locked address, also one that presented it before the lock (G1E-01)", async () => {
     const stranger = nextClientAddress();
     const regular = nextClientAddress();
-    expect((await mcpPost(harness.origin, undefined, INITIALIZE_BODY, apiKeyFrom(regular))).status).toBe(200);
+    expect((await mcp(regular)).status).toBe(200);
 
     await junkUntilLocked(stranger);
     await junkUntilLocked(regular);
 
-    expect((await mcpPost(harness.origin, undefined, INITIALIZE_BODY, apiKeyFrom(stranger))).status).toBe(429);
+    expect((await mcp(stranger)).status).toBe(429);
     expect((await mcpPost(harness.origin, KEY, INITIALIZE_BODY, { ...from(stranger), "x-meta-token": META_TOKEN })).status).toBe(429);
-    expect((await mcpPost(harness.origin, undefined, INITIALIZE_BODY, apiKeyFrom(regular))).status).toBe(200);
+    expect((await mcp(regular)).status).toBe(429);
     expect((await mcpPost(harness.origin, "still-junk", INITIALIZE_BODY, from(regular))).status).toBe(429);
+
+    const oauth = await forgeAccessToken({ fbUserId: FB_USER_ID });
+    expect((await mcpPost(harness.origin, oauth, INITIALIZE_BODY, from(regular))).status).toBe(200);
   });
 });

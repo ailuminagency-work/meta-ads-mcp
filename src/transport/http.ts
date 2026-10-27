@@ -449,8 +449,9 @@ function createCombinedAuthMiddleware(
 
     if (lockout.isLocked(client)) {
       // The lock covers the API-key credential only. A request with no credential still gets the
-      // challenge and a valid OAuth bearer is served. The bearer is probed whatever the key check
-      // said, so a right key and a wrong one are refused after the same work and the same answer.
+      // challenge and a valid OAuth bearer is served. Every presented credential has already gone
+      // through the digest comparison and the bearer is probed whatever it said, so a right key and
+      // a wrong one are refused after the same work and with the same answer.
       if (presented === undefined && !req.headers.authorization) {
         oauthMiddleware(req, res, next);
         return;
@@ -459,17 +460,11 @@ function createCombinedAuthMiddleware(
         oauthMiddleware(req, res, next);
         return;
       }
-      if (keyValid && lockout.isKnownGood(client)) {
-        lockout.recordSuccess(client);
-        next();
-        return;
-      }
       refuseLocked(req, res, client);
       return;
     }
 
     if (keyValid) {
-      lockout.recordSuccess(client);
       logger.debug("Authenticated via API key");
       next();
       return;
