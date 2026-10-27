@@ -1,6 +1,7 @@
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { getFirestore } from "./firestore.js";
+import { clientExpireTime, clientNeedsExtension, withoutExpireTime } from "./retention.js";
 import { logger } from "../utils/logger.js";
 import {
   assertRegistrableRedirectUris,
@@ -33,6 +34,7 @@ function usableClient(
  */
 interface StoredClient extends OAuthClientInformationFull {
   registered_at?: number;
+  expireTime?: Date;
 }
 
 export class FirestoreClientsStore implements OAuthRegisteredClientsStore {
@@ -43,9 +45,22 @@ export class FirestoreClientsStore implements OAuthRegisteredClientsStore {
   async getClient(
     clientId: string,
   ): Promise<OAuthClientInformationFull | undefined> {
-    const snap = await this.collection.doc(clientId).get();
+    const ref = this.collection.doc(clientId);
+    const snap = await ref.get();
     if (!snap.exists) return undefined;
-    return usableClient(snap.data() as OAuthClientInformationFull);
+    const stored = snap.data() as StoredClient;
+    const client = usableClient(withoutExpireTime(stored) as OAuthClientInformationFull);
+    if (client && clientNeedsExtension(stored.expireTime)) {
+      // update() fails on a missing document, so a client deleted since the
+      // read is never resurrected as a stub. The deadline is bookkeeping:
+      // failing to extend it must not fail the authentication in progress.
+      try {
+        await ref.update({ expireTime: clientExpireTime() });
+      } catch {
+        logger.warn({ clientId }, "Could not extend the retention deadline of an OAuth client");
+      }
+    }
+    return client;
   }
 
   async registerClient(
@@ -55,6 +70,7 @@ export class FirestoreClientsStore implements OAuthRegisteredClientsStore {
     const stored: StoredClient = {
       ...client,
       registered_at: Math.floor(Date.now() / 1000),
+      expireTime: clientExpireTime(),
     };
     await this.collection.doc(client.client_id).set(stored);
     logger.info(

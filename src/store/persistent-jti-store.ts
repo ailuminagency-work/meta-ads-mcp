@@ -1,5 +1,6 @@
 import {commitLegacyPersonalWrite} from "./legacy-privacy-write.js";
 import { getFirestore } from "./firestore.js";
+import { jtiExpireTime, withoutExpireTime } from "./retention.js";
 
 /**
  * Allow-list / revocation store for JWT IDs (jti). The model is "must
@@ -8,8 +9,8 @@ import { getFirestore } from "./firestore.js";
  * delete the jti — the next verification will fail.
  *
  * Each entry carries an absolute expiresAt (unix seconds) so we can
- * lazily skip expired records. A TTL index in Firestore (configured
- * out of band) reaps them; the in-memory impl evicts on read.
+ * lazily skip expired records. Firestore reaps them through the expireTime
+ * TTL policy; the in-memory impl evicts on read.
  */
 export interface JtiEntry {
   expiresAt: number;
@@ -50,7 +51,8 @@ export class FirestoreJtiStore implements JtiStore {
   }
 
   async put(jti: string, entry: JtiEntry): Promise<void> {
-    if(typeof entry.meta?.fbUserId==="string")await commitLegacyPersonalWrite(getFirestore(),entry.meta.fbUserId,this.collection.doc(jti),entry);else await this.collection.doc(jti).set(entry);
+    const stored = { ...entry, expireTime: jtiExpireTime(entry) };
+    if(typeof entry.meta?.fbUserId==="string")await commitLegacyPersonalWrite(getFirestore(),entry.meta.fbUserId,this.collection.doc(jti),stored);else await this.collection.doc(jti).set(stored);
   }
 
   async has(jti: string): Promise<boolean> {
@@ -68,7 +70,7 @@ export class FirestoreJtiStore implements JtiStore {
   async get(jti: string): Promise<JtiEntry | undefined> {
     const snap = await this.collection.doc(jti).get();
     if (!snap.exists) return undefined;
-    const data = snap.data() as JtiEntry;
+    const data = withoutExpireTime(snap.data() as JtiEntry & { expireTime?: unknown });
     return data.expiresAt < Math.floor(Date.now() / 1000) ? undefined : data;
   }
 
@@ -83,7 +85,10 @@ export class FirestoreJtiStore implements JtiStore {
         return false;
       }
       tx.delete(ref);
-      if (options?.tombstone) tx.set(this.collection.doc(options.tombstone.id), options.tombstone.entry);
+      if (options?.tombstone) {
+        const { id, entry } = options.tombstone;
+        tx.set(this.collection.doc(id), { ...entry, expireTime: jtiExpireTime(entry) });
+      }
       return true;
     });
   }

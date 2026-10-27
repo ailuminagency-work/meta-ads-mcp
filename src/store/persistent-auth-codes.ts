@@ -1,5 +1,6 @@
 import {commitLegacyPersonalWrite} from "./legacy-privacy-write.js";
 import { getFirestore } from "./firestore.js";
+import { authCodeExpireTime, withoutExpireTime } from "./retention.js";
 
 const COLLECTION = "mcp_auth_codes";
 
@@ -32,13 +33,14 @@ export class FirestoreAuthCodesStore implements AuthCodesStore {
   }
 
   async set(code: string, entry: AuthCodeEntry): Promise<void> {
-    if(entry.fbUserId)await commitLegacyPersonalWrite(getFirestore(),entry.fbUserId,this.collection.doc(code),entry);else await this.collection.doc(code).set(entry);
+    const stored = { ...entry, expireTime: authCodeExpireTime(entry) };
+    if(entry.fbUserId)await commitLegacyPersonalWrite(getFirestore(),entry.fbUserId,this.collection.doc(code),stored);else await this.collection.doc(code).set(stored);
   }
 
   async get(code: string): Promise<AuthCodeEntry | undefined> {
     const snap = await this.collection.doc(code).get();
     if (!snap.exists) return undefined;
-    return snap.data() as AuthCodeEntry;
+    return withoutExpireTime(snap.data() as AuthCodeEntry);
   }
 
   async consume(code: string): Promise<AuthCodeEntry | undefined> {
@@ -47,7 +49,7 @@ export class FirestoreAuthCodesStore implements AuthCodesStore {
       const snap = await tx.get(ref);
       if (!snap.exists) return undefined;
       tx.delete(ref);
-      return snap.data() as AuthCodeEntry;
+      return withoutExpireTime(snap.data() as AuthCodeEntry);
     });
   }
 
