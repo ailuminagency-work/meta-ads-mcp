@@ -397,10 +397,7 @@ export class MetaApiClient {
    * would reject every call as carrying an invalid proof.
    */
   private appSecretProof(token: string): string | undefined {
-    if (process.env.META_APPSECRET_PROOF?.trim().toLowerCase() === "off") return undefined;
-    const secret = this.appSecret ?? (process.env.META_APP_SECRET?.trim() || undefined);
-    if (!secret) return undefined;
-    return createHmac("sha256", secret).update(token).digest("hex");
+    return metaAppSecretProof(token, this.appSecret);
   }
 
   private async backoff(attempt: number): Promise<void> {
@@ -540,6 +537,13 @@ function guessBucType(method: string, path: string): string {
     return "ads_management";
   }
   return "ads_management";
+}
+
+export function metaAppSecretProof(token: string, appSecret?: string): string | undefined {
+  if (process.env.META_APPSECRET_PROOF?.trim().toLowerCase() === "off") return undefined;
+  const secret = appSecret ?? (process.env.META_APP_SECRET?.trim() || undefined);
+  if (!secret) return undefined;
+  return createHmac("sha256", secret).update(token).digest("hex");
 }
 
 /**
