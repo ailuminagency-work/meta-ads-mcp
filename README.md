@@ -445,6 +445,8 @@ X-Meta-Token: <meta_token>
 Content-Type: application/json
 ```
 
+`MCP_API_KEY` must be at least 32 characters (`openssl rand -hex 32`) or the server will not start, and 20 wrong keys from one client address in 15 minutes lock that address out with 429. A deployment without `META_APP_ID` and `META_APP_SECRET` has no operator who could approve an OAuth grant, so it does not serve `/authorize`, `/register` or `/token`; the API key is the only way in. See [docs/authentication.md](docs/authentication.md).
+
 ### Other MCP clients
 
 Any client that speaks the [Model Context Protocol](https://modelcontextprotocol.io) over Streamable HTTP works — Cline, Continue, Cursor, custom Anthropic SDK or OpenAI SDK integrations, etc. Point them at `https://<SERVER_URL>/mcp`.
