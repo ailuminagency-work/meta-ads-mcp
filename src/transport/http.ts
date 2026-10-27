@@ -54,6 +54,7 @@ import { isAllowed } from "../auth/email-allowlist.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes, requireSameOriginPost, safeReturnTo } from "./auth-routes.js";
 import { clientIpKey } from "../utils/client-ip-key.js";
+import { echoStateOnAuthorizeErrors } from "./authorize-error-state.js";
 import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
@@ -908,6 +909,7 @@ export async function startHttpTransport(
 
   oauthProvider.configure({ defaultResource: new URL("/mcp", serverUrl), requireRedirectUri: true });
 
+  app.use("/authorize", echoStateOnAuthorizeErrors());
   app.use(
     mcpAuthRouter({
       provider: oauthProvider,
