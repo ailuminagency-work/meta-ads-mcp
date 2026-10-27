@@ -71,6 +71,7 @@ import { escapeHtml } from "../utils/html.js";
 import { singleLine } from "../utils/single-line.js";
 import { mcpJsonParser, preAuthJsonParser } from "./body-limits.js";
 import { createMcpAdmission, readMcpAdmissionConfig } from "./mcp-admission.js";
+import { readToolRuntimeConfig } from "../tools/tool-runtime.js";
 import { applyServerTimeouts } from "./server-timeouts.js";
 import { installGracefulShutdown } from "./graceful-shutdown.js";
 import { createReadinessCheck, createReadinessHandler } from "./readiness.js";
@@ -1013,10 +1014,12 @@ export async function startHttpTransport(
   const metaTokenMw = buildMetaTokenMiddleware(serverUrl, config.multiTenantEnabled);
 
   const admissionConfig = readMcpAdmissionConfig();
+  const toolRuntimeConfig = readToolRuntimeConfig();
   logger.info(
     {
       maxInFlight: admissionConfig.maxInFlight,
       perSubjectInFlight: admissionConfig.perSubjectInFlight,
+      maxRunningPerSubject: toolRuntimeConfig.maxRunningPerSubject,
       perSubjectPerMinute: admissionConfig.perSubjectPerWindow,
       requestTimeoutSeconds: (admissionConfig.requestTimeoutMs ?? 0) / 1000,
     },

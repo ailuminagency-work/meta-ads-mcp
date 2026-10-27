@@ -533,10 +533,14 @@ describe("wired into the real transport", () => {
     authServer = await startAuthServer({ DEPLOYMENT_MODE: mode, MCP_REQUEST_TIMEOUT_SECONDS: undefined });
 
     const line = info.mock.calls.find((call) => call[1] === "MCP admission limits");
-    expect(line?.[0]).toEqual({ maxInFlight: 16, perSubjectInFlight: 4, perSubjectPerMinute: 120, requestTimeoutSeconds: seconds });
+    expect(line?.[0]).toEqual({ maxInFlight: 16, perSubjectInFlight: 4, maxRunningPerSubject: 8, perSubjectPerMinute: 120, requestTimeoutSeconds: seconds });
   });
 
   it("refuses to start with an unusable limit", async () => {
     await expect(startAuthServer({ MCP_MAX_IN_FLIGHT: "0" })).rejects.toThrow(/MCP_MAX_IN_FLIGHT must be a positive integer/);
+  });
+
+  it.each(["0", "-1", "abc", "1001", "1.5"])("refuses to start when MCP_MAX_RUNNING_PER_SUBJECT is %s", async (value) => {
+    await expect(startAuthServer({ MCP_MAX_RUNNING_PER_SUBJECT: value })).rejects.toThrow(/MCP_MAX_RUNNING_PER_SUBJECT must be a positive integer/);
   });
 });
