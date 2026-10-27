@@ -23,7 +23,7 @@ import {createOEmbedPreviewRouter,oEmbedEnabled} from "../platform/oembed-previe
 import {environmentOwnershipRouter} from "../platform/ownership-runtime.js";
 import {environmentMediaRouters} from "../platform/media-runtime.js";
 import {environmentDiscoveryRouter} from "../platform/discovery-runtime.js";
-import { createApprovalRouter } from "../platform/approval-router.js";
+import { mountApprovalRoutes } from "../platform/approval-runtime.js";
 import { environmentSourceIngressRouter } from "../platform/source-ingress.js";
 import {environmentOperationalRouter} from "../platform/operational-runtime.js";
 import {environmentRuntimeDiagnosticsRouter} from "../platform/runtime-diagnostics-runtime.js";
@@ -656,7 +656,10 @@ export async function startHttpTransport(
   const platformConnections=platformConnectionRouters(serverUrl.origin);
   if(platformConnections){app.use("/platform/oauth",platformConnections.oauth);app.use("/platform/connections",platformConnections.connections);}
   if(platformEnabled()&&oEmbedEnabled())app.use("/platform/embeds",createOEmbedPreviewRouter({repo:getPlatformRepository(),resolveSession:async req=>{const session=await getSession(req);return session?getPlatformRepository().resolvePrincipal(session.fbUserId):null;}}));
-  if (platformEnabled()) app.use("/platform/approvals",createApprovalRouter({repo:getPlatformRepository(),origin:serverUrl.origin,csrfSecret:process.env.SESSION_COOKIE_SECRET ?? "",resolveSession:async req=>{const session=await getSession(req);return session?getPlatformRepository().resolvePrincipal(session.fbUserId):null;}}));
+  // --- BEGIN human approval routes (campaign authorization) ---
+  // Mounted only while LUMIN_PLATFORM_ENABLED=true and served only while platform writes are enabled.
+  mountApprovalRoutes(app, { origin: serverUrl.origin, resolveOperatorId: async req => (await getSession(req))?.fbUserId ?? null });
+  // --- END human approval routes ---
 
   if (config.multiTenantEnabled) {
     if (!isFirestoreEnabled()) {

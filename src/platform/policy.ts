@@ -4,7 +4,7 @@ import {assertBusinessOwnerScope} from "./business-owner-scope.js";
 import {attachmentEnabled} from "./attachment-flags.js";
 import {publishingVideoEnabled,isPublishingVideoDraftTool} from "./publishing-video-flags.js";
 import {pageVideoEnabled} from "./video-flags.js";
-import {assertAccountOwnershipEvidence,classifyAccountOwnership} from "./ownership-evidence.js";
+import {assertAccountOwnershipEvidence,assertAgencyAdvertisingAuthorization,classifyAccountOwnership} from "./ownership-evidence.js";
 import { createHash } from "node:crypto";
 import type { AuthorizationSnapshot, OperationClass, OperationContext, OperationPlan, SafeChange } from "./models.js";
 import { PlatformDenied } from "./models.js";
@@ -39,22 +39,23 @@ export function classifyPlan(plan: OperationPlan): OperationClass[] {
   if(pausedCreation && plan.parameters.status !== "PAUSED") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
   const expectationOnly = plan.capability === "marketing.activate.ad" && plan.classes.length===1 && plan.classes[0]==="ACTIVATE_SPEND" && (plan.parameters.endpointContract as {tool?:unknown}|undefined)?.tool==="marketing_activate_ad";
   let nodes = 0;
+  const mentionsActive = (value: unknown, depth = 0): boolean => typeof value === "string" ? value.trim().toUpperCase() === "ACTIVE" : depth < 6 && !!value && typeof value === "object" && Object.values(value).some(v => mentionsActive(v, depth + 1));
   function inspect(value: unknown, depth: number): void {
     if(++nodes > 10000 || depth > 30) throw new PlatformDenied("PLAN_TOO_COMPLEX");
-    if(pausedCreation && typeof value === "string" && value.toUpperCase() === "INHERITED_FROM_SOURCE") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
+    if(pausedCreation && typeof value === "string" && value.trim().toUpperCase() === "INHERITED_FROM_SOURCE") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
     if(typeof value === "string" && /^[\s]*[\[{]/.test(value)) { let decoded: unknown; try { decoded = JSON.parse(value); } catch { throw new PlatformDenied("OPAQUE_JSON_INVALID"); } inspect(decoded, depth + 1); return; }
     if(Array.isArray(value)) { value.forEach(v => inspect(v, depth + 1)); return; }
     if(!value || typeof value !== "object") return;
     for(const [key, v] of Object.entries(value)) {
-      const k = key.toLowerCase();
-      if(pausedCreation && ["status", "status_option", "target_status"].includes(k) && v !== "PAUSED") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
-      if((k === "status" || k === "execution_options" || k === "status_option" || k === "target_status") && typeof v === "string" && v.toUpperCase() === "ACTIVE") {
+      const k = key.trim().toLowerCase();
+      if(pausedCreation && (/(^|_)status(_option)?$/.test(k) || k === "target_status") && v !== "PAUSED") throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
+      if((["status", "configured_status", "execution_options", "status_option", "target_status"].includes(k) && mentionsActive(v)) || (k === "execution_type" && typeof v === "string" && v.trim().toUpperCase() === "UNPAUSE")) {
         if(plan.createOrCopy) throw new PlatformDenied("CREATE_MUST_REMAIN_PAUSED");
         classes.add("ACTIVATE_SPEND");
       }
       if((k.includes("budget") || k === "bid_amount" || k === "spend_cap" || k === "account_spend_limit") && !(expectationOnly && depth===1 && value===plan.parameters.input && ["expected_campaign_daily_budget","expected_adset_daily_budget"].includes(k))) classes.add("WRITE_BUDGET");
       if(k.includes("credit_line") || k.includes("payment_method") || k === "funding_id") classes.add("BILLING");
-      if(k === "status" && (v === "DELETED" || v === "ARCHIVED")) classes.add("DELETE");
+      if(k === "status" && typeof v === "string" && ["DELETED", "ARCHIVED"].includes(v.trim().toUpperCase())) classes.add("DELETE");
       inspect(v, depth + 1);
     }
   }
@@ -84,10 +85,20 @@ export function normalizeSafeDiff(parameters: Record<string, unknown>): SafeChan
   }
   visit(parameters,0); return result;
 }
+/** Tools whose only effect is to persist a proposal for a later write. Their plans are READ class, so the class rule cannot stop them; a deployment with platform writes disabled has no way to approve or run the proposal, so none is stored. */
+const PREPARATION_ONLY_TOOLS: readonly string[] = Object.freeze(["meta_plan_tracking_change"]);
+/** Same definition as runtime.platformWritesEnabled, which this module cannot import without a load-order cycle; tests/platform/policy-preparation-tools.test.ts pins the two together. */
+const platformWritesEnabled = (): boolean => process.env.LUMIN_PLATFORM_WRITES_ENABLED === "true" && process.env.AGENCY_WRITES_ENABLED === "true";
 export interface PolicyDecision { decision: "ALLOW" | "DENY" | "REQUIRE_CONFIRMATION"; reason: string; classes: OperationClass[] }
+export type PolicyGuard = (ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot) => void;
+const policyGuards = new Map<string, PolicyGuard>();
+/** A guard can only add a denial: it throws to refuse and returns to leave the decision unchanged. It runs for every mutating plan before an approval is requested, issued or consumed, so a refusal never costs a human a review or an approval its single use. A name can be taken once, so one module cannot silently replace another's guard. */
+export function registerPolicyGuard(name: string, guard: PolicyGuard): void { if(policyGuards.has(name) && policyGuards.get(name) !== guard) throw new PlatformDenied("POLICY_GUARD_ALREADY_REGISTERED"); policyGuards.set(name, guard); }
+export function unregisterPolicyGuard(name: string): void { policyGuards.delete(name); }
 export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snapshot: AuthorizationSnapshot, options: { writesEnabled: boolean }): PolicyDecision {
   const classes = classifyPlan(plan);
   const deny = (reason: string): PolicyDecision => ({decision: "DENY", reason, classes});
+  if(PREPARATION_ONLY_TOOLS.includes(ctx.tool) && !platformWritesEnabled()) return deny("DISABLED_BY_LUMIN_POLICY");
   try{assertBusinessOwnerScope(snapshot);}catch(error){if(error instanceof PlatformDenied)return deny(error.reason);throw error;}
   if(["messenger_send_audio","messenger_send_file","whatsapp_platform_send_audio","whatsapp_platform_send_document"].includes(ctx.tool)&&!attachmentEnabled())return deny("ATTACHMENT_DISABLED_BY_DEPLOYMENT");
   if(isPublishingVideoDraftTool(ctx.tool)&&!publishingVideoEnabled())return deny("PUBLISHING_VIDEO_DISABLED_BY_DEPLOYMENT");
@@ -125,9 +136,10 @@ export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snaps
     if(classification==="UNVERIFIED")return deny("ACCOUNT_OWNERSHIP_UNVERIFIED");
     if(classification==="AGENCY_OWNED"&&snapshot.client.id!==account[0].clientId)return deny("AGENCY_ACCOUNT_CLIENT_SCOPE_MISMATCH");
     try{assertAccountOwnershipEvidence(snapshot,account[0]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"OWNER_EVIDENCE_REQUIRED");}
+    if(ctx.tool!=="marketing_create_async_report"){try{assertAgencyAdvertisingAuthorization(snapshot,account[0],classes.filter(c=>["WRITE_AD_CONFIGURATION","WRITE_BUDGET","ACTIVATE_SPEND"].includes(c)) as ("WRITE_AD_CONFIGURATION"|"WRITE_BUDGET"|"ACTIVATE_SPEND")[]);}catch(error){return deny(error instanceof PlatformDenied?error.reason:"ADVERTISING_AUTHORIZATION_REQUIRED");}}
     const requiredActions=classes.filter(c=>c!=="READ");
     if(requiredActions.length){
-      const eligible=snapshot.grants.filter(g=>g.assetKey===account[0].key&&g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.connectionId===snapshot.connection.id&&g.revokedAt===null&&g.expiresAt>Date.now()&&requiredActions.every(action=>g.actions.includes(action)));
+      const eligible=snapshot.grants.filter(g=>g.assetKey===account[0].key&&g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.connectionId===snapshot.connection.id&&g.revokedAt===null&&g.verifiedAt>0&&g.verifiedAt<=Date.now()&&g.expiresAt>Date.now()&&requiredActions.every(action=>g.actions.includes(action)));
       if(eligible.length!==1)return deny("SCOPED_AD_ACCOUNT_AUTHORIZATION_REQUIRED");
     }
   }
@@ -136,6 +148,7 @@ export function evaluatePolicy(ctx: OperationContext, plan: OperationPlan, snaps
     const matches=snapshot.assets.filter(a=>a.type===required.asset.type&&a.id.replace(/^act_/,"")===required.asset.id.replace(/^act_/,""));
     if(matches.length!==1||!required.tasks.length||!snapshot.grants.some(g=>g.assetKey===matches[0].key&&g.tenantId===ctx.principal.tenantId&&g.clientId===ctx.clientId&&g.connectionId===snapshot.connection.id&&g.revokedAt===null&&g.expiresAt>Date.now()&&required.tasks.every(task=>g.tasks.includes(task))))return deny("SCOPED_ASSET_TASK_REQUIRED");
   }
+  if(classes.some(c => c !== "READ")) for(const guard of policyGuards.values()) { try { guard(ctx, plan, snapshot); } catch(error) { return deny(error instanceof PlatformDenied ? error.reason : "POLICY_GUARD_FAILED"); } }
   const confirmation: OperationClass[] = ["WRITE_AD_CONFIGURATION", "WRITE_BUDGET", "ACTIVATE_SPEND", "DELETE", "BUSINESS_ADMIN", "IDENTITY_OR_ACCESS", "BILLING", "WRITE_CONTENT", "WRITE_MESSAGING"];
   return ctx.tool==="signals_send_crm_lead_event"||classes.some(c => confirmation.includes(c)) ? {decision: "REQUIRE_CONFIRMATION", reason: "HUMAN_APPROVAL_REQUIRED", classes} : {decision: "ALLOW", reason: "AUTHORIZED", classes};
 }
