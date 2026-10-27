@@ -246,17 +246,19 @@ export class RateLimiter {
       if (this.isExpired(bucket, now)) continue;
       if (!this.bucketAppliesTo(bucket, context)) continue;
 
-      const explicitWait = Math.max(
-        0,
-        bucket.estimatedTimeToRegainAccessMs - (now - bucket.updatedAt),
-      );
+      // Both delays are measured from the reading's own timestamp and shrink
+      // with the clock. A call that is refused is never sent, so no response
+      // arrives to replace the reading: a delay held constant until the next
+      // response would block the token for the whole bucket lifetime.
+      const elapsed = Math.max(0, now - bucket.updatedAt);
+      const explicitWait = Math.max(0, bucket.estimatedTimeToRegainAccessMs - elapsed);
       if (explicitWait > 0) {
         maxDelay = Math.max(maxDelay, explicitWait);
         continue;
       }
 
       const usage = Math.max(bucket.callCount, bucket.cpuTime, bucket.totalTime);
-      maxDelay = Math.max(maxDelay, staircaseDelay(usage));
+      maxDelay = Math.max(maxDelay, staircaseDelay(usage) - elapsed);
     }
 
     return maxDelay;
