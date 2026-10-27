@@ -6,6 +6,7 @@ import { resolveMetaApiVersion } from "./api-version.js";
 import { LEAD_FORM_DEFAULT_FIELDS, type LeadForm } from "./types/lead.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
+import { metaAppSecretProof } from "./client.js";
 import { classifyMetaError } from "./errors.js";
 import type { MetaApiError } from "./types/common.js";
 
@@ -37,6 +38,8 @@ export async function readPageLeadForms(pageId: string, limit: number, fields: s
       if (rateLimiter.getThrottleDelay(scope) > 0) throw new PageReadError("PAGE_READ_THROTTLED");
       const url = new URL(`https://graph.facebook.com/${version}/${path}`);
       for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+      const proof = metaAppSecretProof(token);
+      if (proof) url.searchParams.set("appsecret_proof", proof);
       const response = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal });
       rateLimiter.updateFromHeaders(response.headers, scope);
       const retry = response.headers.get("retry-after");

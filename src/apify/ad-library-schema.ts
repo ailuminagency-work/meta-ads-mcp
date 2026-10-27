@@ -1,5 +1,6 @@
 import { fbcdnExpiresAt, type VideoSource } from "../media/video-sources.js";
 import { boundedClone } from "../utils/bounded-json.js";
+import { singleLine } from "../utils/single-line.js";
 
 /**
  * One item of the curious_coder/facebook-ads-library-scraper dataset (build
@@ -608,11 +609,14 @@ export function libraryImageAssets(ad: LibraryAd, size: "full" | "small"): Libra
 const MAX_LABEL_PAGE_CHARS = 120;
 
 function buildLibrarySource(adId: string, pageName: string | null, v: LibraryVideo, index: number): VideoSource {
-  const page = pageName ? pageName.slice(0, MAX_LABEL_PAGE_CHARS) : "";
+  const page = pageName ? singleLine(pageName, MAX_LABEL_PAGE_CHARS) : "";
   const omitted = v.omitted_urls ?? [];
   return {
     key: "library:" + adId + ":video:" + index,
-    label: "Video " + index + " of Ad Library ad " + adId + (page ? " — " + page : ""),
+    // The label is printed outside the untrusted fence: the advertiser page goes
+    // in its own field, and the id is bounded because the actor controls it too.
+    label: "Video " + index + " of Ad Library ad " + singleLine(adId, 40),
+    ...(page ? { advertiser_page: page } : {}),
     origin: "ad_library",
     ad_archive_id: adId,
     card_index: index,

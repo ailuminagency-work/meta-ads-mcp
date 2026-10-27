@@ -3,6 +3,7 @@ import https from "node:https";
 import type { RequestOptions } from "node:https";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "./url-guard.js";
 import {
+  abortError,
   assertAllowedHost,
   buildPinnedLookup,
   followSafeRedirects,
@@ -14,6 +15,7 @@ import {
 } from "./safe-http.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_DEADLINE_MS = 60_000;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_REDIRECTS = 3;
 const ALLOWED_IMAGE_TYPES = new Set([
@@ -27,9 +29,12 @@ const JPEG_MIME_ALIASES = new Set(["image/jpg", "image/pjpeg"]);
 export interface SafeImageDownloadOptions extends AssertSafeUrlOptions {
   maxBytes?: number;
   maxRedirects?: number;
+  /** Idle timeout of one request; a peer that keeps dripping bytes restarts it. */
   timeoutMs?: number;
+  /** Wall-clock cap on the whole download, redirects and DNS included. */
+  deadlineMs?: number;
   signal?: AbortSignal;
-  /** Optional host allowlist by suffix, enforced on every hop. */
+  /** Optional host allowlist by suffix, enforced on every hop before its DNS lookup. */
   allowedHostSuffixes?: string[];
   request?: typeof https.request;
 }
@@ -64,7 +69,7 @@ function requestImage(
   return new Promise((resolve, reject) => {
     let settled = false;
     if (options.signal?.aborted) {
-      reject(new UnsafeUrlError("Image download aborted"));
+      reject(abortError(options.signal, "Image"));
       return;
     }
     const reqOptions: RequestOptions = {
@@ -150,7 +155,7 @@ function requestImage(
       req.destroy(new UnsafeUrlError(`Image download timed out after ${options.timeoutMs}ms`));
     });
 
-    const onAbort = () => req.destroy(new UnsafeUrlError("Image download aborted"));
+    const onAbort = () => req.destroy(abortError(options.signal, "Image"));
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
     req.on("error", (err) => {
@@ -173,16 +178,19 @@ export async function downloadSafePublicImage(
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+  const deadlineMs = options.deadlineMs ?? DEFAULT_DEADLINE_MS;
 
   return followSafeRedirects(
     rawUrl,
     {
       maxRedirects,
       resolve: options.resolve,
+      allowedPorts: options.allowedPorts,
       signal: options.signal,
+      deadlineMs,
       what: "image",
       validateHop: options.allowedHostSuffixes ? (url) => assertAllowedHost(url, options.allowedHostSuffixes as string[], "image") : undefined,
     },
-    (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs, signal: options.signal }),
+    (resolved, signal) => requestImage(resolved, { request, maxBytes, timeoutMs, signal }),
   );
 }

@@ -58,6 +58,45 @@ describe("collectAllPages", () => {
     expect(result).toEqual([{ id: "1" }, { id: "2" }]);
   });
 
+  describe("a response that never ends", () => {
+    const first: MetaApiResponse<{ id: string }> = { data: [{ id: "1" }], paging: { cursors: { after: "c1" } } };
+
+    it("stops when the server hands back a cursor it already gave", async () => {
+      const fetchPage = vi.fn(async () => ({ data: [], paging: { cursors: { after: "c1" } } }));
+      await expect(collectAllPages(first, fetchPage)).resolves.toEqual([{ id: "1" }]);
+      expect(fetchPage).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops when two cursors point at each other", async () => {
+      const fetchPage = vi.fn(async (after: string) => ({ data: [], paging: { cursors: { after: after === "c1" ? "c2" : "c1" } } }));
+      await collectAllPages(first, fetchPage);
+      expect(fetchPage.mock.calls.map((call) => call[0])).toEqual(["c1", "c2"]);
+    });
+
+    it("stops after a bounded number of pages even when every page is new and empty", async () => {
+      let n = 0;
+      const fetchPage = vi.fn(async () => ({ data: [], paging: { cursors: { after: `c${++n + 1}` } } }));
+      await collectAllPages(first, fetchPage, 5000);
+      expect(fetchPage.mock.calls.length).toBe(1000);
+    });
+
+    it("tolerates a page that arrives without data", async () => {
+      const fetchPage = vi
+        .fn()
+        .mockResolvedValueOnce({ paging: { cursors: { after: "c2" } } })
+        .mockResolvedValueOnce({ data: [{ id: "2" }] });
+      await expect(collectAllPages(first, fetchPage)).resolves.toEqual([{ id: "1" }, { id: "2" }]);
+    });
+
+    it("still keeps going through empty pages that lead somewhere", async () => {
+      const fetchPage = vi
+        .fn()
+        .mockResolvedValueOnce({ data: [], paging: { cursors: { after: "c2" } } })
+        .mockResolvedValueOnce({ data: [{ id: "2" }] });
+      await expect(collectAllPages(first, fetchPage)).resolves.toEqual([{ id: "1" }, { id: "2" }]);
+    });
+  });
+
   it("collects data from multiple pages", async () => {
     const firstPage: MetaApiResponse<{ id: string }> = {
       data: [{ id: "1" }],

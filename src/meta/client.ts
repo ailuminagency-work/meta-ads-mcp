@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { getAccessToken, hashToken } from "../auth/token-store.js";
 import { logger } from "../utils/logger.js";
@@ -70,6 +71,8 @@ function readBounded(response: Response, signal: AbortSignal, maxBytes: number):
 export interface MetaApiClientConfig {
   apiVersion?: string;
   baseUrl?: string;
+  /** App secret for appsecret_proof; defaults to META_APP_SECRET, read per request. */
+  appSecret?: string;
   timeout?: number;
   maxRetries?: number;
   maxResponseBytes?: number;
@@ -99,6 +102,7 @@ interface RequestScope {
 export class MetaApiClient {
   readonly apiVersion: string;
   private readonly baseUrl: string;
+  private readonly appSecret: string | undefined;
   private readonly timeout: number;
   private readonly maxRetries: number;
   private readonly maxResponseBytes: number;
@@ -111,6 +115,7 @@ export class MetaApiClient {
   constructor(config?: MetaApiClientConfig) {
     this.apiVersion = assertMetaApiVersion(config?.apiVersion ?? resolveMetaApiVersion());
     this.baseUrl = config?.baseUrl ?? DEFAULT_BASE_URL;
+    this.appSecret = config?.appSecret?.trim() || undefined;
     this.timeout = config?.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = config?.maxRetries ?? MAX_RETRIES;
     this.maxResponseBytes = config?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -160,6 +165,8 @@ export class MetaApiClient {
       ? await withConnectionCredential(assertExecutionPermit({provider:"META_MARKETING"}),async selected=>selected)
       : getAccessToken();
     formData.set("access_token", token);
+    const proof = this.appSecretProof(token);
+    if (proof) formData.set("appsecret_proof", proof);
     return this.execute<T>("POST", url, path, { body: formData }, true);
   }
 
@@ -260,7 +267,11 @@ export class MetaApiClient {
     // Reactive self-throttle based on last-known usage headers.
     await this.rateLimiter.waitIfNeeded(context);
 
-    const reqUrl = platformEnabled() || skipTokenParam ? url : this.appendToken(url, token);
+    // The proof travels wherever the token does not: in the url for every call
+    // but the multipart one, whose body already carries it. Only the url that is
+    // fetched gets it; the egress checks above and below read the plain one.
+    const proof = skipTokenParam ? undefined : this.appSecretProof(token);
+    const reqUrl = this.appendCredentials(url, platformEnabled() || skipTokenParam ? undefined : token, proof);
 
     const canRetryTransport = isTransportRetrySafe(method, path);
 
@@ -400,10 +411,24 @@ export class MetaApiClient {
     throw lastError ?? new Error("Request failed after retries");
   }
 
-  private appendToken(url: string, token: string): string {
+  private appendCredentials(url: string, token: string | undefined, proof: string | undefined): string {
+    if (token === undefined && proof === undefined) return url;
     const u = new URL(url);
-    u.searchParams.set("access_token", token);
+    if (token !== undefined) u.searchParams.set("access_token", token);
+    if (proof !== undefined) u.searchParams.set("appsecret_proof", proof);
     return u.toString();
+  }
+
+  /**
+   * HMAC-SHA256 of the access token keyed with the app secret, hex encoded
+   * (https://developers.facebook.com/docs/graph-api/guides/secure-requests).
+   * Neither the secret nor the proof is ever logged or put in an error.
+   * META_APPSECRET_PROOF=off disables it for a deployment whose tokens come
+   * from an app other than the one META_APP_SECRET belongs to, where Meta
+   * would reject every call as carrying an invalid proof.
+   */
+  private appSecretProof(token: string): string | undefined {
+    return metaAppSecretProof(token, this.appSecret);
   }
 
   private async backoff(attempt: number): Promise<void> {
@@ -543,6 +568,13 @@ function guessBucType(method: string, path: string): string {
     return "ads_management";
   }
   return "ads_management";
+}
+
+export function metaAppSecretProof(token: string, appSecret?: string): string | undefined {
+  if (process.env.META_APPSECRET_PROOF?.trim().toLowerCase() === "off") return undefined;
+  const secret = appSecret ?? (process.env.META_APP_SECRET?.trim() || undefined);
+  if (!secret) return undefined;
+  return createHmac("sha256", secret).update(token).digest("hex");
 }
 
 /**

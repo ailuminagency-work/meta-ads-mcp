@@ -2,6 +2,7 @@ import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { hashToken } from "../auth/token-store.js";
 import { getApifyTokenRepo } from "../store/apify-token-repo.js";
 import { logger } from "../utils/logger.js";
+import { singleLine } from "../utils/single-line.js";
 import { isSingleTenantMode, LOCAL_TENANT_ID, resolveTenantId } from "../auth/tenant.js";
 import { BodyTooLargeError, readBodyWithLimit } from "../utils/bounded-body.js";
 import type { ApifyErrorBody } from "./types.js";
@@ -147,14 +148,16 @@ function isApifyErrorBody(body: unknown): body is ApifyErrorBody {
     typeof body === "object" &&
     body !== null &&
     "error" in body &&
-    typeof (body as ApifyErrorBody).error === "object"
+    typeof (body as ApifyErrorBody).error === "object" &&
+    (body as ApifyErrorBody).error !== null
   );
 }
 
 function describeApifyError(body: unknown, status: number, exactToken?: string): string {
   if (isApifyErrorBody(body)) {
     const { type, message } = body.error;
-    return scrubApifyToken(`${type ?? "error"}: ${message ?? "(no message)"}`, exactToken);
+    // The provider's words, so one bounded line: line breaks cannot open a line of their own in the reply.
+    return singleLine(scrubApifyToken(`${type ?? "error"}: ${message ?? "(no message)"}`, exactToken), 500);
   }
   return `HTTP ${status}`;
 }
@@ -330,9 +333,12 @@ export class ApifyApiClient {
         } else {
           lastError = new McpError(
             ErrorCode.InternalError,
-            scrubApifyToken(
-              `Apify request failed: ${error instanceof Error ? error.message : String(error)}`,
-              token,
+            singleLine(
+              scrubApifyToken(
+                `Apify request failed: ${error instanceof Error ? error.message : String(error)}`,
+                token,
+              ),
+              300,
             ) + indeterminate,
           );
         }

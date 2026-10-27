@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestContext } from "../../src/auth/token-store.js";
 import { readPageLeadForms } from "../../src/meta/page-lead-forms.js";
@@ -78,5 +79,21 @@ describe("request-scoped Page form reads", () => {
     const fetcher = vi.fn().mockResolvedValue(new Response("Too many requests", { status: 429 })); vi.stubGlobal("fetch", fetcher);
     const call = () => requestContext.run({ fbUserId: "400", accessToken: "synthetic-nonjson-throttle-user" }, () => readPageLeadForms("123", 10, ["id"]));
     await expect(call()).rejects.toThrow("UNAVAILABLE"); await expect(call()).rejects.toThrow("THROTTLED"); expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it("sends an appsecret_proof computed from the token each call uses when the app secret is set", async () => {
+    vi.stubEnv("META_APP_SECRET", "synthetic-app-secret-not-real");
+    const fetcher = vi.fn().mockResolvedValueOnce(reply({ id: "123", access_token: "synthetic-page" })).mockResolvedValueOnce(reply({ id: "123" })).mockResolvedValueOnce(reply({ data: [] }));
+    vi.stubGlobal("fetch", fetcher);
+    await run();
+    const proof = (token: string) => createHmac("sha256", "synthetic-app-secret-not-real").update(token).digest("hex");
+    const seen = fetcher.mock.calls.map(([raw]) => new URL(String(raw)).searchParams.get("appsecret_proof"));
+    expect(seen).toEqual([proof("synthetic-user"), proof("synthetic-page"), proof("synthetic-page")]);
+  });
+  it("sends no appsecret_proof when no app secret is configured", async () => {
+    vi.stubEnv("META_APP_SECRET", "");
+    const fetcher = vi.fn().mockResolvedValueOnce(reply({ id: "123", access_token: "synthetic-page" })).mockResolvedValueOnce(reply({ id: "123" })).mockResolvedValueOnce(reply({ data: [] }));
+    vi.stubGlobal("fetch", fetcher);
+    await run();
+    for (const [raw] of fetcher.mock.calls) expect(new URL(String(raw)).searchParams.has("appsecret_proof")).toBe(false);
   });
 });
