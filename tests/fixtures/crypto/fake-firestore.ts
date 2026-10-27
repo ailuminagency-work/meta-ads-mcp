@@ -2,7 +2,7 @@ type Plain = Record<string, unknown>;
 interface Stored { data: Plain; version: number }
 
 function isPlain(value: unknown): value is Plain {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 function clean(value: unknown): unknown {
