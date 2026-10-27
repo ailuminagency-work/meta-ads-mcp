@@ -54,6 +54,7 @@ Only the code is returned. The underlying error is never put in the response; st
 - **Indexes and TTL policies.** Absent indexes surface as query errors, not as a failed read of one document.
 - **Meta connectivity or token validity.** Nothing calls Meta.
 - **Anything about a single user's data.** Per-token decrypt failures (for example tokens written under a key this deployment does not have) are invisible to `/ready`; grep the logs for `Unsupported state or unable to authenticate data` after each deploy.
+- **Which key is active.** The keyring check encrypts and decrypts with whatever key the process holds, so it passes when `TOKEN_ENCRYPTION_KEY_NEXT` has made `next` the active key, which is the configuration that makes a rollback to `251249e` lossy. The read-only `scripts/release-preflight-keys.sh` is the check for that, before the deploy (`docs/release/rollback-plan.md` section 5.1).
 
 ### Other modes
 
