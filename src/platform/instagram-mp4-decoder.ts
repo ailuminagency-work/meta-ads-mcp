@@ -4,7 +4,7 @@ import {decodeVerifiedMp4,MAX_STANDARD_MP4_BYTES} from "./mp4-decoder.js";
 import {assertClosedGopH264,assertNoMp4EditLists} from "./h264-closed-gop.js";
 let active=false;
 async function fixedProcess(binary:"ffprobe"|"ffmpeg",args:readonly string[],bytes:Uint8Array,maxOutput:number):Promise<Buffer>{
- return new Promise((resolve,reject)=>{const chunks:Buffer[]=[];let total=0,stderr=0,done=false;const child=spawn(binary,[...args],{shell:false,windowsHide:true,stdio:["pipe","pipe","pipe"]}),finish=(ok:boolean)=>{if(done)return;done=true;clearTimeout(timer);child.kill("SIGKILL");child.stdin.destroy();if(ok)resolve(Buffer.concat(chunks));else reject(new PlatformDenied("INSTAGRAM_MP4_ENCODING_PROOF_REQUIRED"));},timer=setTimeout(()=>finish(false),10000);
+ return new Promise((resolve,reject)=>{const chunks:Buffer[]=[];let total=0,stderr=0,done=false;const child=spawn(binary,[...args],{shell:false,windowsHide:true,env:{PATH:process.env.PATH},stdio:["pipe","pipe","pipe"]}),finish=(ok:boolean)=>{if(done)return;done=true;clearTimeout(timer);child.kill("SIGKILL");child.stdin.destroy();if(ok)resolve(Buffer.concat(chunks));else reject(new PlatformDenied("INSTAGRAM_MP4_ENCODING_PROOF_REQUIRED"));},timer=setTimeout(()=>finish(false),10000);
  child.once("error",()=>finish(false));child.once("close",code=>finish(code===0));child.stdin.on("error",(error:NodeJS.ErrnoException)=>{if(!["EPIPE","EOF"].includes(error.code??""))finish(false);});child.stdout.on("data",(chunk:Buffer)=>{total+=chunk.length;if(total>maxOutput){finish(false);return;}chunks.push(chunk);});child.stderr.on("data",(chunk:Buffer)=>{stderr+=chunk.length;if(stderr>65536)finish(false);});child.stdin.end(bytes);
  });
 }

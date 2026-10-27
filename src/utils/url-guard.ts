@@ -14,8 +14,11 @@ const BLOCKED_V4: ReadonlyArray<readonly [number, number, string]> = [
   [v4n(172, 16, 0, 0), 12, "RFC1918 172.16.0.0/12"],
   [v4n(192, 0, 0, 0), 24, "IETF protocol assignments 192.0.0.0/24"],
   [v4n(192, 88, 99, 0), 24, "6to4 relay anycast 192.88.99.0/24"],
+  [v4n(192, 0, 2, 0), 24, "documentation TEST-NET-1 192.0.2.0/24"],
   [v4n(192, 168, 0, 0), 16, "RFC1918 192.168.0.0/16"],
   [v4n(198, 18, 0, 0), 15, "benchmarking 198.18.0.0/15"],
+  [v4n(198, 51, 100, 0), 24, "documentation TEST-NET-2 198.51.100.0/24"],
+  [v4n(203, 0, 113, 0), 24, "documentation TEST-NET-3 203.0.113.0/24"],
   [v4n(224, 0, 0, 0), 4, "multicast 224.0.0.0/4"],
   [v4n(240, 0, 0, 0), 4, "reserved 240.0.0.0/4"],
 ];
@@ -129,11 +132,13 @@ function v6Reason(value: bigint): string | null {
     const inner = v4Reason(Number(value & 0xffffffffn));
     return inner ? `IPv4-mapped → ${inner}` : null;
   }
+  if (top(96) === 0xffff0000n) return "IPv4-translated ::ffff:0:0:0/96 (SIIT)";
   if (top(96) === 0n) return "IPv4-compatible ::/96 (deprecated)";
   if (top(96) === 0x0064ff9b0000000000000000n) return "NAT64 64:ff9b::/96";
   if (top(48) === 0x0064ff9b0001n) return "local-use NAT64 64:ff9b:1::/48";
   if (top(64) === 0x0100n << 48n) return "IPv6 discard-only 100::/64";
   if (top(32) === 0x20010db8n) return "IPv6 documentation 2001:db8::/32";
+  if (top(20) === 0x3fff0n) return "IPv6 documentation 3fff::/20";
   if (top(23) === 0x2001n << 7n) return "IETF protocol assignments 2001::/23 (Teredo and others)";
   if (top(16) === 0x2002n) {
     const inner = v4Reason(Number((value >> 80n) & 0xffffffffn));

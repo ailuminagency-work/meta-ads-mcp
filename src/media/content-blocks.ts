@@ -22,6 +22,27 @@ export function untrustedFenceLines(entries: Array<{ label: string; value: strin
 }
 
 /**
+ * One value that someone outside this server wrote (an ad name, a comment, a
+ * lead's answer, a URL an advertiser set) as bounded single-line data. Line
+ * breaks and runs of hyphens are gone, so it cannot start a line of its own or
+ * close a fence.
+ */
+export function untrustedText(value: unknown, max = 200): string {
+  if (value === undefined || value === null) return "";
+  return singleLine(typeof value === "string" ? value : String(value), max);
+}
+
+/** Rendered lines built from untrustedText values, between the fences that mark them as data and not instructions. */
+export function fenceBlock(lines: readonly string[]): string {
+  return [UNTRUSTED_FENCE_OPEN, ...lines, UNTRUSTED_FENCE_CLOSE].join("\n");
+}
+
+/** Pretty JSON for use inside a fence: JSON escapes line feeds in strings, and the two Unicode line separators are escaped here. */
+export function untrustedJson(value: unknown): string {
+  return (JSON.stringify(value, null, 2) ?? "").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
+/**
  * An error as one bounded line without credentials. Provider and network error
  * text is data from outside this process: it can quote a URL with a token in
  * it, or carry line breaks, so it is cleaned before it is echoed.

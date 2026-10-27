@@ -88,7 +88,7 @@ describe("host policy runs before any DNS lookup", () => {
     const { request, calls } = makeRequest([
       { statusCode: 302, headers: { location: "https://attacker.example.org/x.png" } },
     ]);
-    const resolver = vi.fn(fakeResolve({ "scontent.xx.fbcdn.net": ["203.0.113.10"], "attacker.example.org": ["203.0.113.66"] }));
+    const resolver = vi.fn(fakeResolve({ "scontent.xx.fbcdn.net": ["93.184.216.34"], "attacker.example.org": ["93.184.216.66"] }));
 
     await expect(
       downloadSafePublicImage("https://scontent.xx.fbcdn.net/a.png", {
@@ -105,7 +105,7 @@ describe("host policy runs before any DNS lookup", () => {
 
   it("never resolves a first hop the allowlist refuses", async () => {
     const { request } = makeRequest([]);
-    const resolver = vi.fn(fakeResolve({ "attacker.example.org": ["203.0.113.66"] }));
+    const resolver = vi.fn(fakeResolve({ "attacker.example.org": ["93.184.216.66"] }));
 
     await expect(
       downloadSafePublicImage("https://attacker.example.org/x.png", {
@@ -121,7 +121,7 @@ describe("host policy runs before any DNS lookup", () => {
 
   it("applies the same order to the buffered video downloader", async () => {
     const { request } = makeRequest([]);
-    const resolver = vi.fn(fakeResolve({ "attacker.example.org": ["203.0.113.66"] }));
+    const resolver = vi.fn(fakeResolve({ "attacker.example.org": ["93.184.216.66"] }));
 
     await expect(
       downloadBufferedVideo("https://attacker.example.org/v.mp4", { request, resolve: resolver, allowedHostSuffixes: META_HOSTS }),
@@ -131,7 +131,7 @@ describe("host policy runs before any DNS lookup", () => {
 
   it("treats an allowlist entry without a leading dot as an exact host, not a suffix", async () => {
     const { request } = makeRequest([]);
-    const resolver = vi.fn(fakeResolve({ "evilcdn.example.com": ["203.0.113.66"] }));
+    const resolver = vi.fn(fakeResolve({ "evilcdn.example.com": ["93.184.216.66"] }));
 
     await expect(
       downloadSafePublicImage("https://evilcdn.example.com/x.png", {
@@ -166,7 +166,7 @@ describe("host policy runs before any DNS lookup", () => {
       const { request } = makeRequest([{ headers: PNG, chunks: [Buffer.from("png")] }]);
       const image = await downloadSafePublicImage(`https://${host}/x.png`, {
         request,
-        resolve: fakeResolve({ [host.toLowerCase()]: ["203.0.113.10"] }),
+        resolve: fakeResolve({ [host.toLowerCase()]: ["93.184.216.34"] }),
         allowedHostSuffixes: META_HOSTS,
       });
       expect(image.buffer.toString()).toBe("png");
@@ -182,7 +182,7 @@ describe("redirect abuse", () => {
     await expect(
       downloadSafePublicImage("https://cdn.example.com/a.png", {
         request,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
         maxRedirects: 2,
       }),
     ).rejects.toThrow(/private IP/);
@@ -195,6 +195,10 @@ describe("redirect abuse", () => {
     ["IPv6 mapped metadata", "https://[::ffff:a9fe:a9fe]/"],
     ["NAT64 metadata", "https://[64:ff9b::a9fe:a9fe]/"],
     ["IPv6 loopback", "https://[::1]/"],
+    ["IPv4-translated loopback", "https://[::ffff:0:7f00:1]/"],
+    ["IPv4-translated dotted", "https://[::ffff:0:127.0.0.1]/"],
+    ["documentation TEST-NET-3", "https://203.0.113.9/"],
+    ["IPv6 documentation 3fff", "https://[3fff::1]/"],
     ["metadata name", "https://metadata.google.internal/computeMetadata/v1/"],
     ["credentialed", "https://user:pass@cdn.example.com/a.png"],
     ["off-port", "https://cdn.example.com:6379/a.png"],
@@ -204,7 +208,7 @@ describe("redirect abuse", () => {
     await expect(
       downloadSafePublicImage("https://cdn.example.com/a.png", {
         request,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
         maxRedirects: 3,
       }),
     ).rejects.toThrow(UnsafeUrlError);
@@ -217,7 +221,7 @@ describe("redirect abuse", () => {
     await expect(
       downloadSafePublicImage("https://cdn.example.com/0", {
         request,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
         maxRedirects: 2,
       }),
     ).rejects.toThrow(/Too many redirects/);
@@ -230,7 +234,7 @@ describe("redirect abuse", () => {
       await expect(
         downloadSafePublicImage("https://cdn.example.com/a.png", {
           request,
-          resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+          resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
           maxRedirects: 2,
         }),
       ).rejects.toThrow(UnsafeUrlError);
@@ -241,19 +245,19 @@ describe("redirect abuse", () => {
 describe("DNS rebinding", () => {
   it("connects only to the address that was validated, however the name resolves next", async () => {
     let lookups = 0;
-    const resolve = fakeResolve({ "cdn.example.com": () => (lookups++ === 0 ? ["203.0.113.10"] : ["169.254.169.254"]) });
+    const resolve = fakeResolve({ "cdn.example.com": () => (lookups++ === 0 ? ["93.184.216.34"] : ["169.254.169.254"]) });
     const { request, calls } = makeRequest([{ headers: PNG, chunks: [Buffer.from("png")] }]);
 
     await downloadSafePublicImage("https://cdn.example.com/a.png", { request, resolve });
 
     expect(lookups).toBe(1);
-    await expect(lookupOf(calls[0].options, "cdn.example.com")).resolves.toEqual({ address: "203.0.113.10", family: 4 });
+    await expect(lookupOf(calls[0].options, "cdn.example.com")).resolves.toEqual({ address: "93.184.216.34", family: 4 });
     await expect(lookupOf(calls[0].options, "other.example.com")).rejects.toThrow(/Unexpected lookup hostname/);
   });
 
   it("re-validates a redirect hop that now resolves privately", async () => {
     let lookups = 0;
-    const resolve = fakeResolve({ "cdn.example.com": () => (lookups++ === 0 ? ["203.0.113.10"] : ["10.1.2.3"]) });
+    const resolve = fakeResolve({ "cdn.example.com": () => (lookups++ === 0 ? ["93.184.216.34"] : ["10.1.2.3"]) });
     const { request, calls } = makeRequest([{ statusCode: 302, headers: { location: "https://cdn.example.com/second" } }]);
 
     await expect(
@@ -267,7 +271,7 @@ describe("DNS rebinding", () => {
     await expect(
       downloadSafePublicImage("https://cdn.example.com/a.png", {
         request,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10", "64:ff9b::a9fe:a9fe"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34", "64:ff9b::a9fe:a9fe"] }),
       }),
     ).rejects.toThrow(/NAT64/);
     expect(request).not.toHaveBeenCalled();
@@ -283,7 +287,7 @@ describe("oversized and slow bodies", () => {
       downloadSafePublicImage("https://cdn.example.com/a.png", {
         request,
         maxBytes: 10,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(/too large/);
     expect(calls[0].destroyed).toHaveBeenCalled();
@@ -297,7 +301,7 @@ describe("oversized and slow bodies", () => {
       downloadSafePublicImage("https://cdn.example.com/a.png", {
         request,
         maxBytes: 10,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(/too large/);
     expect(calls[0].destroyed).toHaveBeenCalled();
@@ -310,7 +314,7 @@ describe("oversized and slow bodies", () => {
     await expect(
       downloadSafePublicImage("https://cdn.example.com/a.png", {
         request: fake.request,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
         maxBytes: 5_000_000,
         timeoutMs: 30_000,
         deadlineMs: 120,
@@ -327,7 +331,7 @@ describe("oversized and slow bodies", () => {
     await expect(
       downloadBufferedVideo("https://video.xx.fbcdn.net/v.mp4", {
         request: fake.request,
-        resolve: fakeResolve({ "video.xx.fbcdn.net": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "video.xx.fbcdn.net": ["93.184.216.34"] }),
         allowedHostSuffixes: META_HOSTS,
         deadlineMs: 120,
       }),
@@ -336,7 +340,7 @@ describe("oversized and slow bodies", () => {
   });
 
   it("counts a slow DNS answer against the deadline", async () => {
-    const slow = () => new Promise<Array<{ address: string }>>((resolve) => setTimeout(() => resolve([{ address: "203.0.113.10" }]), 2_000).unref());
+    const slow = () => new Promise<Array<{ address: string }>>((resolve) => setTimeout(() => resolve([{ address: "93.184.216.34" }]), 2_000).unref());
     const { request } = makeRequest([]);
     const started = Date.now();
     await expect(
@@ -351,7 +355,7 @@ describe("oversized and slow bodies", () => {
     const controller = new AbortController();
     const pending = downloadSafePublicImage("https://cdn.example.com/a.png", {
       request: fake.request,
-      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       signal: controller.signal,
       deadlineMs: 10_000,
     });
@@ -365,7 +369,7 @@ describe("oversized and slow bodies", () => {
     const { request } = makeRequest([{ headers: PNG, chunks: [Buffer.from("png")] }]);
     const pending = downloadSafePublicImage("https://cdn.example.com/a.png", {
       request,
-      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       deadlineMs: 5_000,
     });
     await vi.advanceTimersByTimeAsync(10);
@@ -377,7 +381,7 @@ describe("oversized and slow bodies", () => {
 describe("followSafeRedirects budget", () => {
   it("hands the same combined signal to every hop", async () => {
     const seen: Array<AbortSignal | undefined> = [];
-    const resolve = fakeResolve({ "cdn.example.com": ["203.0.113.10"] });
+    const resolve = fakeResolve({ "cdn.example.com": ["93.184.216.34"] });
     await followSafeRedirects("https://cdn.example.com/a", { maxRedirects: 1, resolve, deadlineMs: 5_000 }, async (resolved, signal) => {
       seen.push(signal);
       return seen.length === 1 ? { redirectUrl: new URL("https://cdn.example.com/b") } : { done: true, host: resolved.url.hostname };

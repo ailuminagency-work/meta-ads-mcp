@@ -8,6 +8,7 @@ import { MINOR_UNIT_NOTE, minorUnitAmount } from "../meta/currency.js";
 import { platformEnabled } from "../platform/runtime.js";
 import type { Campaign, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
+import { fenceBlock, untrustedText } from "../media/content-blocks.js";
 
 const objectiveEnum = z.enum([
   "OUTCOME_AWARENESS",
@@ -124,12 +125,12 @@ export function registerCampaignTools(server: McpServer): void {
       const text =
         campaigns.length === 0
           ? "No campaigns found."
-          : campaigns
-              .map(
+          : fenceBlock(
+              campaigns.map(
                 (c) =>
-                  `• ${c.name} (${c.id}) — ${c.status} — Objective: ${c.objective} — Budget: ${c.daily_budget ? `${c.daily_budget}/day` : c.lifetime_budget ? `${c.lifetime_budget} lifetime` : "N/A"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(c.name) || "Unnamed"} (${untrustedText(c.id, 40)}) — ${untrustedText(c.status, 40)} — Objective: ${untrustedText(c.objective, 60)} — Budget: ${c.daily_budget ? `${untrustedText(c.daily_budget, 30)}/day` : c.lifetime_budget ? `${untrustedText(c.lifetime_budget, 30)} lifetime` : "N/A"}`,
+              ),
+            );
 
       return {
         content: [
@@ -162,7 +163,17 @@ export function registerCampaignTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Campaign: ${campaign.name}\nID: ${campaign.id}\nStatus: ${campaign.status} (effective: ${campaign.effective_status})\nObjective: ${campaign.objective}\nBuying Type: ${campaign.buying_type}\nBid Strategy: ${campaign.bid_strategy ?? "N/A"}\nDaily Budget: ${campaign.daily_budget ?? "N/A"}\nLifetime Budget: ${campaign.lifetime_budget ?? "N/A"}\nCreated: ${campaign.created_time}`,
+            text: fenceBlock([
+              `Campaign: ${untrustedText(campaign.name) || "Unnamed"}`,
+              `ID: ${untrustedText(campaign.id, 40)}`,
+              `Status: ${untrustedText(campaign.status, 40)} (effective: ${untrustedText(campaign.effective_status, 40)})`,
+              `Objective: ${untrustedText(campaign.objective, 60)}`,
+              `Buying Type: ${untrustedText(campaign.buying_type, 40)}`,
+              `Bid Strategy: ${untrustedText(campaign.bid_strategy, 60) || "N/A"}`,
+              `Daily Budget: ${untrustedText(campaign.daily_budget, 30) || "N/A"}`,
+              `Lifetime Budget: ${untrustedText(campaign.lifetime_budget, 30) || "N/A"}`,
+              `Created: ${untrustedText(campaign.created_time, 40)}`,
+            ]),
           },
           { type: "text", text: JSON.stringify(campaign, null, 2) },
         ],

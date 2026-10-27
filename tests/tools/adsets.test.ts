@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { metaApiClient } from "../../src/meta/client.js";
 import { registerAdSetTools } from "../../src/tools/adsets.js";
 import { resetCloneBundleStoreForTests } from "../../src/store/clone-bundle-store.js";
+import { LOCAL_TENANT_ID } from "../../src/auth/tenant.js";
 import {
   cleanupTestToken,
   createMockMcpServer,
@@ -739,7 +740,7 @@ describe("registerAdSetTools", () => {
     it("reclaims a stale in_progress lock instead of blocking retries forever", async () => {
       const { getCloneBundleStore, STALE_IN_PROGRESS_MS } = await import("../../src/store/clone-bundle-store.js");
       const store = getCloneBundleStore();
-      const staleKey = "k-stale-1:act_123:2099:Target";
+      const staleKey = `${LOCAL_TENANT_ID}:k-stale-1:act_123:2099:Target`;
       await store.claim(staleKey, JSON.stringify({
         account_id: "act_123",
         source_ad_set_id: "2099",

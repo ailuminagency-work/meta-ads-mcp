@@ -67,13 +67,13 @@ describe("fetchCreativeImageBlocks host policy", () => {
 
   it("never resolves or contacts a host a creative points at outside the list", async () => {
     const fake = realDownloaderBehindFakes({
-      "attacker.example.org": ["203.0.113.66"],
-      "scontent.xx.fbcdn.net": ["203.0.113.10"],
+      "attacker.example.org": ["93.184.216.66"],
+      "scontent.xx.fbcdn.net": ["93.184.216.34"],
     });
     const items = assets(
       "https://attacker.example.org:8443/pixel.png",
       "https://attacker.example.org/pixel.png",
-      "https://203.0.113.66/pixel.png",
+      "https://93.184.216.66/pixel.png",
       "http://scontent.xx.fbcdn.net/pixel.png",
       "https://scontent.xx.fbcdn.net:6379/pixel.png",
       "https://scontent.xx.fbcdn.net/real.png",
@@ -97,7 +97,7 @@ describe("fetchCreativeImageBlocks host policy", () => {
       "https://attacker.example.org:22/x.png",
       "https://attacker.example.org:6379/x.png",
       "https://attacker.example.org:443/x.png",
-      "https://203.0.113.66:8080/x.png",
+      "https://93.184.216.66:8080/x.png",
     );
     await fetchCreativeImageBlocks(items, { maxImages: 4, download: fake.download });
     // Every answer comes from the static policy: nothing was resolved or dialled,

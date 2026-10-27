@@ -137,6 +137,12 @@ describe("reserved IPv4 ranges", () => {
     "https://192.168.255.255/",
     "https://198.18.0.1/",
     "https://198.19.255.254/",
+    "https://192.0.2.1/",
+    "https://192.0.2.255/",
+    "https://198.51.100.1/",
+    "https://198.51.100.254/",
+    "https://203.0.113.1/",
+    "https://203.0.113.255/",
     "https://224.0.0.1/",
     "https://239.255.255.255/",
     "https://240.0.0.1/",
@@ -152,15 +158,20 @@ describe("reserved IPv4 ranges", () => {
     "https://100.63.255.255/",
     "https://100.128.0.1/",
     "https://192.0.1.1/",
+    "https://192.0.3.1/",
     "https://198.17.255.255/",
     "https://198.20.0.1/",
+    "https://198.51.99.255/",
+    "https://198.51.101.1/",
+    "https://203.0.112.255/",
+    "https://203.0.114.1/",
     "https://223.255.255.255/",
   ])("keeps the boundary: %s is public", async (target) => {
     await expect(assertSafePublicUrl(target, { resolve: fakeResolve([]) })).resolves.toBeInstanceOf(URL);
   });
 
   it("refuses a host name that resolves into a newly covered range", async () => {
-    for (const address of ["192.0.0.9", "198.18.5.5", "198.19.0.1"]) {
+    for (const address of ["192.0.0.9", "198.18.5.5", "198.19.0.1", "192.0.2.7", "198.51.100.7", "203.0.113.7"]) {
       await expect(
         assertSafePublicUrl("https://cdn.example.com/x", { resolve: fakeResolve([address]) }),
       ).rejects.toThrow(/resolves to private IP/);
@@ -227,6 +238,16 @@ describe("reserved and embedded IPv6 ranges", () => {
     ["discard-only", "[100::1]"],
     ["documentation", "[2001:db8::1]"],
     ["Teredo", "[2001::1]"],
+    ["IPv4-translated loopback", "[::ffff:0:127.0.0.1]"],
+    ["IPv4-translated loopback hex", "[::ffff:0:7f00:1]"],
+    ["IPv4-translated expanded", "[0:0:0:0:ffff:0:7f00:1]"],
+    ["IPv4-translated metadata", "[::ffff:0:a9fe:a9fe]"],
+    ["IPv4-translated zero", "[::ffff:0:0:0]"],
+    ["IPv4-translated with a public IPv4", "[::ffff:0:808:808]"],
+    ["IPv4-translated top", "[::ffff:0:ffff:ffff]"],
+    ["mapped documentation", "[::ffff:203.0.113.5]"],
+    ["documentation 3fff", "[3fff::1]"],
+    ["documentation 3fff top", "[3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff]"],
   ])("refuses %s", async (_name, host) => {
     await expect(
       assertSafePublicUrl(`https://${host}/`, { resolve: fakeResolve([]) }),
@@ -239,6 +260,12 @@ describe("reserved and embedded IPv6 ranges", () => {
     await expect(assertSafePublicUrl("https://[2002:808:808::1]/", { resolve: fakeResolve([]) })).resolves.toBeInstanceOf(URL);
   });
 
+  it("keeps the edges of the translated and documentation blocks exact", async () => {
+    for (const host of ["[::ffff:1:0:0]", "[::fffe:0:808:808]", "[0:0:0:1:ffff:0:808:808]", "[3fff:1000::1]", "[3ffe::1]", "[4000::1]"]) {
+      await expect(assertSafePublicUrl(`https://${host}/`, { resolve: fakeResolve([]) }), host).resolves.toBeInstanceOf(URL);
+    }
+  });
+
   it("refuses these forms when a resolver returns them in any spelling", async () => {
     for (const address of [
       "64:ff9b::a9fe:a9fe",
@@ -248,6 +275,9 @@ describe("reserved and embedded IPv6 ranges", () => {
       "FEC0::1",
       "FC00::1",
       "0064:ff9b:0000:0000:0000:0000:a9fe:a9fe",
+      "::FFFF:0:7F00:1",
+      "0000:0000:0000:0000:ffff:0000:7f00:0001",
+      "3FFF::1",
     ]) {
       await expect(
         assertSafePublicUrl("https://cdn.example.com/x", { resolve: fakeResolve([address]) }),
@@ -260,6 +290,9 @@ describe("reserved and embedded IPv6 ranges", () => {
     expect(unsafeIpReason("[::1]")).toMatch(/loopback/);
     expect(unsafeIpReason("FE80::1%eth0")).toMatch(/zone/);
     expect(unsafeIpReason("2606:4700:4700::1111")).toBeNull();
+    expect(unsafeIpReason("::ffff:0:127.0.0.1")).toMatch(/IPv4-translated/);
+    expect(unsafeIpReason("3fff::1")).toMatch(/documentation/);
+    expect(unsafeIpReason("203.0.113.9")).toMatch(/documentation/);
   });
 });
 

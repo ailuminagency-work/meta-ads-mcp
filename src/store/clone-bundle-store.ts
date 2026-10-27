@@ -27,6 +27,11 @@ export interface CloneBundleRecord {
 const COLLECTION = "clone_bundle_operations";
 export const STALE_IN_PROGRESS_MS = 15 * 60 * 1000;
 
+/** One tenant's idempotency key must never address another tenant's record; tenant ids have no colon, so the prefix is unambiguous. */
+export function tenantCloneKey(tenantId: string, key: string): string {
+  return `${tenantId}:${key}`;
+}
+
 class InMemoryStore {
   private readonly map = new Map<string, CloneBundleRecord>();
 

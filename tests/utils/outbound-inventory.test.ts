@@ -114,8 +114,7 @@ const CHILD_PROCESS_FILES: Record<string, "execFile" | "spawn"> = {
   "platform/video-inspection-decoder.ts": "spawn",
 };
 
-/** Files that run a child process with the environment pinned to PATH. */
-const ENV_PINNED_PROCESS_FILES = ["media/ffmpeg.ts", "platform/attachment-source.ts", "platform/video-inspection-decoder.ts"];
+const ENV_PIN = /env\s*:\s*\{\s*PATH\s*:\s*process\.env\.PATH\s*\}/;
 
 /**
  * Files that call a guarded downloader. `allowlist: true` means the url is
@@ -360,9 +359,11 @@ function childProcessProblems(files: Parsed[]): string[] {
       if ((callee === "execFile" || callee === "nodeExecFile") && /shell\s*:/.test(n.arguments.map((a) => a.getText(sf)).join(" "))) {
         problems.push(`${rel}:${lineOf(sf, n)} execFile with a shell option`);
       }
+      if (/^(spawn|execFile|nodeExecFile)$/.test(callee) && !ENV_PIN.test(n.arguments.map((a) => a.getText(sf)).join(" "))) {
+        problems.push(`${rel}:${lineOf(sf, n)} ${callee} lets its child process inherit the server's environment`);
+      }
     });
     if (CHILD_PROCESS_FILES[rel] && !/protocol_whitelist/.test(text)) problems.push(`${rel} starts a media process without -protocol_whitelist`);
-    if (ENV_PINNED_PROCESS_FILES.includes(rel) && !/env\s*:\s*\{\s*PATH\s*:\s*process\.env\.PATH\s*\}/.test(text)) problems.push(`${rel} lets its child process inherit the server's environment`);
   }
   for (const rel of importers) if (!CHILD_PROCESS_FILES[rel]) problems.push(`${rel} imports child_process and is not listed`);
   return problems;
@@ -524,6 +525,16 @@ describe("the rules themselves", () => {
     expect(childProcessProblems(synthetic("media/ffmpeg.ts", `import { execFile } from "node:child_process"; execFile(bin, args, { shell: true });`)).join("\n")).toMatch(/execFile with a shell option/);
     expect(childProcessProblems(synthetic("media/ffmpeg.ts", `import { execFile } from "node:child_process"; const a = ["-protocol_whitelist", "file"]; execFile(bin, a, { env: process.env });`)).join("\n")).toMatch(/inherit the server's environment/);
     expect(childProcessProblems(synthetic("media/ffmpeg.ts", `import { execFile } from "node:child_process"; execFile(bin, ["-i", input], { env: { PATH: process.env.PATH } });`)).join("\n")).toMatch(/without -protocol_whitelist/);
+  });
+
+  it("flags any child process that does not pin its environment, in a listed file or a new one", () => {
+    const decoder = (options: string) => `import { spawn } from "node:child_process"; const a = ["-protocol_whitelist", "pipe"]; spawn(binary, a, ${options});`;
+    expect(childProcessProblems(synthetic("platform/mp4-decoder.ts", decoder(`{ shell: false, windowsHide: true, stdio: "pipe" }`))).join("\n")).toMatch(/spawn lets its child process inherit the server's environment/);
+    expect(childProcessProblems(synthetic("platform/mp4-decoder.ts", decoder(`{ shell: false, env: { ...process.env, PATH: "x" } }`))).join("\n")).toMatch(/inherit the server's environment/);
+    expect(childProcessProblems(synthetic("platform/instagram-mp4-decoder.ts", decoder(`{ shell: false, env: { PATH: process.env.PATH } }`)))).toEqual([]);
+    expect(childProcessProblems(synthetic("platform/new-decoder.ts", decoder(`{ shell: false }`))).join("\n")).toMatch(/new-decoder\.ts:1 spawn lets its child process inherit/);
+    const twoCalls = `import { spawn } from "node:child_process"; const a = ["-protocol_whitelist", "pipe"]; spawn(b, a, { shell: false, env: { PATH: process.env.PATH } }); spawn(b, a, { shell: false });`;
+    expect(childProcessProblems(synthetic("platform/mp4-decoder.ts", twoCalls)).filter((p) => /inherit the server's environment/.test(p))).toHaveLength(1);
   });
 
   it("flags a new caller of a guarded downloader, and an allowlisted caller that names no allowlist", () => {

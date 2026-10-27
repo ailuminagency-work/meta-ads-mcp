@@ -8,10 +8,12 @@ import { AD_DEFAULT_FIELDS } from "../meta/types/ad.js";
 import { CREATIVE_DEFAULT_FIELDS } from "../meta/types/creative.js";
 import type { Ad, AdCreative, AdSet, GeoLocation, MetaApiResponse, TargetingSpec } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
-import { getCloneBundleStore, STALE_IN_PROGRESS_MS } from "../store/clone-bundle-store.js";
+import { getCloneBundleStore, STALE_IN_PROGRESS_MS, tenantCloneKey } from "../store/clone-bundle-store.js";
+import { resolveTenantId } from "../auth/tenant.js";
 import { adaptCopiedTargetingForCreate } from "../meta/targeting-compat.js";
 import { MAX_MINOR_UNIT_AMOUNT, MINOR_UNIT_NOTE, minorUnitAmount } from "../meta/currency.js";
 import { ctaEnum } from "./creatives.js";
+import { fenceBlock, untrustedJson, untrustedText } from "../media/content-blocks.js";
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
@@ -355,12 +357,12 @@ export function registerAdSetTools(server: McpServer): void {
       const text =
         adSets.length === 0
           ? "No ad sets found."
-          : adSets
-              .map(
+          : fenceBlock(
+              adSets.map(
                 (a) =>
-                  `• ${a.name} (${a.id}) — ${a.status} — Goal: ${a.optimization_goal} — Budget: ${a.daily_budget ? `${a.daily_budget}/day` : a.lifetime_budget ? `${a.lifetime_budget} lifetime` : "N/A"}`,
-              )
-              .join("\n");
+                  `• ${untrustedText(a.name) || "Unnamed"} (${untrustedText(a.id, 40)}) — ${untrustedText(a.status, 40)} — Goal: ${untrustedText(a.optimization_goal, 60)} — Budget: ${a.daily_budget ? `${untrustedText(a.daily_budget, 30)}/day` : a.lifetime_budget ? `${untrustedText(a.lifetime_budget, 30)} lifetime` : "N/A"}`,
+              ),
+            );
 
       return {
         content: [
@@ -387,13 +389,24 @@ export function registerAdSetTools(server: McpServer): void {
       const id = validateMetaId(ad_set_id, "adset");
       const fieldsParam = buildAdSetDetailsFields(fields);
       const adSet = await metaApiClient.get<AdSet>(`/${id}`, { fields: fieldsParam });
-      const targetingSummary = adSet.targeting ? JSON.stringify(adSet.targeting, null, 2) : "N/A";
+      const targetingSummary = adSet.targeting ? untrustedJson(adSet.targeting) : "N/A";
 
       return {
         content: [
           {
             type: "text",
-            text: `Ad Set: ${adSet.name ?? "N/A"}\nID: ${adSet.id ?? "N/A"}\nCampaign: ${adSet.campaign_id ?? "N/A"}\nStatus: ${adSet.status ?? "N/A"} (effective: ${adSet.effective_status ?? "N/A"})\nOptimization: ${adSet.optimization_goal ?? "N/A"}\nBilling: ${adSet.billing_event ?? "N/A"}\nBid: ${adSet.bid_amount ?? "Auto"}\nDaily Budget: ${adSet.daily_budget ?? "N/A"}\nLifetime Budget: ${adSet.lifetime_budget ?? "N/A"}\nTargeting: ${targetingSummary}`,
+            text: fenceBlock([
+              `Ad Set: ${untrustedText(adSet.name) || "N/A"}`,
+              `ID: ${untrustedText(adSet.id, 40) || "N/A"}`,
+              `Campaign: ${untrustedText(adSet.campaign_id, 40) || "N/A"}`,
+              `Status: ${untrustedText(adSet.status, 40) || "N/A"} (effective: ${untrustedText(adSet.effective_status, 40) || "N/A"})`,
+              `Optimization: ${untrustedText(adSet.optimization_goal, 60) || "N/A"}`,
+              `Billing: ${untrustedText(adSet.billing_event, 60) || "N/A"}`,
+              `Bid: ${untrustedText(adSet.bid_amount, 30) || "Auto"}`,
+              `Daily Budget: ${untrustedText(adSet.daily_budget, 30) || "N/A"}`,
+              `Lifetime Budget: ${untrustedText(adSet.lifetime_budget, 30) || "N/A"}`,
+              `Targeting: ${targetingSummary}`,
+            ]),
           },
           { type: "text", text: JSON.stringify(adSet, null, 2) },
         ],
@@ -430,8 +443,11 @@ export function registerAdSetTools(server: McpServer): void {
         target_ad_set,
         creative_overrides,
       });
-      const cacheKey = idempotency_key
-        ? `${idempotency_key}:${accountPath}:${sourceAdSetIdValidated}:${target_ad_set.name}`
+      const cacheKey = idempotency_key && !dry_run
+        ? tenantCloneKey(
+            resolveTenantId({ feature: "clone" }),
+            `${idempotency_key}:${accountPath}:${sourceAdSetIdValidated}:${target_ad_set.name}`,
+          )
         : undefined;
       const store = getCloneBundleStore();
 
