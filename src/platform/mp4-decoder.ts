@@ -9,7 +9,7 @@ function fastStartMp4(bytes:Uint8Array):void {
  if(offset!==b.length||!moov||!mdat)throw new Error();
 }
 async function run(binary:"ffprobe"|"ffmpeg",args:string[],bytes:Uint8Array,timeout:number):Promise<string>{
- return new Promise((resolve,reject)=>{let output="",settled=false;const child=spawn(binary,args,{shell:false,windowsHide:true,stdio:["pipe","pipe","pipe"]});
+ return new Promise((resolve,reject)=>{let output="",settled=false;const child=spawn(binary,args,{shell:false,windowsHide:true,env:{PATH:process.env.PATH},stdio:["pipe","pipe","pipe"]});
   const finish=(ok:boolean)=>{if(settled)return;settled=true;clearTimeout(timer);child.kill("SIGKILL");child.stdin.destroy();if(ok)resolve(output);else reject(new PlatformDenied("APPROVED_MP4_DECODING_REQUIRED"));};
   const timer=setTimeout(()=>finish(false),timeout);child.once("error",()=>finish(false));child.once("close",code=>finish(code===0));child.stdout.on("data",(data:Buffer)=>{output+=data.toString("utf8");if(Buffer.byteLength(output)>65536)finish(false);});let stderr=0;child.stderr.on("data",(data:Buffer)=>{stderr+=data.length;if(stderr>65536)finish(false);});child.stdin.on("error",(error:NodeJS.ErrnoException)=>{if(!["EPIPE","EOF"].includes(error.code??""))finish(false);});child.stdin.end(bytes);
  });
