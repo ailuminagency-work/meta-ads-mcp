@@ -131,6 +131,21 @@ describe("activation is held to the client's budget ceiling before any provider 
     expect(newRequests).toEqual([]);
   });
 
+  it("denies when the provider reports the account in another currency than the ceiling, after the reviewed expectation matched the ceiling", async () => {
+    const { result, newRequests } = await activate(budgetCeilingDocument({ client: { currency: "USD", daily: "10.00" } }), "account-jpy");
+    expect(result.isError).toBe(true);
+    expect(reason(result)).toContain("BUDGET_CEILING_CURRENCY_MISMATCH");
+    expect(newRequests.filter((n) => n.startsWith("POST"))).toEqual([]);
+    expect(newRequests).toContain("GET:/act_101");
+  });
+
+  it("denies a provider budget above the ceiling with the ceiling's own reason when the reviewed expectation was within it", async () => {
+    const { result, newRequests } = await activate(budgetCeilingDocument({ client: { currency: "USD", daily: "10.00" } }), "budget-changed");
+    expect(result.isError).toBe(true);
+    expect(reason(result)).toContain("BUDGET_CEILING_EXCEEDED");
+    expect(newRequests.filter((n) => n.startsWith("POST"))).toEqual([]);
+  });
+
   it("still denies a provider budget that changed after review, even inside the ceiling", async () => {
     const { result, newRequests } = await activate(budgetCeilingDocument({ client: { currency: "USD", daily: "100.00" } }), "budget-changed");
     expect(result.isError).toBe(true);

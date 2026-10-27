@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BUDGET_CEILINGS_ENV,
   assertActivationWithinBudgetCeiling,
+  assertObservedActivationWithinBudgetCeiling,
   assertPlanWithinBudgetCeiling,
   budgetCeilingFor,
   loadBudgetCeilings,
@@ -149,5 +150,39 @@ describe("activation", () => {
   it("never compares amounts across currencies", () => {
     configure({ client: { currency: "USD", daily: "10.00" } });
     denied(() => assertActivationWithinBudgetCeiling("client", { ...expected, currency: "JPY" }), "BUDGET_CEILING_CURRENCY_MISMATCH");
+  });
+});
+
+describe("activation, provider-observed values", () => {
+  const observed = { currency: "USD", campaignDailyBudget: "0", adsetDailyBudget: "1000" };
+
+  it("requires a configured ceiling", () => {
+    denied(() => assertObservedActivationWithinBudgetCeiling("client", observed), "BUDGET_CEILING_NOT_CONFIGURED");
+  });
+
+  it("allows observed budgets up to the ceiling, including the zero budget of the other level", () => {
+    configure({ client: { currency: "USD", daily: "10.00" } });
+    assertObservedActivationWithinBudgetCeiling("client", observed);
+    assertObservedActivationWithinBudgetCeiling("client", { ...observed, campaignDailyBudget: 1000, adsetDailyBudget: 0 });
+  });
+
+  it("denies an observed account currency other than the ceiling currency, whatever the amounts", () => {
+    configure({ client: { currency: "USD", daily: "10.00" } });
+    for (const currency of ["JPY", "EUR", "usd", undefined, null, 840]) {
+      denied(() => assertObservedActivationWithinBudgetCeiling("client", { ...observed, currency }), "BUDGET_CEILING_CURRENCY_MISMATCH");
+    }
+    configure({ client: { currency: "JPY", daily: "1000" } });
+    denied(() => assertObservedActivationWithinBudgetCeiling("client", observed), "BUDGET_CEILING_CURRENCY_MISMATCH");
+  });
+
+  it("denies an observed budget above the ceiling at either level", () => {
+    configure({ client: { currency: "USD", daily: "10.00" } });
+    denied(() => assertObservedActivationWithinBudgetCeiling("client", { ...observed, adsetDailyBudget: "1001" }), "BUDGET_CEILING_EXCEEDED");
+    denied(() => assertObservedActivationWithinBudgetCeiling("client", { ...observed, campaignDailyBudget: 1001, adsetDailyBudget: "0" }), "BUDGET_CEILING_EXCEEDED");
+  });
+
+  it.each(["-1", "1.5", "1e3", "abc", "", " 5", undefined, null, {}, Number.NaN, 12345678901234567890n])("denies an unreadable observed budget %s", (value) => {
+    configure({ client: { currency: "USD", daily: "10.00" } });
+    denied(() => assertObservedActivationWithinBudgetCeiling("client", { ...observed, adsetDailyBudget: value as never }), "BUDGET_AMOUNT_INVALID");
   });
 });

@@ -139,9 +139,30 @@ export function assertPlanWithinBudgetCeiling(
 }
 
 /**
- * Activation compares the human-reviewed expected budgets with the ceiling. The control client later requires
- * the provider-observed budgets and account currency to equal these expectations, so the observed values
- * are held to the same ceiling.
+ * Held to the ceiling again once the provider has been read, before the exact-expectation comparison, so a
+ * ceiling in one currency can never be applied to an account the provider reports in another, and an
+ * observed budget above the ceiling is refused with its own reason even if the reviewed expectation differs.
+ */
+export function assertObservedActivationWithinBudgetCeiling(
+  clientId: string,
+  observed: { currency: unknown; campaignDailyBudget: unknown; adsetDailyBudget: unknown },
+  env: Record<string, string | undefined> = process.env,
+): void {
+  const ceiling = budgetCeilingFor(clientId, env);
+  if (observed.currency !== ceiling.currency) throw new PlatformDenied("BUDGET_CEILING_CURRENCY_MISMATCH");
+  for (const raw of [observed.campaignDailyBudget, observed.adsetDailyBudget]) {
+    const text = typeof raw === "number" ? String(raw) : raw;
+    if (typeof text !== "string" || !/^\d{1,16}$/.test(text) || !Number.isSafeInteger(Number(text))) {
+      throw new PlatformDenied("BUDGET_AMOUNT_INVALID");
+    }
+    if (Number(text) > ceiling.maxDailyMinor) throw new PlatformDenied("BUDGET_CEILING_EXCEEDED");
+  }
+}
+
+/**
+ * Activation compares the human-reviewed expected budgets with the ceiling before any provider read.
+ * The control client then requires the provider-observed budgets and account currency to equal these
+ * expectations, and holds the observed values to the ceiling as well.
  */
 export function assertActivationWithinBudgetCeiling(
   clientId: string,
