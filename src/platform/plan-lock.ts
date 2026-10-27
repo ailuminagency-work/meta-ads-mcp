@@ -22,8 +22,13 @@ export interface OperationPlanLock {
 
 export const PRIOR_ATTEMPT_UNRECONCILED = "PRIOR_ATTEMPT_UNRECONCILED";
 
-export function newPlanLock(operation: Pick<Operation, "planHash" | "tenantId" | "clientId" | "actorId" | "tool" | "id">, createdAt: number): OperationPlanLock {
-  return { id: operation.planHash, tenantId: operation.tenantId, clientId: operation.clientId, actorId: operation.actorId, tool: operation.tool, operationId: operation.id, state: "HELD", createdAt, releasedAt: null, releasedResult: null };
+/** The lock key of an operation: the hash of what it sends. Operations stored before the key existed, and plans without non-sent evidence, use the plan hash itself. */
+export function planLockKey(operation: Pick<Operation, "planHash" | "lockHash">): string {
+  return operation.lockHash ?? operation.planHash;
+}
+
+export function newPlanLock(operation: Pick<Operation, "planHash" | "lockHash" | "tenantId" | "clientId" | "actorId" | "tool" | "id">, createdAt: number): OperationPlanLock {
+  return { id: planLockKey(operation), tenantId: operation.tenantId, clientId: operation.clientId, actorId: operation.actorId, tool: operation.tool, operationId: operation.id, state: "HELD", createdAt, releasedAt: null, releasedResult: null };
 }
 
 export function releasedPlanLock(lock: OperationPlanLock, result: "SUCCEEDED" | "FAILED", releasedAt: number): OperationPlanLock {

@@ -15,7 +15,7 @@ import { encryptToken, decryptToken } from "../auth/crypto.js";
 import type { ApprovalRequest, AuthorizationSnapshot, OperationContext, OperationPlan, PlatformPrincipal } from "./models.js";
 import { PlatformDenied } from "./models.js";
 import type { Collection, PlatformRepository } from "./repository.js";
-import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, revisionHash } from "./policy.js";
+import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, planLockHash, revisionHash } from "./policy.js";
 import { resolveAuthorizedAssets } from "./assets.js";
 import { platformWritesEnabled } from "./runtime.js";
 import "./budget-ceiling-guard.js";
@@ -41,7 +41,7 @@ async function snapshot(repo:PlatformRepository,ctx:OperationContext,plan:Operat
   const state={tenant,member,client,assets,connection,grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client),financialEvidence:await loadOwnershipEvidence(repo,ctx,assets),manualEligibilityEvidence:await loadManualEligibilityEvidence(repo,ctx,connection,[...(connection.appPromotionProfile&&plan.assets.some(a=>a.type==="APP")?[appPurchaseRequirement(connection.appPromotionProfile.bindingHash)]:[]),...Object.keys(PRODUCT_CONTRACTS.find(c=>c.tool===ctx.tool&&c.provider===ctx.provider)?.eligibilityPolicies??{}),...(ctx.provider==="META_MARKETING"?[legacyMarketingReadRequirement(),...(ctx.tool.startsWith("ads_")&&plan.classes.some(c=>c!=="READ")?[legacyMarketingWriteRequirement()]:[])]:[])])};
   const decision=evaluatePolicy(ctx,plan,state,{writesEnabled:platformWritesEnabled()});
   if(decision.decision!=="REQUIRE_CONFIRMATION")throw new PlatformDenied(decision.decision==="DENY"?decision.reason:"HUMAN_APPROVAL_NOT_REQUIRED_FOR_PLAN");
-  await assertNoUnreconciledAttempt(repo,ctx.principal.tenantId,canonicalPlanHash(ctx,plan));
+  await assertNoUnreconciledAttempt(repo,ctx.principal.tenantId,planLockHash(ctx,plan));
   return state;
 }
 function expected(snapshot:AuthorizationSnapshot):Array<{collection:Collection;id:string;canonical:string}>{

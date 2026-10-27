@@ -32,6 +32,15 @@ export function canonicalJson(value: unknown): string {
 }
 function digest(v: unknown): string { return createHash("sha256").update(canonicalJson(v)).digest("hex"); }
 export function canonicalPlanHash(ctx: OperationContext, plan: OperationPlan): string { return digest({ actor: ctx.principal.operatorId, tenant: ctx.principal.tenantId, client: ctx.clientId, tool: ctx.tool, provider: ctx.provider, plan }); }
+/** Plan parameters that only record read-only evidence gathered before the request. They are not sent to Meta, and re-running a lookup mints new ids and expiries without changing a byte of the request. */
+const NON_SENT_EVIDENCE_PARAMETERS: readonly string[] = ["targeting_lookup_ids", "targeting_lookup_selected"];
+/**
+ * The key of the per-plan lock: the plan hash with the non-sent evidence removed, so the lock follows what would reach Meta.
+ * Approvals stay bound to the full `canonicalPlanHash`, so a human still reviews and approves the evidence itself.
+ */
+export function planLockHash(ctx: OperationContext, plan: OperationPlan): string {
+  return canonicalPlanHash(ctx, { ...plan, parameters: Object.fromEntries(Object.entries(plan.parameters).filter(([name]) => !NON_SENT_EVIDENCE_PARAMETERS.includes(name))) });
+}
 export function revisionHash(snapshot: AuthorizationSnapshot): string { return digest({...(snapshot.businessOwnerEvidence?.attestations.length?{businessOwnerEvidence:{attestations:snapshot.businessOwnerEvidence.attestations.map(r=>[r.id,r.revision]).sort(),issuers:snapshot.businessOwnerEvidence.issuers.map(m=>[m.operatorId,m.revision]).sort(),connections:snapshot.businessOwnerEvidence.connections.map(c=>[c.id,c.revision]).sort(),credentials:snapshot.businessOwnerEvidence.credentials.map(c=>[c.id,digest(c)]).sort()}}:{}),...(snapshot.manualEligibilityEvidence?.attestations.length?{manualEligibility:{attestations:snapshot.manualEligibilityEvidence.attestations.map(r=>[r.id,r.revision]).sort(),issuers:snapshot.manualEligibilityEvidence.issuers.map(m=>[m.operatorId,m.revision]).sort()}}:{}),tenant: snapshot.tenant.policyRevision, registry: snapshot.tenant.registryRevision, ...(snapshot.financialEvidence&&(snapshot.financialEvidence.attestations.length||snapshot.financialEvidence.observations.length)?{financialEvidence:{attestations:snapshot.financialEvidence.attestations.map(r=>[r.id,r.revision]).sort(),observations:snapshot.financialEvidence.observations.map(r=>[r.id,r.revision]).sort()}}:{}), member: snapshot.member.revision, client: snapshot.client.revision, connection: [snapshot.connection.id, snapshot.connection.revision], assets: snapshot.assets.map(a => [a.key,a.revision]).sort(), grants: snapshot.grants.map(g => [g.id,g.revision]).sort()}); }
 const MONEY_KEY = /budget|spend_cap|spend_target|spend_limit|(?:^|[^a-z])bid_/;
 /** Whether a request key can set what Meta spends: matched after trimming, case folding and removing spaces, zero-width characters and bracket syntax, so a disguised spelling is still caught. */

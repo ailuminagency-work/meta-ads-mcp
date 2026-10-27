@@ -23,7 +23,7 @@ import { PlatformDenied } from "./models.js";
 import type { Collection, CreatedCompletion, PlatformRepository } from "./repository.js";
 import { assetKey, resolveAuthorizedAssets } from "./assets.js";
 import { decryptCredential, selectConnection, assertWhatsAppPhoneUnlocked } from "./connections.js";
-import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, normalizeSafeDiff, revisionHash } from "./policy.js";
+import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, normalizeSafeDiff, planLockHash, revisionHash } from "./policy.js";
 
 export interface ExecutionPermit { readonly operationId: string; readonly context: Readonly<OperationContext>; readonly assetKeys: readonly string[]; readonly connectionId: string; readonly planHash: string }
 interface PermitState {approvalExpected?:Array<{collection:"approvals"|"members";id:string;canonical:string}>;authAppId?:string;readCredentialExpected?:{collection:"credentials";id:string;canonical:string}; repo: PlatformRepository; context: OperationContext; plan: OperationPlan; snapshot: AuthorizationSnapshot; connection: Connection; expiresAt: number; mutation: boolean; completed: boolean; mutationClaimed: boolean; providerReadProof?:{accountId:string;checkedAt:number;expiresAt:number;providerBusinessId?:string}; terminalHash?: string; finishing?: Promise<void>; createdHash?:string;createdResult?:boolean;deletedHash?:string;deletedResult?:boolean;repointHash?:string;repointResult?:boolean }
@@ -55,6 +55,7 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
   if(decision.decision === "DENY") throw new PlatformDenied(decision.reason);
   if(decision.decision === "REQUIRE_CONFIRMATION" && !options.approvalId) throw new PlatformDenied(decision.reason);
   const planHash = canonicalPlanHash(ctx, plan);
+  const lockHash = planLockHash(ctx, plan);
   const mutation = plan.classes.some(c => c !== "READ");
   const operationId = options.operationId ?? randomUUID();
   let approvalDeadline=Infinity;
@@ -82,7 +83,7 @@ export async function authorizeOperation(repo: PlatformRepository, context: Oper
       publicationClaim={before,after:{...before,revision:before.revision+1,publicationClaim:{operationId,claimedAt:now}}};
     }
     if(ctx.tool==="marketing_delete_paused_ad"){const parameters=plan.parameters as {asset_id?:unknown},before=snapshot.assets.find(a=>a.type==="AD"&&a.id===parameters.asset_id);if(!before||before.deletionClaim)throw new PlatformDenied("DELETION_ALREADY_CLAIMED_RECONCILE");deletionClaim={before,after:{...before,revision:before.revision+1,deletionClaim:{operationId,claimedAt:now}}};}
-    const operation: Operation = {appId:connection.appId,metaAppUserId:connectionPrivacyAppUserId(connection),id: operationId, tenantId: ctx.principal.tenantId, clientId: ctx.clientId, actorId: ctx.principal.operatorId, tool: ctx.tool, planHash, state: "PREPARED", approvalId: options.approvalId ?? null, createdAt: now, updatedAt: now};
+    const operation: Operation = {appId:connection.appId,metaAppUserId:connectionPrivacyAppUserId(connection),id: operationId, tenantId: ctx.principal.tenantId, clientId: ctx.clientId, actorId: ctx.principal.operatorId, tool: ctx.tool, planHash, ...(lockHash !== planHash ? { lockHash } : {}), state: "PREPARED", approvalId: options.approvalId ?? null, createdAt: now, updatedAt: now};
     const audit: AuditRecord = {id: `${operationId}:prepared`, tenantId: operation.tenantId, clientId: ctx.clientId, actorId: operation.actorId, tool: ctx.tool, operationId, event: "PREPARED", timestamp: now, assetKeys: assets.map(a => a.key), planHash, approvalId: operation.approvalId,requestedChange:normalizeSafeDiff(plan.parameters),beforeEvidence:"UNKNOWN"};
     await repo.prepareOperation({selectedConnectionId:connection.id,operation,audit,creativeRepointClaim,deletionClaim,publicationClaim,publicationClaims,approvalId: options.approvalId,expectedRevisionHash: revisionHash(snapshot),now, expectedRecords: [
       ...preparationApprovalExpected,
