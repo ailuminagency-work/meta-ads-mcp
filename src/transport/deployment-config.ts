@@ -90,7 +90,7 @@ function present(env: NodeJS.ProcessEnv, name: string): string | undefined {
 }
 
 function validateWriteFlags(env: NodeJS.ProcessEnv): void {
-  for (const name of ["AGENCY_WRITES_ENABLED", ...OBSERVED_WRITE_FLAGS]) {
+  for (const name of ["AGENCY_WRITES_ENABLED", "LUMIN_PLATFORM_ENABLED", ...OBSERVED_WRITE_FLAGS]) {
     const value = present(env, name);
     if (value !== undefined && value !== "true" && value !== "false") {
       throw new Error(`${name} must be an explicit boolean (true or false)`);
@@ -112,6 +112,22 @@ function validateWriteFlags(env: NodeJS.ProcessEnv): void {
     throw new Error(
       `Write flags are enabled while AGENCY_WRITES_ENABLED is not true: ${enabled.join(", ")}. Set AGENCY_WRITES_ENABLED=true deliberately or set these flags to false`,
     );
+  }
+}
+
+/**
+ * With the policy engine on, the budget ceiling document is parsed here once, at startup. The loader caches
+ * the result, so the first budget write no longer discovers an unreadable document (which denies every
+ * budget-bearing write). Imported on demand: the entry point must not reach platform code while it still
+ * serves the credential-waiting deployment.
+ */
+export async function validatePlatformConfiguration(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (env.LUMIN_PLATFORM_ENABLED !== "true") return;
+  const { loadBudgetCeilings } = await import("../platform/marketing-budget-ceiling.js");
+  try {
+    loadBudgetCeilings(env);
+  } catch {
+    throw new Error("LUMIN_MARKETING_BUDGET_CEILINGS is not a valid budget ceiling document; correct it or remove it");
   }
 }
 

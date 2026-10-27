@@ -32,9 +32,15 @@ describe("AGENCY_WRITES_ENABLED needs the policy engine (G2-02)", () => {
     );
   });
 
-  it.each(["false", "", "TRUE", "1", "yes"])("refuses startup when LUMIN_PLATFORM_ENABLED is %j", (value) => {
+  it.each(["false", ""])("refuses startup when LUMIN_PLATFORM_ENABLED is %j", (value) => {
     expect(() => validateAgencyEnvironment(agencyEnv({ AGENCY_WRITES_ENABLED: "true", LUMIN_PLATFORM_ENABLED: value }))).toThrow(
       /requires LUMIN_PLATFORM_ENABLED=true/,
+    );
+  });
+
+  it.each(["TRUE", "1", "yes"])("refuses startup when LUMIN_PLATFORM_ENABLED is the ambiguous %j", (value) => {
+    expect(() => validateAgencyEnvironment(agencyEnv({ AGENCY_WRITES_ENABLED: "true", LUMIN_PLATFORM_ENABLED: value }))).toThrow(
+      /LUMIN_PLATFORM_ENABLED must be an explicit boolean/,
     );
   });
 

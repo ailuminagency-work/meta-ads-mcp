@@ -73,6 +73,28 @@ describe("startup behaviour of the real entry point", () => {
     expect(outcome.output).not.toContain("synthetic");
   });
 
+  it("refuses an invalid budget ceiling document at startup when the platform is on, without echoing it", async () => {
+    const outcome = await startProcess({ ...agencyBase, LUMIN_PLATFORM_ENABLED: "true", LUMIN_MARKETING_BUDGET_CEILINGS: '{"synthetic-marker":' });
+    expect(outcome.code).toBe(1);
+    expect(JSON.stringify(outcome.records.find((record) => record.msg === "Failed to start server"))).toContain("LUMIN_MARKETING_BUDGET_CEILINGS");
+    expect(outcome.records.some((record) => record.msg === "Deployment configuration")).toBe(false);
+    expect(outcome.output).not.toContain("synthetic-marker");
+  });
+
+  it("refuses LUMIN_PLATFORM_ENABLED=TRUE at startup instead of running a server that cannot register its tools", async () => {
+    const outcome = await startProcess({ ...agencyBase, LUMIN_PLATFORM_ENABLED: "TRUE" });
+    expect(outcome.code).toBe(1);
+    expect(JSON.stringify(outcome.records.find((record) => record.msg === "Failed to start server"))).toContain("LUMIN_PLATFORM_ENABLED must be an explicit boolean");
+  });
+
+  it.each(["prodution", "Production", " production"])("refuses to start with NODE_ENV=%j and no DEPLOYMENT_MODE instead of serving unrestricted upstream", async (nodeEnv) => {
+    const outcome = await startProcess({ NODE_ENV: nodeEnv, PORT: "0" });
+    expect(outcome.code).toBe(1);
+    expect(outcome.output).toContain("Failed to start server");
+    expect(outcome.output).toContain("DEPLOYMENT_MODE must be set explicitly");
+    expect(outcome.output).not.toContain("Starting Meta Ads MCP server");
+  });
+
   it("refuses a VIDEO_MAX_CONCURRENT_JOBS that is not a positive integer", async () => {
     const outcome = await startProcess({ DEPLOYMENT_MODE: "upstream", VIDEO_MAX_CONCURRENT_JOBS: "0" });
     expect(outcome.code).toBe(1);
