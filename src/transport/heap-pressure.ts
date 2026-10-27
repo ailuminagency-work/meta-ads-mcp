@@ -1,6 +1,6 @@
 import v8 from "node:v8";
 
-export const DEFAULT_MCP_HEAP_PRESSURE_PERCENT = 80;
+export const DEFAULT_MCP_HEAP_PRESSURE_PERCENT = 70;
 export const MIN_MCP_HEAP_PRESSURE_PERCENT = 50;
 export const MAX_MCP_HEAP_PRESSURE_PERCENT = 95;
 export const HEAP_SAMPLE_INTERVAL_MS = 250;

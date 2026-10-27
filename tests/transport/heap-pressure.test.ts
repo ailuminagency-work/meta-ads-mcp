@@ -157,11 +157,11 @@ describe("HeapPressureGuard", () => {
 
 describe("MCP_HEAP_PRESSURE_PERCENT", () => {
   it("defaults to 80 when unset or empty", () => {
-    expect(DEFAULT_MCP_HEAP_PRESSURE_PERCENT).toBe(80);
-    expect(readHeapPressurePercent({})).toBe(80);
-    expect(readHeapPressurePercent({ MCP_HEAP_PRESSURE_PERCENT: "" })).toBe(80);
-    expect(readHeapPressurePercent({ MCP_HEAP_PRESSURE_PERCENT: "  " })).toBe(80);
-    expect(readMcpAdmissionConfig({}).heapPressurePercent).toBe(80);
+    expect(DEFAULT_MCP_HEAP_PRESSURE_PERCENT).toBe(70);
+    expect(readHeapPressurePercent({})).toBe(70);
+    expect(readHeapPressurePercent({ MCP_HEAP_PRESSURE_PERCENT: "" })).toBe(70);
+    expect(readHeapPressurePercent({ MCP_HEAP_PRESSURE_PERCENT: "  " })).toBe(70);
+    expect(readMcpAdmissionConfig({}).heapPressurePercent).toBe(70);
   });
 
   it.each(["50", "70", "80", "95"])("accepts %s", (value) => {
