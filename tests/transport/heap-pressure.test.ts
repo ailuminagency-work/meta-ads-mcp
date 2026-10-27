@@ -156,7 +156,7 @@ describe("HeapPressureGuard", () => {
 });
 
 describe("MCP_HEAP_PRESSURE_PERCENT", () => {
-  it("defaults to 80 when unset or empty", () => {
+  it("defaults to 70 when unset or empty", () => {
     expect(DEFAULT_MCP_HEAP_PRESSURE_PERCENT).toBe(70);
     expect(readHeapPressurePercent({})).toBe(70);
     expect(readHeapPressurePercent({ MCP_HEAP_PRESSURE_PERCENT: "" })).toBe(70);

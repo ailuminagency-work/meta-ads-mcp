@@ -22,12 +22,22 @@ interface Child {
 const children: ChildProcess[] = [];
 
 afterEach(() => {
-  for (const child of children.splice(0)) child.kill("SIGKILL");
+  for (const child of children.splice(0)) killGroup(child);
 });
+
+// tsx re-spawns node as a grandchild; killing only the launcher would leave the server listening.
+function killGroup(child: ChildProcess): void {
+  try {
+    if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+}
 
 async function startChild(env: Record<string, string>): Promise<Child> {
   const child = spawn(tsx, [fixture], {
     cwd: root,
+    detached: true,
     env: {
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",

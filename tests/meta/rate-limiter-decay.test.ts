@@ -2,7 +2,7 @@ import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashToken } from "../../src/auth/token-store.js";
 import { MetaApiClient } from "../../src/meta/client.js";
-import { RateLimiter, type RequestContext } from "../../src/meta/rate-limiter.js";
+import { MAX_REGAIN_ACCESS_MS, RateLimiter, type RequestContext } from "../../src/meta/rate-limiter.js";
 import { cleanupTestToken, mockFetchResponse, setupTestToken } from "../setup.js";
 
 vi.mock("../../src/utils/logger.js", () => {
@@ -158,6 +158,58 @@ describe("per-token isolation", () => {
 
     await vi.advanceTimersByTimeAsync(20_000);
     expect(limiter.getThrottleDelay(otherToken)).toBe(0);
+  });
+});
+
+describe("values and clocks that would otherwise pin a token", () => {
+  let limiter: RateLimiter;
+  beforeEach(() => {
+    limiter = new RateLimiter();
+  });
+
+  it("caps a regain-access hint from a response header at 24 hours", async () => {
+    limiter.updateFromHeaders(bucUsage(10, 1_000_000_000), ctx);
+    expect(limiter.getThrottleDelay(ctx)).toBe(MAX_REGAIN_ACCESS_MS);
+
+    await vi.advanceTimersByTimeAsync(MAX_REGAIN_ACCESS_MS + 1);
+    expect(limiter.getThrottleDelay(ctx)).toBe(0);
+  });
+
+  it("caps a retry-after hint at the same limit instead of pinning the token for the process lifetime", async () => {
+    limiter.markRetryAfter(ctx, "page_lead_read", 1e23);
+    expect(limiter.getThrottleDelay(ctx)).toBe(MAX_REGAIN_ACCESS_MS);
+
+    limiter.reset();
+    limiter.markRetryAfter(ctx, "page_lead_read", Number.POSITIVE_INFINITY);
+    expect(limiter.getThrottleDelay(ctx)).toBe(MAX_REGAIN_ACCESS_MS);
+  });
+
+  it("ignores a retry-after hint that is not a positive number", () => {
+    for (const bad of [Number.NaN, 0, -5]) limiter.markRetryAfter(ctx, "page_lead_read", bad);
+    expect(limiter.getThrottleDelay(ctx)).toBe(0);
+  });
+
+  it("still honours a normal retry-after hint and lets it run down", async () => {
+    limiter.markRetryAfter(ctx, "page_lead_read", 86_400_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(limiter.getThrottleDelay(ctx)).toBe(86_340_000);
+  });
+
+  it("drops a reading stamped in the future after the wall clock steps back", async () => {
+    limiter.updateFromHeaders(bucUsage(10, 10), ctx);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(limiter.getThrottleDelay(ctx)).toBe(5 * 60_000);
+
+    vi.setSystemTime(Date.now() - 30 * 60_000);
+    expect(limiter.getThrottleDelay(ctx)).toBe(0);
+  });
+
+  it("keeps a reading through a clock step smaller than a second", async () => {
+    limiter.updateFromHeaders(bucUsage(10, 10), ctx);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    vi.setSystemTime(Date.now() - 400);
+    expect(limiter.getThrottleDelay(ctx)).toBe(10 * 60_000 - 59_600);
   });
 });
 

@@ -76,6 +76,9 @@ export const MAX_USAGE_BUCKETS = 5_000;
 /** The longest pause a call is held for; a longer block is reported to the caller instead of slept through. */
 export const MAX_SELF_THROTTLE_WAIT_MS = 30_000;
 const SWEEP_INTERVAL_MS = 60_000;
+// The platform limiter (src/platform/product-rate-usage.ts) caps the same Meta field at 1440 minutes.
+export const MAX_REGAIN_ACCESS_MS = 24 * 60 * 60 * 1000;
+const CLOCK_STEP_TOLERANCE_MS = 1_000;
 
 export class RateLimiter {
   private readonly buckets = new Map<string, UsageBucket>();
@@ -219,6 +222,7 @@ export class RateLimiter {
     type: string,
     retryAfterMs: number,
   ): void {
+    if (!(retryAfterMs > 0)) return;
     const scope = context.accountId ?? "_";
     const key = bucketKey("local_retry", context.tokenHash, scope, type);
     const now = Date.now();
@@ -229,7 +233,7 @@ export class RateLimiter {
       callCount: 0,
       cpuTime: 0,
       totalTime: 0,
-      estimatedTimeToRegainAccessMs: retryAfterMs,
+      estimatedTimeToRegainAccessMs: Math.min(retryAfterMs, MAX_REGAIN_ACCESS_MS),
       updatedAt: now,
     });
   }
@@ -319,6 +323,9 @@ export class RateLimiter {
    * it must neither keep delaying requests nor stay in memory.
    */
   private isExpired(bucket: UsageBucket, now: number): boolean {
+    // A reading stamped in the future means the wall clock stepped back; it would neither age nor expire
+    // until the clock caught up, and a refused call sends nothing that could replace it.
+    if (bucket.updatedAt - now > CLOCK_STEP_TOLERANCE_MS) return true;
     return now - bucket.updatedAt > Math.max(this.bucketTtlMs, bucket.estimatedTimeToRegainAccessMs);
   }
 
@@ -345,7 +352,7 @@ export class RateLimiter {
       callCount: Math.min(bucket.callCount, 10_000),
       cpuTime: Math.min(bucket.cpuTime, 10_000),
       totalTime: Math.min(bucket.totalTime, 10_000),
-      estimatedTimeToRegainAccessMs: Math.min(bucket.estimatedTimeToRegainAccessMs, 7 * 24 * 60 * 60 * 1000),
+      estimatedTimeToRegainAccessMs: Math.min(bucket.estimatedTimeToRegainAccessMs, MAX_REGAIN_ACCESS_MS),
       adsApiAccessTier: safeTier(bucket.adsApiAccessTier),
     });
   }
