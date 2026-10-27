@@ -174,6 +174,7 @@ Each box is a gate, not a suggestion. An unticked box blocks the deploy; the rec
 - [ ] The write-flag rows of section 1 are `false` or absent, `AGENCY_WRITES_ENABLED` and `LUMIN_PLATFORM_WRITES_ENABLED` included, and no forbidden variable is defined.
 - [ ] Each row of the operator actions table has a recorded decision, `DEPLOYMENT_MODE` is set explicitly, and `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` is 30 or more.
 - [ ] The re-registration effect of the redirect policy is accepted, and the affected operators are told.
+- [ ] Before any provider write is ever enabled: platform operations that were already UNKNOWN, PARTIAL or PREPARED before this deploy (staging, or the line that ran earlier) are listed and reconciled by hand from provider state. The plan locks that stop an identical plan from being re-approved after an unknown outcome start at this deploy and have no row for them, and lock documents are never deleted, so their retention is decided and written down (G2R-11, reasoned from the code, not run).
 - [ ] The GCP Workload Identity trust used by `deploy.yml` is narrowed to the main branch and the `production` environment, or its bindings are removed (owner action, CI/CD trust above).
 - [ ] Rollback plan section 3 is complete, including the written statement of the keyring change and which `TOKEN_ENCRYPTION_KEY_*` names existed before and after.
 - [ ] Release identity (section 0) and CI for the same SHA are green.
