@@ -59,15 +59,16 @@ describe("request body limits", () => {
     expect(parsedBy).toEqual([]);
   });
 
-  it("still accepts a multi-megabyte /mcp body once the caller is authenticated", async () => {
+  it("still accepts a large /mcp body of several hundred kilobytes once the caller is authenticated", async () => {
     const { base, parsedBy } = await start(true);
-    const res = await post(`${base}/mcp`, 5_000_000);
+    const res = await post(`${base}/mcp`, 900_000);
     expect(res.status).toBe(200);
     expect(parsedBy).toEqual(["mcp"]);
   });
 
   it("rejects an /mcp body above the authenticated cap", async () => {
     const { base } = await start(true);
+    expect((await post(`${base}/mcp`, 1_200_000)).status).toBe(413);
     expect((await post(`${base}/mcp`, 11_000_000)).status).toBe(413);
   });
 });
