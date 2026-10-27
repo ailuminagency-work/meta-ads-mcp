@@ -322,17 +322,11 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
     const ref = this.tokenDocRef(fbUserId, name);
     const snap = await ref.get();
     if (!snap.exists) return false;
-    const wasDefault = (snap.data() as MetaTokenDoc).isDefault;
+    // Deleting the default leaves the set without one. Promoting whichever
+    // document happens to come first would silently point every MCP request
+    // at an arbitrary client's token; the read-time rule applies instead
+    // (a single survivor is the default, otherwise the user must choose).
     await ref.delete();
-    if (wasDefault) {
-      const remaining = await this.userDocRef(fbUserId)
-        .collection("meta_tokens")
-        .limit(1)
-        .get();
-      if (!remaining.empty) {
-        await remaining.docs[0].ref.update({ isDefault: true });
-      }
-    }
     return true;
   }
 
@@ -470,16 +464,8 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
   async deleteToken(fbUserId: string, name: string): Promise<boolean> {
     const bucket = this.tokens.get(fbUserId);
     if (!bucket) return false;
-    const existing = bucket.get(name);
-    if (!existing) return false;
+    if (!bucket.has(name)) return false;
     bucket.delete(name);
-    if (existing.isDefault) {
-      const next = bucket.entries().next();
-      if (!next.done) {
-        const [k, v] = next.value;
-        bucket.set(k, { ...v, isDefault: true });
-      }
-    }
     return true;
   }
 
