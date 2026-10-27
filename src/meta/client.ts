@@ -31,10 +31,10 @@ class ProviderHttpError extends Error {}
 export interface MetaApiClientConfig {
   apiVersion?: string;
   baseUrl?: string;
-  timeout?: number;
-  maxRetries?: number;
   /** App secret for appsecret_proof; defaults to META_APP_SECRET, read per request. */
   appSecret?: string;
+  timeout?: number;
+  maxRetries?: number;
 }
 
 interface RequestScope {
@@ -61,9 +61,9 @@ interface RequestScope {
 export class MetaApiClient {
   readonly apiVersion: string;
   private readonly baseUrl: string;
+  private readonly appSecret: string | undefined;
   private readonly timeout: number;
   private readonly maxRetries: number;
-  private readonly appSecret: string | undefined;
   private readonly rateLimiter = new RateLimiter();
   private readonly circuitBreaker = new CircuitBreaker();
   private readonly writePacer = new WritePacer();
@@ -73,9 +73,9 @@ export class MetaApiClient {
   constructor(config?: MetaApiClientConfig) {
     this.apiVersion = assertMetaApiVersion(config?.apiVersion ?? resolveMetaApiVersion());
     this.baseUrl = config?.baseUrl ?? DEFAULT_BASE_URL;
+    this.appSecret = config?.appSecret?.trim() || undefined;
     this.timeout = config?.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = config?.maxRetries ?? MAX_RETRIES;
-    this.appSecret = config?.appSecret?.trim() || undefined;
   }
 
   async get<T>(
