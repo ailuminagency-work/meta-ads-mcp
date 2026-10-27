@@ -80,7 +80,7 @@ describe("downloadSafePublicImage", () => {
 
     const image = await downloadSafePublicImage("https://cdn.example.com/image.png", {
       request,
-      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
     });
 
     expect(image.buffer.toString()).toBe("pngdata");
@@ -88,7 +88,7 @@ describe("downloadSafePublicImage", () => {
     expect(image.extension).toBe(".png");
     expect(calls).toHaveLength(1);
     await expect(runLookup(calls[0].options)).resolves.toEqual({
-      address: "203.0.113.10",
+      address: "93.184.216.34",
       family: 4,
     });
   });
@@ -104,7 +104,7 @@ describe("downloadSafePublicImage", () => {
     await expect(
       downloadSafePublicImage("https://cdn.example.com/start", {
         request,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(UnsafeUrlError);
   });
@@ -121,7 +121,7 @@ describe("downloadSafePublicImage", () => {
       downloadSafePublicImage("https://cdn.example.com/start", {
         request,
         resolve: fakeResolve({
-          "cdn.example.com": ["203.0.113.10"],
+          "cdn.example.com": ["93.184.216.34"],
           "internal.example.com": ["10.0.0.5"],
         }),
       }),
@@ -138,7 +138,7 @@ describe("downloadSafePublicImage", () => {
       downloadSafePublicImage("https://cdn.example.com/start", {
         request,
         maxRedirects: 1,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(/Too many redirects/);
   });
@@ -154,7 +154,7 @@ describe("downloadSafePublicImage", () => {
     await expect(
       downloadSafePublicImage("https://cdn.example.com/image", {
         request,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(/content-type/);
   });
@@ -176,11 +176,11 @@ describe("downloadSafePublicImage", () => {
 
     const jpgImage = await downloadSafePublicImage("https://cdn.example.com/image.jpg", {
       request: jpg.request,
-      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
     });
     const pjpegImage = await downloadSafePublicImage("https://cdn.example.com/image2.jpg", {
       request: pjpeg.request,
-      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
     });
 
     expect(jpgImage.contentType).toBe("image/jpeg");
@@ -200,7 +200,7 @@ describe("downloadSafePublicImage", () => {
       downloadSafePublicImage("https://cdn.example.com/image.jpg", {
         request,
         signal: controller.signal,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(/abort/i);
   });
@@ -212,7 +212,7 @@ describe("downloadSafePublicImage", () => {
 
     await expect(
       downloadSafePublicImage("https://cdn.example.com/image.jpg", {
-        request, maxBytes: 10, resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        request, maxBytes: 10, resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(/too large/);
     expect(calls[0].req.destroy).toHaveBeenCalled();
@@ -257,7 +257,7 @@ describe("downloadSafePublicImage", () => {
   });
 
   it("enforces an optional host allowlist on the first hop and on every redirect", async () => {
-    const resolve = fakeResolve({ "cdn.example.com": ["203.0.113.10"], "scontent.xx.fbcdn.net": ["203.0.113.11"] });
+    const resolve = fakeResolve({ "cdn.example.com": ["93.184.216.34"], "scontent.xx.fbcdn.net": ["93.184.216.35"] });
     const direct = makeRequest([{ headers: { "content-type": "image/jpeg" }, chunks: ["x"] }]);
     await expect(
       downloadSafePublicImage("https://cdn.example.com/image.jpg", { request: direct.request, resolve, allowedHostSuffixes: [".fbcdn.net"] }),
@@ -285,7 +285,7 @@ describe("downloadSafePublicImage", () => {
       downloadSafePublicImage("https://cdn.example.com/image.jpg", {
         request,
         maxBytes: 10,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(/too large/);
   });
@@ -302,7 +302,7 @@ describe("downloadSafePublicImage", () => {
       downloadSafePublicImage("https://cdn.example.com/image.jpg", {
         request,
         maxBytes: 10,
-        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+        resolve: fakeResolve({ "cdn.example.com": ["93.184.216.34"] }),
       }),
     ).rejects.toThrow(/too large/);
   });

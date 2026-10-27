@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const net = vi.hoisted(() => ({
   lookup: vi.fn(async (hostname: string) =>
-    hostname.endsWith("fbcdn.net") ? [{ address: "203.0.113.10", family: 4 }] : [{ address: "203.0.113.66", family: 4 }],
+    hostname.endsWith("fbcdn.net") ? [{ address: "93.184.216.34", family: 4 }] : [{ address: "93.184.216.66", family: 4 }],
   ),
   request: vi.fn(),
 }));
@@ -62,7 +62,7 @@ const CREATIVE = {
       picture: ATTACKER_PICTURE,
       child_attachments: [
         { link: "https://shop.example.com/a", picture: GOOD_PICTURE },
-        { link: "https://shop.example.com/b", picture: "https://203.0.113.66/pixel.png" },
+        { link: "https://shop.example.com/b", picture: "https://93.184.216.66/pixel.png" },
         { link: "https://shop.example.com/c", picture: "http://scontent.xx.fbcdn.net/plain.png" },
         { link: "https://shop.example.com/d", picture: "https://scontent.xx.fbcdn.net:6379/pixel.png" },
       ],
