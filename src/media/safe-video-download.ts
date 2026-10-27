@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "../utils/url-guard.js";
 import {
+  abortError as abortReason,
   assertAllowedHost,
   buildPinnedLookup,
   followSafeRedirects,
@@ -18,6 +19,7 @@ import {
 } from "../utils/safe-http.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_DEADLINE_MS = 240_000;
 const DEFAULT_MAX_BYTES = 150 * 1024 * 1024;
 const DEFAULT_MAX_REDIRECTS = 3;
 
@@ -43,7 +45,10 @@ export interface SafeVideoDownloadOptions extends AssertSafeUrlOptions {
   destDir: string;
   maxBytes?: number;
   maxRedirects?: number;
+  /** Idle timeout of one request; a peer that keeps dripping bytes restarts it. */
   timeoutMs?: number;
+  /** Wall-clock cap on the whole download, redirects and DNS included. */
+  deadlineMs?: number;
   signal?: AbortSignal;
   allowedHostSuffixes?: string[];
   request?: HttpsRequestFn;
@@ -70,8 +75,8 @@ export function assertAllowedVideoHost(url: URL, suffixes: string[]): void {
   assertAllowedHost(url, suffixes, "video");
 }
 
-function abortError(): UnsafeUrlError {
-  return new UnsafeUrlError("Video download aborted");
+function abortError(signal: AbortSignal | undefined): UnsafeUrlError {
+  return abortReason(signal, "Video");
 }
 
 /** Filesystem errors carry scratch paths; those must not reach tool output or logs. */
@@ -131,11 +136,11 @@ function requestVideo(
     const onAbort = () => {
       teardown();
       req.destroy();
-      fail(abortError());
+      fail(abortError(options.signal));
     };
 
     if (options.signal?.aborted) {
-      fail(abortError());
+      fail(abortError(options.signal));
       return;
     }
 
@@ -248,23 +253,26 @@ export async function downloadSafePublicVideo(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const suffixes = options.allowedHostSuffixes ?? resolveAllowedVideoHostSuffixes();
+  const deadlineMs = options.deadlineMs ?? DEFAULT_DEADLINE_MS;
 
   return followSafeRedirects(
     rawUrl,
     {
       maxRedirects,
       resolve: options.resolve,
+      allowedPorts: options.allowedPorts,
       signal: options.signal,
+      deadlineMs,
       what: "video",
       validateHop: (url) => assertAllowedVideoHost(url, suffixes),
     },
-    (resolved) =>
+    (resolved, signal) =>
       requestVideo(resolved, {
         request,
         maxBytes,
         timeoutMs,
         destDir: options.destDir,
-        signal: options.signal,
+        signal,
       }),
   );
 }
