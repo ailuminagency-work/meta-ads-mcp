@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authorizeParams,
@@ -11,7 +11,7 @@ import {
   type AuthServer,
 } from "./auth-flow-harness.js";
 
-const API_KEY = randomBytes(24).toString("hex");
+const API_KEY = createHash("sha256").update("api-key-oauth-closed-fixture").digest("hex");
 const PING = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
 let server: AuthServer | undefined;
 
