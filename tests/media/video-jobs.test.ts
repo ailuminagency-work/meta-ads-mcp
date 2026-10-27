@@ -269,6 +269,13 @@ describe("createVideoJobRunner", () => {
 
   describe("queue places per tenant", () => {
     const settle = () => new Promise((r) => setTimeout(r, 20));
+    const until = async (condition: () => boolean) => {
+      const limit = Date.now() + 5_000;
+      while (!condition()) {
+        if (Date.now() > limit) throw new Error("condition not reached");
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
 
     it("does not let one tenant hold the slot and the whole queue; another tenant still gets a place", async () => {
       const runner = createVideoJobRunner({ maxConcurrent: 1, maxQueued: 8, queueWaitMs: 5_000, perTenantPerHour: 30 });
@@ -305,21 +312,21 @@ describe("createVideoJobRunner", () => {
         gates.set(name, deferred<void>());
         await gates.get(name)!.promise;
       };
-      const runs = [
-        runner.run({ tenantId: "a" }, job("a1")),
-        runner.run({ tenantId: "a" }, job("a2")),
-        runner.run({ tenantId: "a" }, job("a3")),
-      ];
-      await settle();
+      const runs = [runner.run({ tenantId: "a" }, job("a1"))];
+      await until(() => order.length === 1);
+      runs.push(runner.run({ tenantId: "a" }, job("a2")));
+      runs.push(runner.run({ tenantId: "a" }, job("a3")));
+      await until(() => runner.stats().queued === 2);
       runs.push(runner.run({ tenantId: "b" }, job("b1")));
       runs.push(runner.run({ tenantId: "b" }, job("b2")));
       runs.push(runner.run({ tenantId: "c" }, job("c1")));
-      await settle();
-      expect(runner.stats()).toMatchObject({ running: 1, queued: 5 });
+      await until(() => runner.stats().queued === 5);
 
-      for (const name of ["a1", "b1", "c1", "a2", "b2", "a3"]) {
+      const expected = ["a1", "b1", "c1", "a2", "b2", "a3"];
+      for (const [index, name] of expected.entries()) {
+        await until(() => gates.has(name));
         gates.get(name)!.resolve();
-        await settle();
+        await until(() => order.length === Math.min(index + 2, expected.length));
       }
       await Promise.all(runs);
       expect(order).toEqual(["a1", "b1", "c1", "a2", "b2", "a3"]);
