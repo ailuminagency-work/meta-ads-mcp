@@ -18,6 +18,7 @@ import type { Collection, PlatformRepository } from "./repository.js";
 import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, revisionHash } from "./policy.js";
 import { resolveAuthorizedAssets } from "./assets.js";
 import { platformWritesEnabled } from "./runtime.js";
+import "./budget-ceiling-guard.js";
 import { selectConnection } from "./connections.js";
 import { assertContractEligibility, contractPlanParameters, validateContractParameters } from "./clients.js";
 import { PRODUCT_CONTRACTS, type ProductContract } from "./products/contracts.js";

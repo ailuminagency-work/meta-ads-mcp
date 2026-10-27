@@ -77,7 +77,7 @@ async function activate(ceiling: string | undefined, budgetMode = "success") {
       connection_id: connected.connectionId,
       input: expected,
     });
-    expect(prepared.isError, JSON.stringify(prepared.content)).not.toBe(true);
+    if (prepared.isError) return { result: prepared, newRequests: [] as string[], network: f.network, refusedBeforeApproval: true };
     const approval = await issueHumanApproval(f.repo, { tenantId: "tenant", operatorId: "200" }, JSON.parse((prepared.content as Array<{ text: string }>)[0].text).request_id);
     const requestsBefore = f.network.length;
     const result = await call("marketing_activate_ad", {
@@ -87,7 +87,7 @@ async function activate(ceiling: string | undefined, budgetMode = "success") {
       input: expected,
       approval_id: approval,
     });
-    return { result, newRequests: f.network.slice(requestsBefore), network: f.network };
+    return { result, newRequests: f.network.slice(requestsBefore), network: f.network, refusedBeforeApproval: false };
   } finally {
     await client.close();
     await server.close();
@@ -98,35 +98,40 @@ const reason = (result: { content: unknown }) => JSON.stringify(result.content);
 
 describe("activation is held to the client's budget ceiling before any provider request", () => {
   it("activates one ad when the reviewed budget is within the ceiling and the account currency matches", async () => {
-    const { result, newRequests } = await activate(budgetCeilingDocument({ client: { currency: "USD", daily: "10.00" } }));
+    const { result, newRequests, refusedBeforeApproval } = await activate(budgetCeilingDocument({ client: { currency: "USD", daily: "10.00" } }));
     expect(result.isError, reason(result)).not.toBe(true);
+    expect(refusedBeforeApproval).toBe(false);
     expect(newRequests.filter((n) => n.startsWith("POST"))).toEqual(["POST:/401"]);
   });
 
   it("denies when the reviewed budget is one minor unit over the ceiling, with no provider request at all", async () => {
-    const { result, newRequests } = await activate(budgetCeilingDocument({ client: { currency: "USD", daily: "9.99" } }));
+    const { result, newRequests, refusedBeforeApproval } = await activate(budgetCeilingDocument({ client: { currency: "USD", daily: "9.99" } }));
     expect(result.isError).toBe(true);
+    expect(refusedBeforeApproval).toBe(true);
     expect(reason(result)).toContain("BUDGET_CEILING_EXCEEDED");
     expect(newRequests).toEqual([]);
   });
 
   it("denies when the client has no ceiling configured (fail closed)", async () => {
-    const { result, newRequests } = await activate(undefined);
+    const { result, newRequests, refusedBeforeApproval } = await activate(undefined);
     expect(result.isError).toBe(true);
+    expect(refusedBeforeApproval).toBe(true);
     expect(reason(result)).toContain("BUDGET_CEILING_NOT_CONFIGURED");
     expect(newRequests).toEqual([]);
   });
 
   it("denies when only another client has a ceiling", async () => {
-    const { result, newRequests } = await activate(budgetCeilingDocument({ "other-client": {} }));
+    const { result, newRequests, refusedBeforeApproval } = await activate(budgetCeilingDocument({ "other-client": {} }));
     expect(result.isError).toBe(true);
+    expect(refusedBeforeApproval).toBe(true);
     expect(reason(result)).toContain("BUDGET_CEILING_NOT_CONFIGURED");
     expect(newRequests).toEqual([]);
   });
 
   it("denies a ceiling expressed in another currency than the reviewed expectation", async () => {
-    const { result, newRequests } = await activate(budgetCeilingDocument({ client: { currency: "JPY", daily: "100000" } }));
+    const { result, newRequests, refusedBeforeApproval } = await activate(budgetCeilingDocument({ client: { currency: "JPY", daily: "100000" } }));
     expect(result.isError).toBe(true);
+    expect(refusedBeforeApproval).toBe(true);
     expect(reason(result)).toContain("BUDGET_CEILING_CURRENCY_MISMATCH");
     expect(newRequests).toEqual([]);
   });
