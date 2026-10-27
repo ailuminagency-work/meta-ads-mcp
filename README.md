@@ -445,7 +445,7 @@ X-Meta-Token: <meta_token>
 Content-Type: application/json
 ```
 
-`MCP_API_KEY` must be at least 32 characters with at least 12 different ones, not one block repeated (`openssl rand -hex 32` qualifies), or the server will not start, and 20 wrong keys from one client address in 15 minutes lock that address out with 429, the right key included, unless that address presented the right key in the previous 15 minutes. A deployment without `META_APP_ID` and `META_APP_SECRET` has no operator who could approve an OAuth grant, so it does not serve `/authorize`, `/register` or `/token`; the API key is the only way in. See [docs/authentication.md](docs/authentication.md).
+`MCP_API_KEY` must be at least 32 characters with at least 12 different ones, not one block repeated (`openssl rand -hex 32` qualifies), or the server will not start, and 20 wrong keys from one client address in 15 minutes lock that address out with 429, the right key included, until the 15 minutes end. A deployment without `META_APP_ID` and `META_APP_SECRET` has no operator who could approve an OAuth grant, so it does not serve `/authorize`, `/register` or `/token`; the API key is the only way in. See [docs/authentication.md](docs/authentication.md).
 
 ### Other MCP clients
 

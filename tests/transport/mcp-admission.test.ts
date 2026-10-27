@@ -533,7 +533,7 @@ describe("wired into the real transport", () => {
     authServer = await startAuthServer({ DEPLOYMENT_MODE: mode, MCP_REQUEST_TIMEOUT_SECONDS: undefined });
 
     const line = info.mock.calls.find((call) => call[1] === "MCP admission limits");
-    expect(line?.[0]).toEqual({ maxInFlight: 16, perSubjectInFlight: 4, maxRunningPerSubject: 8, perSubjectPerMinute: 120, requestTimeoutSeconds: seconds });
+    expect(line?.[0]).toEqual({ maxInFlight: 16, perSubjectInFlight: 4, maxRunningPerSubject: 8, perSubjectPerMinute: 120, requestTimeoutSeconds: seconds, heapPressurePercent: 80 });
   });
 
   it("refuses to start with an unusable limit", async () => {

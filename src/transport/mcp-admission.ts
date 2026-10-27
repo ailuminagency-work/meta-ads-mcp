@@ -1,6 +1,7 @@
 import type express from "express";
 import { hashPii } from "../auth/token-store.js";
 import { logger } from "../utils/logger.js";
+import { HeapPressureGuard, readHeapPressurePercent, type HeapSampler } from "./heap-pressure.js";
 
 export const DEFAULT_MCP_MAX_IN_FLIGHT = 16;
 export const DEFAULT_MCP_RATE_LIMIT_PER_MINUTE = 120;
@@ -22,6 +23,8 @@ const STALL_CHECK_MS = 5_000;
 const RATE_WINDOW_MS = 60_000;
 const MAX_TRACKED_SUBJECTS = 10_000;
 const LOG_INTERVAL_MS = 1_000;
+const HEAP_LOG_INTERVAL_MS = 30_000;
+const HEAP_RETRY_AFTER_SECONDS = 5;
 
 export interface McpAdmissionConfig {
   maxInFlight: number;
@@ -32,6 +35,10 @@ export interface McpAdmissionConfig {
   requestTimeoutMs?: number;
   responseStallMs?: number;
   stallCheckMs?: number;
+  /** Share of the heap limit above which new calls are refused; 0 or absent turns the guard off. */
+  heapPressurePercent?: number;
+  heapSampler?: HeapSampler;
+  heapSampleIntervalMs?: number;
 }
 
 export interface McpAdmissionStats {
@@ -41,6 +48,8 @@ export interface McpAdmissionStats {
   rejectedSubjectInFlight: number;
   rejectedRate: number;
   rejectedCapacity: number;
+  rejectedHeapPressure: number;
+  heapPressureEngaged: boolean;
   timedOut: number;
   stalled: number;
   trackedSubjects: number;
@@ -75,6 +84,7 @@ export function readMcpAdmissionConfig(env: NodeJS.ProcessEnv = process.env): Mc
       ) * 1_000,
     responseStallMs: RESPONSE_STALL_MS,
     stallCheckMs: STALL_CHECK_MS,
+    heapPressurePercent: readHeapPressurePercent(env),
     windowMs: RATE_WINDOW_MS,
     maxTrackedSubjects: MAX_TRACKED_SUBJECTS,
   };
@@ -96,8 +106,12 @@ function subjectOf(req: express.Request): string {
  * Admission control for POST /mcp, placed after authentication and before the
  * body is read. Every request builds a fresh server with the full tool
  * registry and can hold a worker on Meta, Gemini or ffmpeg for minutes, so an
- * authenticated caller could otherwise saturate the only replica. Limits, all
- * refused with 429 and a Retry-After:
+ * authenticated caller could otherwise saturate the only replica. A heap check
+ * comes first: while the process heap is close to its limit (two readings in a
+ * row above MCP_HEAP_PRESSURE_PERCENT) every call is refused with 503 and
+ * Retry-After: 5, because work that ignores its abort signal outlives the
+ * caller and enough of it ends the process. Then the limits, all refused with
+ * 429 and a Retry-After:
  *  - a per-instance cap on requests in flight;
  *  - a per-subject cap on requests in flight, so one credential cannot take
  *    every slot (the slot is taken before the body is read on purpose: reading
@@ -124,9 +138,16 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
     rejectedSubjectInFlight: 0,
     rejectedRate: 0,
     rejectedCapacity: 0,
+    rejectedHeapPressure: 0,
     timedOut: 0,
     stalled: 0,
   };
+  const heapGuard = new HeapPressureGuard({
+    percent: config.heapPressurePercent ?? 0,
+    sampler: config.heapSampler,
+    intervalMs: config.heapSampleIntervalMs,
+  });
+  const heapLog = { lastLoggedAt: -Infinity, refusedSinceLastLog: 0 };
   const lastLogged = { in_flight: -Infinity, subject_in_flight: -Infinity, rate: -Infinity, capacity: -Infinity };
   const suppressed = { in_flight: 0, subject_in_flight: 0, rate: 0, capacity: 0 };
 
@@ -165,6 +186,33 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
     res.status(429).json({
       jsonrpc: "2.0",
       error: { code: -32000, message: "Too many requests; retry after the interval in the Retry-After header" },
+      id: null,
+    });
+  }
+
+  function refuseForHeapPressure(res: express.Response, now: number): void {
+    counters.rejectedHeapPressure += 1;
+    heapLog.refusedSinceLastLog += 1;
+    if (now - heapLog.lastLoggedAt >= HEAP_LOG_INTERVAL_MS) {
+      const { usedBytes, limitBytes } = heapGuard.reading;
+      logger.warn(
+        {
+          event: "mcp_heap_pressure_refused",
+          heapUsedMb: Math.round(usedBytes / 1_048_576),
+          heapLimitMb: Math.round(limitBytes / 1_048_576),
+          thresholdPercent: heapGuard.thresholdPercent,
+          inFlight: counters.inFlight,
+          refusedSinceLastLog: heapLog.refusedSinceLastLog,
+        },
+        "Refused /mcp requests: the process heap is close to its limit",
+      );
+      heapLog.lastLoggedAt = now;
+      heapLog.refusedSinceLastLog = 0;
+    }
+    res.setHeader("Retry-After", String(HEAP_RETRY_AFTER_SECONDS));
+    res.status(503).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Server is under memory pressure; retry after the interval in the Retry-After header" },
       id: null,
     });
   }
@@ -235,6 +283,14 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
 
   const middleware: express.RequestHandler = (req, res, next) => {
     const now = clock();
+
+    // Before the slot and before the rate window: a refused call spends neither. It runs after
+    // authentication, so an unauthenticated caller never reaches it.
+    if (heapGuard.isEngaged(now)) {
+      refuseForHeapPressure(res, now);
+      return;
+    }
+
     const subject = subjectOf(req);
 
     if (counters.inFlight >= config.maxInFlight) {
@@ -284,6 +340,6 @@ export function createMcpAdmission(config: McpAdmissionConfig = readMcpAdmission
   };
 
   return Object.assign(middleware, {
-    stats: (): McpAdmissionStats => ({ ...counters, trackedSubjects: windows.size }),
+    stats: (): McpAdmissionStats => ({ ...counters, heapPressureEngaged: heapGuard.active, trackedSubjects: windows.size }),
   });
 }

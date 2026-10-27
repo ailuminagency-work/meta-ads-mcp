@@ -105,35 +105,56 @@ describe("API-key lockout is not a guessing oracle (G1D-01)", () => {
     expect(histogram).toEqual({ 429: alphabet.length });
   });
 
-  it("keeps serving an address that presented the valid key before it was locked, in either header, and keeps refusing its wrong keys", async () => {
-    server = await startAuthServer(API_ENV);
-    const address = "203.0.113.25";
-    expect(await status(server.origin, validHeader(address))).toBe(200);
+  it("recovers nothing from an address that had a legitimate client: the lock revokes whatever that client earned (G1E-01)", async () => {
+    const prefix = "synthetic-mcp-api-key-prefix-0123456789-";
+    const secret = "Q";
+    server = await startAuthServer({ ...API_ENV, MCP_API_KEY: prefix + secret });
+    const address = "203.0.113.31";
+    const legitimate = { ...at(address), "x-api-key": prefix + secret, "x-meta-token": META_TOKEN };
+    expect(await status(server.origin, legitimate)).toBe(200);
     await lock(server.origin, address);
 
-    expect(await status(server.origin, validHeader(address))).toBe(200);
-    expect(await status(server.origin, validBearer(address))).toBe(200);
-    expect(await status(server.origin, wrongKey(102, address))).toBe(429);
-    expect(await status(server.origin, { ...at(address), authorization: "Bearer not-the-key" })).toBe(429);
+    const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    const histogram: Record<number, number> = {};
+    let found: string | undefined;
+    for (let offset = 0; offset < alphabet.length; offset += 16) {
+      const batch = [...alphabet.slice(offset, offset + 16)];
+      const statuses = await Promise.all(batch.map((candidate) => status(server!.origin, { ...at(address), "x-api-key": prefix + candidate })));
+      statuses.forEach((code, index) => {
+        histogram[code] = (histogram[code] ?? 0) + 1;
+        if (code !== 429) found = batch[index];
+      });
+    }
+    expect(found).toBeUndefined();
+    expect(histogram).toEqual({ 429: alphabet.length });
+
+    expect(await status(server.origin, legitimate)).toBe(429);
+    expect(await status(server.origin, { ...legitimate, "x-api-key": "", authorization: `Bearer ${prefix + secret}` })).toBe(429);
   });
 
-  it("does not count valid requests as failures or reset the failure count of a known-good address", async () => {
+  it("refuses the valid key from a locked address even when that address used it moments before, and gives the same answer as a wrong key", async () => {
     server = await startAuthServer(API_ENV);
     const address = "203.0.113.26";
-    expect(await status(server.origin, validHeader(address))).toBe(200);
+    for (let index = 0; index < 5; index += 1) expect(await status(server.origin, validHeader(address))).toBe(200);
     await lock(server.origin, address);
-    for (let index = 0; index < 30; index += 1) expect(await status(server.origin, validHeader(address))).toBe(200);
-    expect(await status(server.origin, wrongKey(103, address))).toBe(429);
+
+    const wrong = await reply(server.origin, wrongKey(103, address));
+    const right = await reply(server.origin, validHeader(address));
+    expect(right.status).toBe(429);
+    expect(right.body).toBe(wrong.body);
+    expect(right.headers.get("retry-after")).toBe(wrong.headers.get("retry-after"));
+    expect(await status(server.origin, validBearer(address))).toBe(429);
   });
 
-  it("treats each address on its own: a known-good neighbour does not unlock an address that never presented the key", async () => {
+  it("treats each address on its own: a neighbour that used the key is refused once it is locked, an address that was never locked is served", async () => {
     server = await startAuthServer(API_ENV);
     expect(await status(server.origin, validHeader("203.0.113.27"))).toBe(200);
     await lock(server.origin, "203.0.113.27");
     await lock(server.origin, "203.0.113.28");
 
-    expect(await status(server.origin, validHeader("203.0.113.27"))).toBe(200);
+    expect(await status(server.origin, validHeader("203.0.113.27"))).toBe(429);
     expect(await status(server.origin, validHeader("203.0.113.28"))).toBe(429);
+    expect(await status(server.origin, validHeader("203.0.113.32"))).toBe(200);
   });
 
   it("still answers a request with no credential at all from a locked address with the sign-in challenge", async () => {
@@ -171,61 +192,5 @@ describe("ApiKeyLockout", () => {
     expect(lockout.isLocked("b")).toBe(false);
     advance(15 * MINUTE + 1);
     expect(lockout.isLocked("a")).toBe(false);
-  });
-
-  it("knows an address only after a success, only for the window, and a later success extends it", () => {
-    const { lockout, advance } = clocked({ knownGoodTtlMs: 15 * MINUTE });
-    expect(lockout.isKnownGood("a")).toBe(false);
-    lockout.recordSuccess("a");
-    expect(lockout.isKnownGood("a")).toBe(true);
-    expect(lockout.isKnownGood("b")).toBe(false);
-
-    advance(10 * MINUTE);
-    lockout.recordSuccess("a");
-    advance(10 * MINUTE);
-    expect(lockout.isKnownGood("a")).toBe(true);
-
-    advance(5 * MINUTE + 1);
-    expect(lockout.isKnownGood("a")).toBe(false);
-    expect(lockout.knownGoodSize).toBe(0);
-  });
-
-  it("does not make an address known by failing, and failures do not clear a success", () => {
-    const { lockout } = clocked({ maxFailures: 2 });
-    lockout.recordFailure("a");
-    lockout.recordFailure("a");
-    expect(lockout.isLocked("a")).toBe(true);
-    expect(lockout.isKnownGood("a")).toBe(false);
-
-    lockout.recordSuccess("b");
-    lockout.recordFailure("b");
-    lockout.recordFailure("b");
-    expect(lockout.isLocked("b")).toBe(true);
-    expect(lockout.isKnownGood("b")).toBe(true);
-  });
-
-  it("keeps the known-good table bounded: expired entries go first, then the oldest", () => {
-    const { lockout, advance } = clocked({ maxKnownGood: 3, knownGoodTtlMs: 10 * MINUTE });
-    lockout.recordSuccess("a");
-    advance(1);
-    lockout.recordSuccess("b");
-    advance(1);
-    lockout.recordSuccess("c");
-    advance(1);
-    lockout.recordSuccess("d");
-    expect(lockout.knownGoodSize).toBe(3);
-    expect(lockout.isKnownGood("a")).toBe(false);
-    expect(["b", "c", "d"].map((address) => lockout.isKnownGood(address))).toEqual([true, true, true]);
-
-    advance(10 * MINUTE);
-    lockout.recordSuccess("e");
-    expect(lockout.knownGoodSize).toBe(1);
-    expect(lockout.isKnownGood("e")).toBe(true);
-  });
-
-  it("never grows past its bound however many addresses present the key", () => {
-    const { lockout } = clocked({ maxKnownGood: 50 });
-    for (let index = 0; index < 5_000; index += 1) lockout.recordSuccess(`203.0.${index >> 8}.${index & 255}`);
-    expect(lockout.knownGoodSize).toBe(50);
   });
 });

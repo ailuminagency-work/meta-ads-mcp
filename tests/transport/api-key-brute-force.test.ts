@@ -70,7 +70,7 @@ describe("the /mcp API key", () => {
     expect(elsewhere.status).toBe(200);
   });
 
-  it("keeps serving the right key from an address that had presented it before wrong keys locked the address", async () => {
+  it("refuses the right key from an address that had presented it before wrong keys locked the address: the lock revokes that history (G1E-01)", async () => {
     const origin = await apiKeyServer();
     const shared = { "x-forwarded-for": "203.0.113.10" };
     expect((await mcp(origin, { ...shared, "x-api-key": API_KEY })).status).toBe(200);
@@ -78,7 +78,7 @@ describe("the /mcp API key", () => {
     for (let i = 0; i < 25; i++) await (await mcp(origin, { ...shared, "x-api-key": `guess-${i}` })).arrayBuffer();
     expect((await mcp(origin, { ...shared, "x-api-key": "guess-again" })).status).toBe(429);
 
-    expect((await mcp(origin, { ...shared, "x-api-key": API_KEY })).status).toBe(200);
+    expect((await mcp(origin, { ...shared, "x-api-key": API_KEY })).status).toBe(429);
   });
 
   it("counts a bearer that is neither the key nor a valid OAuth token, but not a request with no credential", async () => {
@@ -94,7 +94,8 @@ describe("the /mcp API key", () => {
       await response.arrayBuffer();
     }
     expect((await mcp(origin, { ...client, authorization: "Bearer not-a-token-again" })).status).toBe(429);
-    expect((await mcp(origin, { ...client, "x-api-key": API_KEY })).status).toBe(200);
+    expect((await mcp(origin, { ...client, "x-api-key": API_KEY })).status).toBe(429);
+    expect((await mcp(origin, { "x-forwarded-for": "203.0.113.11", "x-api-key": API_KEY })).status).toBe(200);
   });
 
   it("does not lock out a client that sends the right key every time", async () => {
