@@ -23,5 +23,5 @@ export function providerRejection(status: number, code: number | null, transient
  */
 export function outcomeAfterFailure(permit: ExecutionPermit, error: unknown): "FAILED" | "UNKNOWN" {
   if (!mutationStepClaimed(permit)) return "FAILED";
-  return error instanceof ProductApiError && providerRejection(error.status, error.code) ? "FAILED" : "UNKNOWN";
+  return error instanceof ProductApiError && providerRejection(error.status, error.code, error.transient) ? "FAILED" : "UNKNOWN";
 }
