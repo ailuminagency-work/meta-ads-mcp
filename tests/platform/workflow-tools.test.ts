@@ -9,7 +9,7 @@ import type {OperationContext,Connection,MetaAsset,AssetGrant} from "../../src/p
 const contract=PRODUCT_CONTRACTS.find(c=>c.tool==="pages_create_feed")!;
 const ctx:OperationContext={principal:{tenantId:"tenant",operatorId:"100"},clientId:"client",tool:contract.tool,provider:contract.provider,requestId:"request"};
 const human={tenantId:"tenant",operatorId:"200"};
-beforeEach(()=>{vi.stubEnv("META_APP_ID","300");vi.stubEnv("TOKEN_ENCRYPTION_KEY",Buffer.alloc(32,3).toString("hex"));});
+beforeEach(()=>{vi.stubEnv("LUMIN_PLATFORM_WRITES_ENABLED","true");vi.stubEnv("AGENCY_WRITES_ENABLED","true");vi.stubEnv("META_APP_ID","300");vi.stubEnv("TOKEN_ENCRYPTION_KEY",Buffer.alloc(32,3).toString("hex"));});
 afterEach(()=>vi.unstubAllEnvs());
 async function fixture(){
   const repo=new InMemoryPlatformRepository(),now=Date.now();

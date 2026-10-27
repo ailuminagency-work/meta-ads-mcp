@@ -17,6 +17,7 @@ import { PlatformDenied } from "./models.js";
 import type { Collection, PlatformRepository } from "./repository.js";
 import { canonicalJson, canonicalPlanHash, classifyPlan, evaluatePolicy, revisionHash } from "./policy.js";
 import { resolveAuthorizedAssets } from "./assets.js";
+import { platformWritesEnabled } from "./runtime.js";
 import { selectConnection } from "./connections.js";
 import { assertContractEligibility, contractPlanParameters, validateContractParameters } from "./clients.js";
 import { PRODUCT_CONTRACTS, type ProductContract } from "./products/contracts.js";
@@ -30,7 +31,7 @@ async function snapshot(repo:PlatformRepository,ctx:OperationContext,plan:Operat
   const connection=await selectConnection(repo,ctx,plan,assets);
   const grants=(await repo.list("grants",ctx.principal.tenantId)).filter(g=>g.connectionId===connection.id && g.clientId===ctx.clientId && g.revokedAt===null && g.expiresAt>Date.now() && assets.some(a=>a.key===g.assetKey));
   const state={tenant,member,client,assets,connection,grants,businessOwnerEvidence:await loadClientBusinessEvidence(repo,client),financialEvidence:await loadOwnershipEvidence(repo,ctx,assets),manualEligibilityEvidence:await loadManualEligibilityEvidence(repo,ctx,connection,[...(connection.appPromotionProfile&&plan.assets.some(a=>a.type==="APP")?[appPurchaseRequirement(connection.appPromotionProfile.bindingHash)]:[]),...Object.keys(PRODUCT_CONTRACTS.find(c=>c.tool===ctx.tool&&c.provider===ctx.provider)?.eligibilityPolicies??{}),...(ctx.provider==="META_MARKETING"?[legacyMarketingReadRequirement(),...(ctx.tool.startsWith("ads_")&&plan.classes.some(c=>c!=="READ")?[legacyMarketingWriteRequirement()]:[])]:[])])};
-  const decision=evaluatePolicy(ctx,plan,state,{writesEnabled:true});
+  const decision=evaluatePolicy(ctx,plan,state,{writesEnabled:platformWritesEnabled()});
   if(decision.decision!=="REQUIRE_CONFIRMATION")throw new PlatformDenied(decision.decision==="DENY"?decision.reason:"HUMAN_APPROVAL_NOT_REQUIRED_FOR_PLAN");
   return state;
 }
