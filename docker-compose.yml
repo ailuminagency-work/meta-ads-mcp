@@ -39,6 +39,7 @@ services:
       - GEMINI_ANALYSES_PER_TENANT_PER_HOUR=${GEMINI_ANALYSES_PER_TENANT_PER_HOUR:-20}
       - PORT=3000
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-upstream}
       - NODE_ENV=production
     # Scratch space for video jobs, in memory and size-limited like the Cloud
     # Run volume, so an oversize write fails with ENOSPC instead of filling disk.

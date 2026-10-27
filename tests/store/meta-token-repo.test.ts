@@ -73,6 +73,23 @@ describe("InMemoryMetaTokenRepo", () => {
     expect(await repo.getDefaultTokenName("fb-1")).toBe("first");
   });
 
+  it("re-saving the current default under its own name keeps it default (second login)", async () => {
+    await repo.saveToken(makeInput({ name: "personal" }));
+    // auth-routes passes setAsDefault=false once a default exists
+    await repo.saveToken(makeInput({ name: "personal", setAsDefault: false }));
+    expect(await repo.getDefaultTokenName("fb-1")).toBe("personal");
+
+    const tokens = await repo.listTokens("fb-1");
+    expect(tokens.filter((t) => t.isDefault)).toHaveLength(1);
+  });
+
+  it("re-saving a non-default token does not take over the default", async () => {
+    await repo.saveToken(makeInput({ name: "a" }));
+    await repo.saveToken(makeInput({ name: "b" }));
+    await repo.saveToken(makeInput({ name: "b", setAsDefault: false }));
+    expect(await repo.getDefaultTokenName("fb-1")).toBe("a");
+  });
+
   it("setAsDefault swaps the active default", async () => {
     await repo.saveToken(makeInput({ name: "a" }));
     await repo.saveToken(makeInput({ name: "b", setAsDefault: true }));

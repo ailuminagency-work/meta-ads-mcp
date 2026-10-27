@@ -162,6 +162,17 @@ function publicErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+async function readHead(filePath: string, bytes: number): Promise<Buffer> {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
 export function looksLikeMp4(buffer: Buffer): boolean {
   // ISO BMFF: a size box followed by "ftyp" at byte 4.
   return buffer.length >= 12 && buffer.subarray(4, 8).toString("latin1") === "ftyp";
@@ -446,16 +457,18 @@ export async function deliverVideos(
       let transcoded = false;
 
       if (!ffmpegAvailable || quality === "original") {
-        const original = await fs.readFile(file.path);
-        if (!looksLikeMp4(original)) {
+        // Size and header only: the file can be far larger than the inline cap,
+        // and holding it whole on a small instance is how the process gets OOM-killed.
+        const originalBytes = (await fs.stat(file.path)).size;
+        if (!looksLikeMp4(await readHead(file.path, 12))) {
           meta.error = "Downloaded file is not a valid MP4 (missing ftyp header).";
           await fallbackToThumbnail(source, meta, job);
           return;
         }
-        if (original.length <= cap) {
-          payload = original;
+        if (originalBytes <= cap) {
+          payload = await fs.readFile(file.path);
         } else if (!ffmpegAvailable) {
-          meta.error = `Original video is ${original.length} bytes, above max_inline_bytes=${cap}, and ffmpeg is unavailable to compact it.`;
+          meta.error = `Original video is ${originalBytes} bytes, above max_inline_bytes=${cap}, and ffmpeg is unavailable to compact it.`;
           await fallbackToThumbnail(source, meta, job);
           return;
         }

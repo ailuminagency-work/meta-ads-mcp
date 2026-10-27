@@ -1,6 +1,12 @@
 import { resolveSecurityConfig } from "./security-config.js";
 
 export function resolveDeploymentMode(env: NodeJS.ProcessEnv = process.env): "upstream" | "awaiting_credentials" | "agency" {
+  // Unset must not quietly mean "upstream": a dropped variable would start the
+  // service with every tool, the X-Meta-Token override and the shared-credential
+  // fallbacks that agency mode exists to forbid.
+  if (env.DEPLOYMENT_MODE === undefined && env.NODE_ENV === "production") {
+    throw new Error("DEPLOYMENT_MODE must be set explicitly in production (upstream, awaiting_credentials or agency)");
+  }
   const mode = env.DEPLOYMENT_MODE ?? "upstream";
   if (mode !== "upstream" && mode !== "awaiting_credentials" && mode !== "agency") {
     throw new Error("Invalid DEPLOYMENT_MODE");
